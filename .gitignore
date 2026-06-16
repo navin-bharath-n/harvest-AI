@@ -1,0 +1,37 @@
+# Virtual Environment
+.venv/
+venv/
+ENV/
+
+# Python caching
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Node packages and build outputs
+node_modules/
+dist/
+dist-ssr/
+
+# Logs
+*.log
+backend/*.log
+
+# Database
+*.db
+backend/*.db
+
+# Large test assets and model weights
+backend/*.mp4
+backend/*.ass
+backend/*.srt
+backend/yolo11n.pt
+backend/app/uploads/
+uploads/
+
+# OS/Editor configs
+.DS_Store
+.vscode/
+.idea/

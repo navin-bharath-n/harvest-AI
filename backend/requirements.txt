@@ -1,0 +1,25 @@
+# HOW TO INSTALL AND RUN:
+# 1. Open terminal in the 'backend' folder (NOT 'backend/app')
+# 2. Run: pip install -r requirements.txt
+# 3. Run: python -m uvicorn app.main:app --reload
+
+fastapi>=0.103.0
+uvicorn[standard]>=0.23.2
+pydantic>=2.3.0
+pydantic-settings>=2.0.3
+SQLAlchemy>=2.0.20
+alembic>=1.12.0
+asyncpg>=0.28.0
+psycopg2-binary>=2.9.7
+celery>=5.3.4
+redis<5.0.0
+python-multipart>=0.0.6
+passlib[bcrypt]>=1.7.4
+python-jose[cryptography]>=3.3.0
+email-validator>=2.0.0
+ultralytics
+mediapipe==0.10.14
+deep-sort-realtime
+scipy
+faster-whisper
+opencv-python
