@@ -1,37 +1,45 @@
-# Virtual Environment
+# Virtual environments
 .venv/
 venv/
 ENV/
+env/
 
-# Python caching
-__pycache__/
+# Dependency directories
+node_modules/
+jspm_packages/
+
+# Python cache and distribution files
+**/__pycache__/
 *.pyc
 *.pyo
 *.pyd
 .pytest_cache/
-
-# Node packages and build outputs
-node_modules/
+.coverage
+htmlcov/
 dist/
-dist-ssr/
+build/
+*.egg-info/
 
-# Logs
-*.log
-backend/*.log
-
-# Database
+# Local database files
 *.db
-backend/*.db
+*.db-journal
+*.sqlite3
 
-# Large test assets and model weights
-backend/*.mp4
-backend/*.ass
-backend/*.srt
-backend/yolo11n.pt
-backend/app/uploads/
+# Log files
+*.log
+error.log
+
+# Uploads and temporary render assets
 uploads/
+backend/uploads/
+backend/assets/
+backend/yolo11n.pt
 
-# OS/Editor configs
+# SSL certificate files
+*.pem
+cert.pem
+key.pem
+
+# OS metadata
 .DS_Store
-.vscode/
-.idea/
+Thumbs.db

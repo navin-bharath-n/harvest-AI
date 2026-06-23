@@ -116,24 +116,45 @@ class SubtitleService:
         if style_config is None:
             style_config = {}
 
+        # Detect if target language or words contain Tamil script
+        is_tamil = False
+        target_lang = style_config.get("target_lang", "").lower()
+        if target_lang in ["ta", "ta-colloquial"]:
+            is_tamil = True
+        else:
+            # Look at actual words to see if they contain Tamil script
+            for w in words:
+                text_val = w.get("text", "")
+                if any(ord(c) >= 0x0B80 and ord(c) <= 0x0BFF for c in text_val):
+                    is_tamil = True
+                    break
+
+        default_font = "Nirmala UI" if is_tamil else "Arial Black"
+        default_energetic_font = "Nirmala UI" if is_tamil else "Impact"
+        default_minimalist_font = "Nirmala UI" if is_tamil else "Arial"
+
         # Resolve predefined caption styles from prompt_editing_agent
         caption_style_preset = style_config.get("caption_style", "standard")
         
         if caption_style_preset == "energetic":
-            style_config["font_name"] = style_config.get("font_name", "Impact")
+            style_config["font_name"] = style_config.get("font_name") or default_energetic_font
             style_config["font_size"] = style_config.get("font_size", 84)
             style_config["outline_size"] = style_config.get("outline_size", 6)
             style_config["highlight_color"] = style_config.get("highlight_color", "#FFD700") # Gold
         elif caption_style_preset == "minimalist":
-            style_config["font_name"] = style_config.get("font_name", "Arial")
+            style_config["font_name"] = style_config.get("font_name") or default_minimalist_font
             style_config["font_size"] = style_config.get("font_size", 48)
             style_config["outline_size"] = style_config.get("outline_size", 2)
             style_config["highlight_color"] = style_config.get("highlight_color", "#FFFFFF")
         else: # standard
-            style_config["font_name"] = style_config.get("font_name", "Arial Black")
+            style_config["font_name"] = style_config.get("font_name") or default_font
             style_config["font_size"] = style_config.get("font_size", 72)
             style_config["outline_size"] = style_config.get("outline_size", 5)
             style_config["highlight_color"] = style_config.get("highlight_color", "#00FF00") # Green
+
+        # Ensure we don't fall back to non-Tamil fonts if Tamil text is detected
+        if is_tamil and style_config.get("font_name") in ["Arial Black", "Impact", "Arial", "Outfit", "standard", None, ""]:
+            style_config["font_name"] = "Nirmala UI"
 
         # Defaults for styling
 

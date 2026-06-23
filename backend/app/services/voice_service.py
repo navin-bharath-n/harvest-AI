@@ -9,43 +9,17 @@ from typing import List, Dict
 logger = logging.getLogger(__name__)
 
 class VoiceService:
-    def __init__(self, use_mock=False):
-        self.use_mock = use_mock
-        self.model = None
-        
-        if not self.use_mock:
-            try:
-                from TTS.api import TTS
-                import torch
-                # Get device
-                device = "cuda" if torch.cuda.is_available() else "cpu"
-                logger.info(f"Loading XTTS-v2 model on {device}...")
-                # Initialize XTTS-v2
-                self.model = TTS("tts_models/multilingual/multi-dataset/xtts_v2").to(device)
-                logger.info("XTTS-v2 loaded successfully.")
-            except ImportError:
-                logger.warning("TTS package not found. Running in MOCK mode. Please 'pip install TTS' to use XTTS-v2.")
-                self.use_mock = True
-            except Exception as e:
-                logger.error(f"Failed to load XTTS-v2: {e}")
-                self.use_mock = True
+    def __init__(self):
+        import gtts
+        logger.info("Google Text-to-Speech (gTTS) engine initialized successfully.")
 
-    def generate_speech(self, text: str, language: str, speaker_wav: str, output_path: str):
+    def generate_speech(self, text: str, language: str, speaker_wav: str, output_path: str, speaker_gender: str = "female"):
         """
-        Generates cloned speech for the given text.
+        Generates TTS speech for the given text, using Google Cloud TTS (Wavenet/Neural)
+        as primary if configured, with a pitch-shifted local gTTS fallback.
         """
-        if not os.path.exists(speaker_wav):
-            raise FileNotFoundError(f"Speaker reference WAV not found: {speaker_wav}")
 
-        if self.use_mock:
-            logger.info(f"[MOCK] Generating voice for text: '{text}' in {language}")
-            # Generate a 1-second silent WAV as a mock
-            cmd = ['ffmpeg', '-y', '-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=mono', '-t', '1', '-q:a', '9', '-acodec', 'libmp3lame', output_path]
-            subprocess.run(cmd, capture_output=True, check=True)
-            return output_path
-
-        # Supported languages by XTTS: en, es, fr, de, it, pt, pl, tr, ru, nl, cs, ar, zh-cn, ja, hu, ko, hi
-        # Map user languages to XTTS supported languages
+        # Map user languages to gTTS/GCP supported languages
         lang_map = {
             "english": "en", "en": "en",
             "spanish": "es", "es": "es",
@@ -53,31 +27,142 @@ class VoiceService:
             "german": "de", "de": "de",
             "italian": "it", "it": "it",
             "portuguese": "pt", "pt": "pt",
-            "polish": "pl", "pl": "pl",
             "turkish": "tr", "tr": "tr",
             "russian": "ru", "ru": "ru",
-            "dutch": "nl", "nl": "nl",
-            "czech": "cs", "cs": "cs",
             "arabic": "ar", "ar": "ar",
-            "chinese": "zh-cn", "zh": "zh-cn",
+            "chinese": "zh-CN", "zh": "zh-CN", "zh-cn": "zh-CN",
             "japanese": "ja", "ja": "ja",
-            "hungarian": "hu", "hu": "hu",
             "korean": "ko", "ko": "ko",
-            "hindi": "hi", "hi": "hi"
+            "hindi": "hi", "hi": "hi",
+            "tamil": "ta", "ta": "ta", "ta-tanglish": "ta", "ta-colloquial": "ta",
+            "telugu": "te", "te": "te",
+            "malayalam": "ml", "ml": "ml",
+            "kannada": "kn", "kn": "kn",
+            "marathi": "mr", "mr": "mr",
+            "gujarati": "gu", "gu": "gu",
+            "bengali": "bn", "bn": "bn",
+            "punjabi": "pa", "pa": "pa",
+            "urdu": "ur", "ur": "ur",
+            "vietnamese": "vi", "vi": "vi",
+            "thai": "th", "th": "th",
+            "indonesian": "id", "id": "id",
+            "filipino": "fil", "fil": "fil", "tagalog": "fil",
+            "dutch": "nl", "nl": "nl",
+            "polish": "pl", "pl": "pl",
+            "ukrainian": "uk", "uk": "uk",
+            "swedish": "sv", "sv": "sv",
+            "norwegian": "no", "no": "no",
+            "danish": "da", "da": "da",
+            "finnish": "fi", "fi": "fi",
+            "greek": "el", "el": "el",
+            "hebrew": "he", "he": "he",
+            "romanian": "ro", "ro": "ro",
+            "czech": "cs", "cs": "cs",
+            "hungarian": "hu", "hu": "hu"
         }
         
         target_lang = lang_map.get(language.lower(), "en") # Fallback to English if unsupported
+
+        # 1. Try Google Cloud Text-to-Speech (Neural / Wavenet Male & Female voices)
+        gcp_creds = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+        use_google_tts = False
+        if gcp_creds and os.path.exists(gcp_creds):
+            try:
+                from google.cloud import texttospeech
+                use_google_tts = True
+            except ImportError:
+                logger.warning("google-cloud-texttospeech library not found. Falling back to local pitch-shifted gTTS.")
         
+        if use_google_tts:
+            try:
+                from google.cloud import texttospeech
+                client = texttospeech.TextToSpeechClient()
+                synthesis_input = texttospeech.SynthesisInput(text=text)
+                
+                # Select SSML gender
+                ssml_gender = texttospeech.SsmlVoiceGender.FEMALE
+                if speaker_gender == "male":
+                    ssml_gender = texttospeech.SsmlVoiceGender.MALE
+                
+                # Map standard language code to GCP language code
+                lang_code_map = {
+                    "en": "en-US", "es": "es-ES", "fr": "fr-FR", "de": "de-DE",
+                    "it": "it-IT", "pt": "pt-PT", "ja": "ja-JP", "ko": "ko-KR",
+                    "hi": "hi-IN", "ta": "ta-IN", "te": "te-IN", "ml": "ml-IN",
+                    "kn": "kn-IN", "mr": "mr-IN", "gu": "gu-IN", "bn": "bn-IN",
+                    "pa": "pa-IN", "ur": "ur-PK", "vi": "vi-VN", "th": "th-TH",
+                    "id": "id-ID", "zh-CN": "cmn-CN"
+                }
+                lang_code = lang_code_map.get(target_lang, "en-US")
+                
+                voice = texttospeech.VoiceSelectionParams(
+                    language_code=lang_code,
+                    ssml_gender=ssml_gender
+                )
+                
+                audio_config = texttospeech.AudioConfig(
+                    audio_encoding=texttospeech.AudioEncoding.MP3
+                )
+                
+                logger.info(f"Synthesizing Google Cloud Text-to-Speech for language '{lang_code}' (Gender: {speaker_gender})...")
+                response = client.synthesize_speech(
+                    input=synthesis_input, voice=voice, audio_config=audio_config
+                )
+                
+                temp_mp3 = output_path.replace(".wav", ".mp3")
+                with open(temp_mp3, "wb") as out:
+                    out.write(response.audio_content)
+                
+                # Convert MP3 to s16le WAV
+                cmd = [
+                    "ffmpeg", "-y", "-loglevel", "error",
+                    "-i", temp_mp3,
+                    "-acodec", "pcm_s16le",
+                    "-ar", "22050",
+                    "-ac", "1",
+                    output_path
+                ]
+                subprocess.run(cmd, capture_output=True, check=True)
+                if os.path.exists(temp_mp3):
+                    os.remove(temp_mp3)
+                logger.info(f"Successfully generated Google Cloud TTS voiceover to {output_path}")
+                return output_path
+            except Exception as ge:
+                logger.error(f"Google Cloud Text-to-Speech failed: {ge}. Falling back to gTTS with pitch-shift...")
+
+        # 2. Fallback to gTTS with FFmpeg Pitch Shift
         try:
-            self.model.tts_to_file(
-                text=text,
-                speaker_wav=speaker_wav,
-                language=target_lang,
-                file_path=output_path
-            )
-            logger.info(f"Generated XTTS speech to {output_path}")
+            from gtts import gTTS
+            temp_mp3 = output_path.replace(".wav", ".mp3")
+            
+            logger.info(f"Generating gTTS for text: '{text}' in language '{target_lang}'")
+            tts = gTTS(text=text, lang=target_lang)
+            tts.save(temp_mp3)
+            
+            # Apply pitch shift to gTTS output using FFmpeg to match requested gender
+            filter_chain = []
+            if speaker_gender == "male":
+                # Lower pitch by ~18%
+                filter_chain = ["-filter:a", "asetrate=22050*0.82,atempo=1.22"]
+            elif speaker_gender == "female":
+                # Slightly higher/brighter pitch
+                filter_chain = ["-filter:a", "asetrate=22050*1.12,atempo=0.89"]
+                
+            # Convert MP3 to s16le WAV (1 channel, 22050Hz) to match expected voice format
+            cmd = [
+                "ffmpeg", "-y", "-loglevel", "error",
+                "-i", temp_mp3,
+                "-acodec", "pcm_s16le",
+                "-ar", "22050",
+                "-ac", "1"
+            ] + filter_chain + [output_path]
+            
+            subprocess.run(cmd, capture_output=True, check=True)
+            if os.path.exists(temp_mp3):
+                os.remove(temp_mp3)
+            logger.info(f"Successfully generated gTTS voiceover (pitch shifted for {speaker_gender}) to {output_path}")
         except Exception as e:
-            logger.error(f"XTTS generation failed: {e}")
+            logger.error(f"gTTS generation failed: {e}")
             raise
 
     def get_audio_duration(self, audio_path: str) -> float:
@@ -177,7 +262,7 @@ class VoiceService:
         ]
         subprocess.run(cmd, capture_output=True, check=True)
 
-    def dub_voice(self, original_audio_path: str, transcript_words: List[Dict], target_lang: str, start_time: float, end_time: float, output_path: str, mix_mode: str = "replace") -> str:
+    def dub_voice(self, original_audio_path: str, transcript_words: List[Dict], target_lang: str, start_time: float, end_time: float, output_path: str, mix_mode: str = "replace", speaker_gender: str = "female") -> str:
         """
         Dubs/translates the voice of a clip.
         """
@@ -220,7 +305,12 @@ class VoiceService:
                     continue
                 
                 # Translate line text
-                translated_text = translate_text_google(orig_text, target_lang)
+                if target_lang.lower() in ["ta", "ta-tanglish", "ta-colloquial"]:
+                    from app.services.translation_service import translate_text_llm
+                    # Generate speech using colloquial Tamil script so that TTS reads it correctly
+                    translated_text = translate_text_llm(orig_text, "ta")
+                else:
+                    translated_text = translate_text_google(orig_text, target_lang)
                 
                 # Paths
                 raw_seg = os.path.join(temp_dir, f"raw_seg_{idx}_{unique_id}.wav")
@@ -231,7 +321,8 @@ class VoiceService:
                     text=translated_text,
                     language=target_lang,
                     speaker_wav=speaker_wav,
-                    output_path=raw_seg
+                    output_path=raw_seg,
+                    speaker_gender=speaker_gender
                 )
                 
                 # Pacing stretch

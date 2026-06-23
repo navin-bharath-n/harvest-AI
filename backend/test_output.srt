@@ -1,0 +1,12 @@
+1
+00:00:00,000 --> 00:00:01,500
+This is a test
+
+2
+00:00:01,500 --> 00:00:03,800
+of the subtitle service.
+
+3
+00:00:04,000 --> 00:00:06,000
+Hopefully it works perfectly!
+

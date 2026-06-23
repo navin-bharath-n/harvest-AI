@@ -67,27 +67,27 @@ def process_video_task(video_id: int):
 @celery_app.task(ignore_result=True)
 def transcribe_video_task(video_id: int):
     logger.info(f"Starting to transcribe video {video_id}")
-    
+
     db = SessionLocal()
     try:
         video = db.query(models.Video).filter(models.Video.id == video_id).first()
         if not video:
             logger.error(f"Video {video_id} not found")
             return
-            
+
         if not video.audio_path:
             logger.error(f"Video {video_id} has no audio path")
             video.transcription_status = models.TranscriptionStatus.FAILED
             db.commit()
             return
-        
+
         video.transcription_status = models.TranscriptionStatus.PROCESSING
         db.commit()
-        
+
         logger.info(f"Transcribing audio for video {video_id}...")
         from app.services.transcription_service import transcription_service
         transcript = transcription_service.transcribe(video.audio_path)
-        
+
         # Update database with results
         video.transcript = transcript
         video.transcription_status = models.TranscriptionStatus.COMPLETED
@@ -96,7 +96,7 @@ def transcribe_video_task(video_id: int):
     except Exception as e:
         logger.error(f"Error transcribing video {video_id}: {e}")
         db.rollback()
-        
+
         video = db.query(models.Video).filter(models.Video.id == video_id).first()
         if video:
             video.transcription_status = models.TranscriptionStatus.FAILED
@@ -107,7 +107,7 @@ def transcribe_video_task(video_id: int):
 @celery_app.task(ignore_result=True)
 def analyze_content_task(video_id: int):
     logger.info(f"Starting to analyze content for video {video_id}")
-    
+
     db = SessionLocal()
     try:
         video = db.query(models.Video).filter(models.Video.id == video_id).first()
@@ -117,7 +117,7 @@ def analyze_content_task(video_id: int):
 
         # Check transcript length
         transcript_len = len(video.transcript) if video.transcript else 0
-        
+
         # Determine absolute audio path
         audio_path = video.audio_path
         if audio_path and not os.path.isabs(audio_path):
@@ -128,11 +128,11 @@ def analyze_content_task(video_id: int):
         if transcript_len < 5 and audio_path and os.path.exists(audio_path):
             video.analysis_status = models.ContentAnalysisStatus.PROCESSING
             db.commit()
-            
+
             logger.info(f"Transcript is empty/short for video {video_id}. Detecting highlights using audio peaks...")
             from app.services.audio_analyzer import detect_audio_highlights
             audio_highlights = detect_audio_highlights(audio_path)
-            
+
             video.content_analysis = {
                 "topic": "Gameplay Highlight",
                 "summary": "Highlight detected directly from wave audio amplitude peaks.",
@@ -142,27 +142,27 @@ def analyze_content_task(video_id: int):
             db.commit()
             logger.info(f"Successfully analyzed video {video_id} using audio peak detection.")
             return
-            
+
         if not video.transcript:
             logger.error(f"Video {video_id} has no transcript. Must be transcribed first.")
             video.analysis_status = models.ContentAnalysisStatus.FAILED
             db.commit()
             return
-            
+
         video.analysis_status = models.ContentAnalysisStatus.PROCESSING
         db.commit()
-        
+
         logger.info(f"Sending video {video_id} transcript to Qwen AI...")
         from app.services.content_understanding_service import content_understanding_service
-        
+
         metadata = {
             "duration": video.duration,
             "resolution": video.resolution,
             "fps": video.fps
         }
-        
+
         analysis_result = content_understanding_service.analyze(video.transcript, metadata)
-        
+
         # Update database with results
         video.content_analysis = analysis_result
         video.analysis_status = models.ContentAnalysisStatus.COMPLETED
@@ -171,7 +171,7 @@ def analyze_content_task(video_id: int):
     except Exception as e:
         logger.error(f"Error analyzing video {video_id}: {e}")
         db.rollback()
-        
+
         video = db.query(models.Video).filter(models.Video.id == video_id).first()
         if video:
             video.analysis_status = models.ContentAnalysisStatus.FAILED
@@ -182,7 +182,7 @@ def analyze_content_task(video_id: int):
 @celery_app.task(ignore_result=True)
 def detect_highlights_task(video_id: int):
     logger.info(f"Starting highlight detection for video {video_id}")
-    
+
     db = SessionLocal()
     try:
         video = db.query(models.Video).filter(models.Video.id == video_id).first()
@@ -197,7 +197,7 @@ def detect_highlights_task(video_id: int):
         if transcript_len < 5 and video.content_analysis:
             video.highlight_status = models.HighlightDetectionStatus.PROCESSING
             db.commit()
-            
+
             logger.info(f"Transcript is empty/short for video {video_id}. Building highlights directly from audio analysis.")
             audio_highlights = video.content_analysis.get("importance_scores", [])
             clips = []
@@ -210,27 +210,27 @@ def detect_highlights_task(video_id: int):
                     "reason": h["reason"],
                     "title": f"Action Highlight {idx + 1}"
                 })
-            
+
             video.highlights = {"clips": clips}
             video.highlight_status = models.HighlightDetectionStatus.COMPLETED
             db.commit()
             logger.info(f"Successfully detected highlights for video {video_id} via audio peaks.")
             return
-            
+
         if not video.transcript or not video.content_analysis:
             logger.error(f"Video {video_id} is missing transcript or content analysis.")
             video.highlight_status = models.HighlightDetectionStatus.FAILED
             db.commit()
             return
-            
+
         video.highlight_status = models.HighlightDetectionStatus.PROCESSING
         db.commit()
-        
+
         logger.info(f"Sending video {video_id} data to Qwen AI for highlight detection...")
         from app.services.highlight_detection_service import highlight_detection_service
-        
+
         highlights_result = highlight_detection_service.detect(video.transcript, video.content_analysis)
-        
+
         # Update database with results
         video.highlights = highlights_result
         video.highlight_status = models.HighlightDetectionStatus.COMPLETED
@@ -239,7 +239,7 @@ def detect_highlights_task(video_id: int):
     except Exception as e:
         logger.error(f"Error detecting highlights for video {video_id}: {e}")
         db.rollback()
-        
+
         video = db.query(models.Video).filter(models.Video.id == video_id).first()
         if video:
             video.highlight_status = models.HighlightDetectionStatus.FAILED
@@ -301,7 +301,7 @@ def render_clip_task(clip_id: int):
         if not clip:
             logger.error(f"Clip {clip_id} not found")
             return
-            
+
         video = clip.video
         if not video:
             logger.error(f"Cannot render clip {clip_id}: missing video")
@@ -322,7 +322,7 @@ def render_clip_task(clip_id: int):
             and isinstance(video.crop_metadata, dict)
             and video.crop_metadata.get("trajectory")
         )
-        
+
         if not has_crop_trajectory:
             logger.info(f"No crop trajectory found for video {video.id}. Generating on the fly...")
             try:
@@ -338,24 +338,24 @@ def render_clip_task(clip_id: int):
 
         clip.status = models.ClipStatus.RENDERING
         db.commit()
-        
+
         # Ensure clips directory exists
         clips_dir = os.path.join(os.path.dirname(video_path), "clips")
         os.makedirs(clips_dir, exist_ok=True)
-        
+
         output_filename = f"clip_{uuid.uuid4().hex[:8]}.mp4"
         output_path = os.path.join(clips_dir, output_filename)
-        
+
         # Compute path relative to the app dir so the frontend can serve it via /uploads/
         # _BACKEND_DIR is defined at module level as the backend/ directory
         _app_dir = str(_BACKEND_DIR / "app")
         relative_path = os.path.relpath(output_path, _app_dir).replace("\\", "/")
-        
+
         # Determine edit options
         edit_options = clip.edit_options or {}
         prompt = edit_options.get("prompt")
         instructions = {}
-        
+
         # 1. Parse prompt if provided
         if prompt:
             from app.services.prompt_editing_agent import prompt_editing_agent
@@ -367,7 +367,7 @@ def render_clip_task(clip_id: int):
                     instructions["music_preset"] = instructions["music_style"]
             except Exception as pe:
                 logger.warning(f"Failed to parse edit prompt: {pe}")
-                
+
         # 2. Merge manual edits (manual settings take precedence over AI prompt parser only if changed from defaults)
         ai_controlled_keys = {"caption_style", "zooms", "music_preset", "music_style", "language", "transition"}
         for key, val in edit_options.items():
@@ -385,7 +385,7 @@ def render_clip_task(clip_id: int):
                         is_default = True
                     elif key == "transition" and val == "fade":
                         is_default = True
-                    
+
                     if not is_default:
                         instructions[key] = val
                     else:
@@ -400,52 +400,60 @@ def render_clip_task(clip_id: int):
                             instructions[key] = val
                 else:
                     instructions[key] = val
-                
+
         # Intermediate rendering paths
         variation_base = os.path.join(clips_dir, f"temp_edit_{uuid.uuid4().hex[:8]}")
         cropped_path = f"{variation_base}_crop.mp4"
         ass_path = f"{variation_base}_subs.ass"
         subbed_path = f"{variation_base}_subbed.mp4"
-        
+
         # 3. Filter and shift subtitles
         manual_subs = edit_options.get("subtitles")
         shifted_words = []
+        absolute_words = []
         if manual_subs:
             logger.info("Using manually edited subtitles from edit options.")
             for w in manual_subs:
                 start_val = float(w["start"])
                 end_val = float(w["end"])
-                # If start_val is absolute, shift it to be relative
-                if start_val >= clip.start_time:
-                    start_val -= clip.start_time
-                    end_val -= clip.start_time
-                shifted_words.append({
-                    "start": start_val,
-                    "end": end_val,
-                    "text": w["text"]
-                })
+                if start_val >= clip.start_time and end_val <= clip.end_time:
+                    absolute_words.append({
+                        "start": start_val,
+                        "end": end_val,
+                        "text": w["text"]
+                    })
+                    shifted_words.append({
+                        "start": start_val - clip.start_time,
+                        "end": end_val - clip.start_time,
+                        "text": w["text"]
+                    })
         else:
             full_transcript = video.transcript or []
             part_words = [w for w in full_transcript if w["start"] >= clip.start_time and w["end"] <= clip.end_time]
             for w in part_words:
+                absolute_words.append({
+                    "start": w["start"],
+                    "end": w["end"],
+                    "text": w["text"]
+                })
                 shifted_words.append({
                     "start": w["start"] - clip.start_time,
                     "end": w["end"] - clip.start_time,
                     "text": w["text"]
                 })
-                
+
         # 4. Translate subtitles based on caption language configuration
         translate_lang = instructions.get("translate_language", "none")
         if translate_lang == "none":
-            translate_lang = instructions.get("language", "en")
-            
+            translate_lang = instructions.get("language", "none")
+
         caption_lang_opt = instructions.get("caption_language", "translated")
         dub_voice = instructions.get("dub_voice", False)
         dub_mix_mode = instructions.get("dub_mix_mode", "replace")
-        
+
         from app.services.translation_service import translate_and_distribute_words
         orig_shifted_words = shifted_words.copy()
-        
+
         if caption_lang_opt == "none":
             shifted_words = []
         elif caption_lang_opt == "original":
@@ -475,37 +483,39 @@ def render_clip_task(clip_id: int):
 
         # Dub voice if requested
         dubbed_audio_path = None
+        speaker_gender = edit_options.get("speaker_gender", "female")
         if dub_voice and translate_lang != "none" and video.audio_path:
-            logger.info(f"Voice dubbing requested to language: {translate_lang}")
+            logger.info(f"Voice dubbing requested to language: {translate_lang} (Gender: {speaker_gender})")
             from app.services.voice_service import voice_service
-            
+
             # Resolve absolute path to original audio
             if os.path.isabs(video.audio_path):
                 abs_audio_path = video.audio_path
             else:
                 abs_audio_path = os.path.join(os.path.dirname(video_path), os.path.basename(video.audio_path))
-                
+
             if os.path.exists(abs_audio_path):
                 try:
                     dubbed_audio_path = f"{variation_base}_dubbed.wav"
                     voice_service.dub_voice(
                         original_audio_path=abs_audio_path,
-                        transcript_words=orig_shifted_words,
+                        transcript_words=absolute_words,
                         target_lang=translate_lang,
                         start_time=clip.start_time,
                         end_time=clip.end_time,
                         output_path=dubbed_audio_path,
-                        mix_mode=dub_mix_mode
+                        mix_mode=dub_mix_mode,
+                        speaker_gender=speaker_gender
                     )
                     logger.info("Successfully generated dubbed audio track.")
                 except Exception as de:
                     logger.error(f"Voice dubbing failed: {de}", exc_info=True)
                     dubbed_audio_path = None
-                
+
         # 5. Generate subtitles ASS file
         caption_preset = instructions.get("caption_style", "standard")
         has_subtitles = caption_preset != "none" and len(shifted_words) > 0
-        
+
         if has_subtitles:
             from app.services.subtitle_service import subtitle_service
             style_config = {
@@ -520,7 +530,7 @@ def render_clip_task(clip_id: int):
             }
             # Clean styling overrides
             style_config = {k: v for k, v in style_config.items() if v is not None}
-            
+
             try:
                 subtitle_service.generate_ass(shifted_words, ass_path, style_config)
             except Exception as se:
@@ -529,7 +539,7 @@ def render_clip_task(clip_id: int):
 
         # 6. OpenCV crop rendering with zooms and transitions (if crop trajectory available)
         temp_video_source = subbed_path if has_subtitles else cropped_path
-        
+
         if has_crop_trajectory:
             from app.services.clip_rendering_service import clip_rendering_service
             clip_rendering_service.render_clip(
@@ -546,7 +556,7 @@ def render_clip_task(clip_id: int):
             logger.info(f"No crop trajectory for clip {clip_id}, using direct FFmpeg trim fallback.")
             import subprocess
             duration = clip.end_time - clip.start_time
-            
+
             ffmpeg_cmd = [
                 "ffmpeg", "-y",
                 "-loglevel", "error",
@@ -554,7 +564,7 @@ def render_clip_task(clip_id: int):
                 "-t", str(duration),
                 "-i", video_path,
             ]
-            
+
             if has_subtitles:
                 import shutil
                 ext = os.path.splitext(ass_path)[1]
@@ -568,16 +578,16 @@ def render_clip_task(clip_id: int):
                     if ":" in safe_sub_path:
                         drive, rest = safe_sub_path.split(":", 1)
                         safe_sub_path = f"{drive}\\:{rest}"
-                
+
                 ffmpeg_cmd.extend(["-vf", f"subtitles='{safe_sub_path}'"])
-            
+
             ffmpeg_cmd.extend([
                 "-c:v", "libx264", "-preset", "fast", "-crf", "18", # Higher quality encoding
                 "-c:a", "aac", "-b:a", "128k",
                 "-movflags", "+faststart",
                 temp_video_source
             ])
-            
+
             try:
                 result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
                 if result.returncode != 0:
@@ -588,7 +598,7 @@ def render_clip_task(clip_id: int):
                         os.remove(temp_sub_path)
                     except Exception:
                         pass
-                
+
         # 6.5. Replace video audio with dubbed audio if available
         if dubbed_audio_path and os.path.exists(dubbed_audio_path):
             import shutil
@@ -617,18 +627,18 @@ def render_clip_task(clip_id: int):
                         os.remove(dubbed_audio_path)
                     except Exception:
                         pass
-                        
+
         # 7. Mix music track
         music_style = instructions.get("music_style", "none")
         music_preset = instructions.get("music_preset", music_style)
         music_track = None
         disable_music = True
-        
+
         if music_preset and music_preset != "none":
             from app.services.music_agent import music_agent
             music_track = music_agent.recommend_music({"style": music_preset})
             disable_music = False
-            
+
         from app.services.music_agent import music_agent
         try:
             vol = instructions.get("music_volume")
@@ -647,7 +657,7 @@ def render_clip_task(clip_id: int):
             logger.error(f"Music mix failed, copying directly: {me}")
             import subprocess
             subprocess.run(["ffmpeg", "-y", "-i", temp_video_source, "-c", "copy", output_path], capture_output=True)
-            
+
         # Cleanup intermediate files
         for fpath in [cropped_path, ass_path, subbed_path]:
             if os.path.exists(fpath) and fpath != output_path:
@@ -655,16 +665,16 @@ def render_clip_task(clip_id: int):
                     os.remove(fpath)
                 except Exception as ex:
                     logger.warning(f"Failed to remove temp file {fpath}: {ex}")
-                    
+
         clip.storage_path = relative_path
         clip.status = models.ClipStatus.COMPLETED
         db.commit()
         logger.info(f"Successfully rendered clip {clip_id} to {relative_path}")
-        
+
     except Exception as e:
         logger.error(f"Error rendering clip {clip_id}: {e}")
         db.rollback()
-        
+
         clip = db.query(models.Clip).filter(models.Clip.id == clip_id).first()
         if clip:
             clip.status = models.ClipStatus.FAILED
@@ -674,14 +684,15 @@ def render_clip_task(clip_id: int):
 
 @celery_app.task(ignore_result=True)
 def generate_master_shorts_task(
-    video_id: int, 
-    length: float, 
-    platform: str, 
+    video_id: int,
+    length: float,
+    platform: str,
     optional_prompt: str,
     translate_language: str = "none",
     dub_voice: bool = False,
     caption_language: str = "translated",
-    dub_mix_mode: str = "replace"
+    dub_mix_mode: str = "replace",
+    speaker_gender: str = "female"
 ):
     logger.info(f"Starting master shorts generation for video {video_id}")
     db = SessionLocal()
@@ -732,7 +743,8 @@ def generate_master_shorts_task(
             translate_language=translate_language,
             dub_voice=dub_voice,
             caption_language=caption_language,
-            dub_mix_mode=dub_mix_mode
+            dub_mix_mode=dub_mix_mode,
+            speaker_gender=speaker_gender
         )
 
         # Save the results as Clip records
@@ -740,10 +752,15 @@ def generate_master_shorts_task(
         os.makedirs(clips_dir, exist_ok=True)
 
         for i, item in enumerate(results):
+            start_val = 0.0
+            end_val = length
+
             if isinstance(item, dict):
                 path = item["path"]
                 title = item["title"]
                 clip_dur = item.get("duration", length)
+                start_val = item.get("start_time", 0.0)
+                end_val = item.get("end_time", start_val + clip_dur)
                 # Form descriptive filename based on title
                 sanitized_title = title.lower().replace(" ", "_").replace("-", "")
                 output_filename = f"{sanitized_title}_{uuid.uuid4().hex[:8]}.mp4"
@@ -751,6 +768,7 @@ def generate_master_shorts_task(
                 path = item
                 title = f"Master Variation {i+1}"
                 clip_dur = length
+                end_val = length
                 output_filename = f"variation_{i+1}_{uuid.uuid4().hex[:8]}.mp4"
 
             if not path or not os.path.exists(path):
@@ -766,8 +784,8 @@ def generate_master_shorts_task(
             db_clip = models.Clip(
                 video_id=video_id,
                 title=title,
-                start_time=0.0,
-                end_time=clip_dur,
+                start_time=start_val,
+                end_time=end_val,
                 duration=clip_dur,
                 status=models.ClipStatus.COMPLETED,
                 storage_path=rel_path
@@ -786,19 +804,19 @@ def generate_master_shorts_task(
 @celery_app.task(ignore_result=True)
 def publish_video_task(clip_id: int, config: dict):
     logger.info(f"Starting social publishing task for clip {clip_id} with config {config}")
-    
+
     db = SessionLocal()
     try:
         clip = db.query(models.Clip).filter(models.Clip.id == clip_id).first()
         if not clip:
             logger.error(f"Clip {clip_id} not found")
             return
-            
+
         platforms = config.get("platforms", [])
         title = config.get("title", "")
         description = config.get("description", "")
         privacy = config.get("privacy", "public")
-        
+
         # Resolve absolute path to video
         _app_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
         if clip.storage_path:
@@ -809,7 +827,7 @@ def publish_video_task(clip_id: int, config: dict):
 
         # Publish to selected platforms using SocialPublishService
         from app.services.social_publish_service import SocialPublishService
-        
+
         # Load credentials from database for this owner
         user_id = clip.video.project.owner_id if (clip.video and clip.video.project) else 1
         db_connections = db.query(models.SocialConnection).filter(models.SocialConnection.user_id == user_id).all()
@@ -823,34 +841,51 @@ def publish_video_task(clip_id: int, config: dict):
         req_configs = config.get("platform_configs") or {}
         platform_configs = {**db_configs, **req_configs}
 
+        published_urls = clip.published_urls or {}
+        if not isinstance(published_urls, dict):
+            published_urls = dict(published_urls)
+
         for platform in platforms:
-            # Check if this specific platform was connected as a Sandbox/Mock channel
-            is_platform_sandbox = False
-            for conn in db_connections:
-                if conn.platform == platform:
-                    is_platform_sandbox = (conn.credentials or {}).get("is_sandbox", False)
-                    break
-
-            is_sandbox = req_configs.get("is_sandbox", is_platform_sandbox)
-
             publish_config = {
                 "title": title,
                 "description": description,
                 "privacy": privacy,
                 "youtube_access_token": platform_configs.get("youtube_access_token"),
+                "youtube_refresh_token": platform_configs.get("youtube_refresh_token"),
                 "facebook_access_token": platform_configs.get("facebook_access_token"),
                 "facebook_page_id": platform_configs.get("facebook_page_id"),
                 "instagram_access_token": platform_configs.get("instagram_access_token"),
                 "instagram_business_id": platform_configs.get("instagram_business_id"),
-                "public_video_url": platform_configs.get("public_video_url"),
-                "is_sandbox": is_sandbox
+                "public_video_url": platform_configs.get("public_video_url")
             }
-            res = SocialPublishService.publish_clip(video_path, platform, publish_config)
-            logger.info(f"Publish result for platform {platform}: {res}")
-            
+            try:
+                res = SocialPublishService.publish_clip(video_path, platform, publish_config)
+                logger.info(f"Publish result for platform {platform}: {res}")
+                if res.get("status") == "success" and res.get("video_url"):
+                    published_urls[platform] = res["video_url"]
+                    updated_token = res.get("updated_access_token")
+                    if updated_token:
+                        for conn in db_connections:
+                            if conn.platform == platform:
+                                updated_credentials = {**(conn.credentials or {})}
+                                updated_credentials[f"{platform}_access_token"] = updated_token
+                                conn.credentials = updated_credentials
+                                from sqlalchemy.orm.attributes import flag_modified
+                                flag_modified(conn, "credentials")
+                                db.commit()
+                                logger.info(f"Successfully updated access token for platform {platform} in DB connection.")
+                                break
+            except Exception as pe:
+                logger.error(f"Error publishing to {platform} for clip {clip_id}: {pe}", exc_info=True)
+                published_urls[platform] = f"error: {str(pe)}"
+
+        from sqlalchemy.orm.attributes import flag_modified
+        clip.published_urls = published_urls
+        flag_modified(clip, "published_urls")
+        db.commit()
+
         logger.info(f"Successfully processed publishing request for clip {clip_id}")
     except Exception as e:
         logger.error(f"Error during social publishing of clip {clip_id}: {e}", exc_info=True)
     finally:
         db.close()
-

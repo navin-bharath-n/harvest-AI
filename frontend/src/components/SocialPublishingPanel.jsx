@@ -52,6 +52,7 @@ export default function SocialPublishingPanel({ clip, onClose }) {
       try {
         const data = await api.getUserConnections(1);
         const loaded = { youtube: null, facebook: null, instagram: null };
+        const preSelect = { youtube: false, facebook: false, instagram: false };
         data.forEach((conn) => {
           loaded[conn.platform] = {
             name: conn.account_name,
@@ -59,8 +60,10 @@ export default function SocialPublishingPanel({ clip, onClose }) {
             avatar: conn.account_avatar,
             credentials: conn.credentials || {},
           };
+          preSelect[conn.platform] = true;
         });
         setConnections(loaded);
+        setSelectedPlatforms(preSelect);
       } catch (e) {
         console.error('Failed to load connections from DB:', e);
       }
@@ -75,8 +78,10 @@ export default function SocialPublishingPanel({ clip, onClose }) {
     const left = window.screen.width / 2 - w / 2;
     const top = window.screen.height / 2 - h / 2;
 
+    const loginUrl = `https://localhost:8000/api/v1/users/auth/${platform}/login?user_id=1`;
+
     const popup = window.open(
-      '',
+      loginUrl,
       `Connect ${platform}`,
       `width=${w},height=${h},top=${top},left=${left},status=no,menubar=no,toolbar=no`
     );
@@ -86,366 +91,12 @@ export default function SocialPublishingPanel({ clip, onClose }) {
       return;
     }
 
-    const platformLabels = {
-      youtube: 'Google (YouTube Shorts)',
-      facebook: 'Meta (Facebook Reels)',
-      instagram: 'Instagram Creator API',
-    };
-
-    const brandColors = {
-      youtube: '#ff0000',
-      facebook: '#1877f2',
-      instagram: '#e1306c',
-    };
-
-    // Render advanced inputs based on platform
-    let advancedFieldsHTML = '';
-    if (platform === 'youtube') {
-      advancedFieldsHTML = `
-        <div class="input-group">
-          <label>OAuth Access Token</label>
-          <input type="text" id="youtube_access_token" placeholder="ya29.a0AXgv..." />
-        </div>
-      `;
-    } else if (platform === 'facebook') {
-      advancedFieldsHTML = `
-        <div class="input-group">
-          <label>Page Access Token</label>
-          <input type="text" id="facebook_access_token" placeholder="EAAG..." />
-        </div>
-        <div class="input-group">
-          <label>Facebook Page ID</label>
-          <input type="text" id="facebook_page_id" placeholder="1029384756..." />
-        </div>
-      `;
-    } else if (platform === 'instagram') {
-      advancedFieldsHTML = `
-        <div class="input-group">
-          <label>Instagram/Facebook User Access Token</label>
-          <input type="text" id="instagram_access_token" placeholder="IGQV..." />
-        </div>
-        <div class="input-group">
-          <label>Instagram Business Account ID</label>
-          <input type="text" id="instagram_business_id" placeholder="178414..." />
-        </div>
-        <div class="input-group">
-          <label>Public Video URL (Optional)</label>
-          <input type="text" id="public_video_url" placeholder="https://mycdn.com/shorts/video.mp4" />
-        </div>
-      `;
-    }
-
-    popup.document.write(`
-      <html>
-        <head>
-          <title>Authorize Harvest AI</title>
-          <style>
-            body {
-              background-color: #0d0d12;
-              color: #ffffff;
-              font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
-              display: flex;
-              flex-direction: column;
-              align-items: center;
-              justify-content: center;
-              min-height: 100vh;
-              margin: 0;
-              padding: 20px;
-              box-sizing: border-box;
-              text-align: center;
-            }
-            .card {
-              background: #13131c;
-              border: 1px solid rgba(255, 255, 255, 0.08);
-              border-radius: 20px;
-              padding: 30px;
-              max-width: 440px;
-              width: 100%;
-              box-shadow: 0 20px 50px rgba(0,0,0,0.6);
-              box-sizing: border-box;
-            }
-            h2 {
-              margin-top: 0;
-              font-size: 1.4rem;
-              font-weight: 700;
-              letter-spacing: -0.025em;
-            }
-            p {
-              color: #94a3b8;
-              font-size: 0.85rem;
-              line-height: 1.6;
-              margin-bottom: 25px;
-            }
-            .brand-logo {
-              font-size: 3rem;
-              margin-bottom: 15px;
-            }
-            .btn {
-              color: white;
-              border: none;
-              padding: 12px 20px;
-              border-radius: 10px;
-              font-weight: 600;
-              cursor: pointer;
-              font-size: 0.9rem;
-              width: 100%;
-              transition: all 0.2s ease;
-              box-sizing: border-box;
-              outline: none;
-            }
-            .btn-live {
-              background: ${brandColors[platform]};
-            }
-            .btn-live:hover {
-              opacity: 0.9;
-              transform: translateY(-1px);
-            }
-            .btn-cancel {
-              background: transparent;
-              border: 1px solid rgba(255,255,255,0.15);
-              color: #94a3b8;
-              margin-top: 15px;
-            }
-            .btn-cancel:hover {
-              background: rgba(255,255,255,0.03);
-              color: white;
-            }
-            .permission-item {
-              display: flex;
-              align-items: center;
-              gap: 10px;
-              text-align: left;
-              background: rgba(255,255,255,0.02);
-              padding: 10px 14px;
-              border-radius: 10px;
-              margin-top: 10px;
-              font-size: 0.8rem;
-              border: 1px solid rgba(255,255,255,0.04);
-            }
-            .advanced-container {
-              margin-top: 20px;
-              text-align: left;
-            }
-            .advanced-toggle {
-              cursor: pointer;
-              color: #c084fc;
-              font-size: 0.8rem;
-              user-select: none;
-              font-weight: 600;
-              display: flex;
-              align-items: center;
-              gap: 5px;
-              justify-content: center;
-              margin-bottom: 10px;
-              transition: color 0.2s;
-            }
-            .advanced-toggle:hover {
-              color: #a855f7;
-            }
-            .advanced-fields {
-              display: none;
-              background: rgba(0, 0, 0, 0.2);
-              border: 1px solid rgba(255, 255, 255, 0.05);
-              border-radius: 12px;
-              padding: 18px;
-              margin-top: 10px;
-            }
-            .input-group {
-              margin-bottom: 12px;
-            }
-            .input-group label {
-              display: block;
-              font-size: 0.75rem;
-              color: #94a3b8;
-              margin-bottom: 6px;
-              font-weight: 500;
-            }
-            .input-group input {
-              width: 100%;
-              background: #09090d;
-              border: 1px solid rgba(255, 255, 255, 0.12);
-              border-radius: 8px;
-              color: white;
-              padding: 10px 12px;
-              font-size: 0.8rem;
-              box-sizing: border-box;
-              outline: none;
-              transition: border-color 0.2s;
-            }
-            .input-group input:focus {
-              border-color: #8b5cf6;
-            }
-            .spinner {
-              border: 3px solid rgba(139, 92, 246, 0.1);
-              width: 40px;
-              height: 40px;
-              border-radius: 50%;
-              border-left-color: #8b5cf6;
-              animation: spin 1s linear infinite;
-              margin: 25px auto 15px;
-            }
-            @keyframes spin {
-              0% { transform: rotate(0deg); }
-              100% { transform: rotate(360deg); }
-            }
-          </style>
-        </head>
-        <body>
-          <div class="card">
-            <div class="brand-logo">${platform === 'youtube' ? '🎥' : platform === 'instagram' ? '📸' : '👤'}</div>
-            <h2>Sign in with ${platformLabels[platform]}</h2>
-            <p>Harvest AI requests permission to manage and upload short-form videos to your profile.</p>
-            
-            <div id="error-container" style="display: none; background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.2); padding: 12px; border-radius: 10px; color: #f87171; font-size: 0.8rem; text-align: left; margin-bottom: 20px; line-height: 1.4;">
-              <strong>Verification Failed:</strong> <span id="error-msg"></span>
-            </div>
-
-            <div id="loader-container" style="display: none; padding: 20px 0;">
-              <div class="spinner"></div>
-              <div id="loader-text" style="color: #a78bfa; font-size: 0.95rem; font-weight: 500;">Verifying...</div>
-            </div>
-
-            <div id="success-container" style="display: none; padding: 20px 0;">
-              <div style="font-size: 3rem; margin-bottom: 10px;">✨</div>
-              <div style="color: #10b981; font-size: 1.1rem; font-weight: bold;">Connection Successful!</div>
-              <p style="font-size: 0.8rem; color: #64748b; margin-top: 5px; margin-bottom: 0;">Closing popup...</p>
-            </div>
-
-            <div id="btn-container">
-              <button class="btn btn-live" id="btn-live">Verify Server Settings (.env)</button>
-              <button class="btn" id="btn-sandbox" style="background: rgba(139, 92, 246, 0.15); border: 1px solid rgba(139, 92, 246, 0.25); color: #c084fc; margin-top: 10px;">Connect Sandbox Mode (Simulated)</button>
-              
-              <div class="advanced-container">
-                <div class="advanced-toggle" id="advanced-toggle">► Paste Custom Developer Tokens</div>
-                <div class="advanced-fields" id="advanced-fields">
-                  ${advancedFieldsHTML}
-                  <button class="btn" id="btn-auth" style="background: #8b5cf6; margin-top: 10px;">Verify Custom Token</button>
-                </div>
-              </div>
-
-              <div class="permission-item">
-                <span>✔️</span>
-                <span>Manage vertical videos and metadata</span>
-              </div>
-              <div class="permission-item">
-                <span>✔️</span>
-                <span>Publish Reels / Shorts on your behalf</span>
-              </div>
-
-              <button class="btn btn-cancel" onclick="window.close()">Cancel</button>
-            </div>
-          </div>
-
-          <script>
-            const toggle = document.getElementById('advanced-toggle');
-            const fields = document.getElementById('advanced-fields');
-            toggle.addEventListener('click', () => {
-              const isHidden = fields.style.display === 'none' || fields.style.display === '';
-              fields.style.display = isHidden ? 'block' : 'none';
-              toggle.innerText = isHidden ? '▼ Hide Advanced Options' : '► Paste Custom Developer Tokens';
-            });
-
-            // Listen for replies from parent
-            window.addEventListener('message', (event) => {
-              if (event.data?.type === 'HARVEST_AUTH_SUCCESS') {
-                document.getElementById('loader-container').style.display = 'none';
-                document.getElementById('success-container').style.display = 'block';
-                setTimeout(() => window.close(), 1200);
-              } else if (event.data?.type === 'HARVEST_AUTH_FAILURE') {
-                document.getElementById('error-msg').innerText = event.data.error || 'Verification failed.';
-                document.getElementById('error-container').style.display = 'block';
-                document.getElementById('btn-container').style.display = 'block';
-                document.getElementById('loader-container').style.display = 'none';
-              }
-            });
-
-            function showLoader(message) {
-              document.getElementById('error-container').style.display = 'none';
-              document.getElementById('btn-container').style.display = 'none';
-              document.getElementById('loader-container').style.display = 'block';
-              document.getElementById('loader-text').innerText = message;
-            }
-
-            // Connect using Server Settings (Live OAuth Redirect)
-            document.getElementById('btn-live').addEventListener('click', () => {
-              showLoader('Redirecting to Google/Meta authentication services...');
-              window.location.href = 'http://localhost:8000/api/v1/users/auth/${platform}/login?user_id=1';
-            });
-
-            // Connect in Sandbox Mode
-            document.getElementById('btn-sandbox').addEventListener('click', () => {
-              showLoader('Connecting simulated sandbox account...');
-              window.opener.postMessage({
-                type: 'HARVEST_AUTH_REQUEST',
-                platform: '${platform}',
-                credentials: { is_sandbox: true }
-              }, '*');
-            });
-
-            // Connect using Custom Credentials
-            document.getElementById('btn-auth').addEventListener('click', () => {
-              const credentials = {};
-              
-              if ('${platform}' === 'youtube') {
-                const token = document.getElementById('youtube_access_token')?.value?.trim();
-                if (token) credentials.youtube_access_token = token;
-              } else if ('${platform}' === 'facebook') {
-                const token = document.getElementById('facebook_access_token')?.value?.trim();
-                const pageId = document.getElementById('facebook_page_id')?.value?.trim();
-                if (token) credentials.facebook_access_token = token;
-                if (pageId) credentials.facebook_page_id = pageId;
-              } else if ('${platform}' === 'instagram') {
-                const token = document.getElementById('instagram_access_token')?.value?.trim();
-                const bizId = document.getElementById('instagram_business_id')?.value?.trim();
-                const videoUrl = document.getElementById('public_video_url')?.value?.trim();
-                if (token) credentials.instagram_access_token = token;
-                if (bizId) credentials.instagram_business_id = bizId;
-                if (videoUrl) credentials.public_video_url = videoUrl;
-              }
-
-              showLoader('Verifying custom credentials with Google/Meta APIs...');
-              window.opener.postMessage({
-                type: 'HARVEST_AUTH_REQUEST',
-                platform: '${platform}',
-                credentials: credentials
-              }, '*');
-            });
-          </script>
-        </body>
-      </html>
-    `);
-
     // Listen for connection success/fail requests from popup
     const handleAuthMessage = async (event) => {
-      // 1. Handshake request from popup (Sandbox / Custom keys validation)
-      if (event.data?.type === 'HARVEST_AUTH_REQUEST' && event.data?.platform === platform) {
-        const connectionData = {
-          platform: platform,
-          credentials: event.data.credentials || {}
-        };
+      // Direct authentication success from backend redirect OAuth callback
+      if (event.data?.type === 'HARVEST_AUTH_SUCCESS' && event.data?.platform === platform) {
         try {
-          const savedConn = await api.saveUserConnection(1, connectionData);
-          setConnections((prev) => ({
-            ...prev,
-            [platform]: {
-              name: savedConn.account_name,
-              handle: savedConn.account_handle,
-              avatar: savedConn.account_avatar,
-              credentials: savedConn.credentials || {}
-            }
-          }));
-          setSelectedPlatforms((prev) => ({ ...prev, [platform]: true }));
-          popup.postMessage({ type: 'HARVEST_AUTH_SUCCESS' }, '*');
-          window.removeEventListener('message', handleAuthMessage);
-        } catch (e) {
-          console.error("Failed to save connection to DB:", e);
-          const errorMsg = e.response?.data?.detail || e.message || "Failed to verify connection.";
-          popup.postMessage({ type: 'HARVEST_AUTH_FAILURE', error: errorMsg }, '*');
-        }
-      }
-      // 2. Direct authentication success from backend redirect OAuth callback
-      else if (event.data?.type === 'HARVEST_AUTH_SUCCESS' && event.data?.platform === platform) {
-        try {
+          clearInterval(pollInterval);
           // Load updated connections from backend DB
           const data = await api.getUserConnections(1);
           const loaded = { youtube: null, facebook: null, instagram: null };
@@ -463,11 +114,49 @@ export default function SocialPublishingPanel({ clip, onClose }) {
           console.error("Failed to sync connection after live login:", e);
         }
         window.removeEventListener('message', handleAuthMessage);
+      } else if (event.data?.type === 'HARVEST_AUTH_FAILURE') {
+        clearInterval(pollInterval);
+        alert(`Authentication failed: ${event.data.error}`);
+        window.removeEventListener('message', handleAuthMessage);
       }
     };
 
     window.addEventListener('message', handleAuthMessage);
+
+    // Start polling the backend DB for connection changes as a fallback/robust mechanism
+    const pollInterval = setInterval(async () => {
+      if (popup.closed) {
+        clearInterval(pollInterval);
+        return;
+      }
+      try {
+        const data = await api.getUserConnections(1);
+        const found = data.find((conn) => conn.platform === platform);
+        if (found) {
+          clearInterval(pollInterval);
+          setConnections((prev) => ({
+            ...prev,
+            [platform]: {
+              name: found.account_name,
+              handle: found.account_handle,
+              avatar: found.account_avatar,
+              credentials: found.credentials || {},
+            }
+          }));
+          setSelectedPlatforms((prev) => ({ ...prev, [platform]: true }));
+          try {
+            popup.close();
+          } catch (e) {
+            console.error("Failed to close popup:", e);
+          }
+          window.removeEventListener('message', handleAuthMessage);
+        }
+      } catch (e) {
+        console.error("Failed to poll connection status:", e);
+      }
+    }, 2000);
   };
+
 
   const handleDisconnect = async (platform) => {
     try {
@@ -528,49 +217,84 @@ export default function SocialPublishingPanel({ clip, onClose }) {
       const res = await api.publishClip(clip.id, activePlatforms, title, description, privacy, platformConfigs);
       const taskId = res.task_id;
 
-      // Start simulated step-by-step progress tracking for standard local flow
-      let currentStep = 0;
-      const progressSteps = [
-        { stage: 'uploading', label: 'Transmitting video stream chunks (CRF 18)...' },
-        { stage: 'metadata', label: 'Applying subtitle tracks and video SEO tags...' },
-        { stage: 'indexing', label: 'Meta/Google API indexing process...' },
-        { stage: 'success', label: 'Video published successfully!' },
-      ];
+      // Start real polling loop to track the backend publish state
+      let attempt = 0;
+      const maxAttempts = 100; // Poll up to 5 minutes
+      
+      // Update progress state to uploading
+      setPublishProgress(activePlatforms.map(p => ({
+        platform: p,
+        stage: 'uploading',
+        label: 'Uploading and processing video on platform servers...',
+        status: 'running'
+      })));
 
-      const interval = setInterval(() => {
-        setPublishProgress((prev) => {
-          const next = [...prev];
-          let allDone = true;
+      const interval = setInterval(async () => {
+        try {
+          const clipData = await api.getClip(clip.id);
+          const urls = clipData.published_urls || {};
+          
+          attempt++;
+          if (attempt >= maxAttempts) {
+            clearInterval(interval);
+            alert("Publishing timed out on the backend server.");
+            setIsPublishing(false);
+            return;
+          }
 
-          next.forEach((item) => {
-            if (currentStep < progressSteps.length) {
-              item.stage = progressSteps[currentStep].stage;
-              item.label = progressSteps[currentStep].label;
-              item.status = currentStep === progressSteps.length - 1 ? 'completed' : 'running';
-              allDone = false;
-            } else {
-              item.status = 'completed';
-            }
+          // Check if all selected platforms have finished publishing (either succeeded or failed)
+          const allDone = activePlatforms.every(p => !!urls[p]);
+
+          setPublishProgress((prev) => {
+            return prev.map(item => {
+              const platformUrl = urls[item.platform];
+              if (platformUrl) {
+                if (platformUrl.startsWith('error:')) {
+                  return {
+                    ...item,
+                    stage: 'failed',
+                    label: `Publishing failed: ${platformUrl.substring(6)}`,
+                    status: 'failed'
+                  };
+                }
+                return {
+                  ...item,
+                  stage: 'success',
+                  label: 'Video successfully published!',
+                  status: 'completed'
+                };
+              }
+              // Still running
+              return {
+                ...item,
+                stage: 'indexing',
+                label: `Processing on ${getPlatformLabel(item.platform)} API servers...`,
+                status: 'running'
+              };
+            });
           });
 
           if (allDone) {
             clearInterval(interval);
             setIsPublishing(false);
-            setPublishSuccess(true);
-            
-            // Build mock share URLs
-            const mockUrls = {};
-            if (selectedPlatforms.youtube) mockUrls.youtube = 'https://youtube.com/shorts/mock_shorts_id';
-            if (selectedPlatforms.instagram) mockUrls.instagram = 'https://instagram.com/reel/mock_reel_id';
-            if (selectedPlatforms.facebook) mockUrls.facebook = 'https://facebook.com/reel/mock_reel_id';
-            setShareUrls(mockUrls);
+            const hasSuccess = Object.values(urls).some(url => url && !url.startsWith('error:'));
+            if (hasSuccess) {
+              setPublishSuccess(true);
+              const successUrls = {};
+              Object.keys(urls).forEach(p => {
+                if (urls[p] && !urls[p].startsWith('error:')) {
+                  successUrls[p] = urls[p];
+                }
+              });
+              setShareUrls(successUrls);
+            } else {
+              alert("All social publishing requests failed. Please check the connection credentials and try again.");
+            }
           }
-
-          return next;
-        });
-
-        currentStep++;
-      }, 2000);
+        } catch (err) {
+          console.error("Error polling publishing task:", err);
+        }
+      }, 3000);
 
     } catch (e) {
       console.error(e);
@@ -607,7 +331,7 @@ export default function SocialPublishingPanel({ clip, onClose }) {
 
   return (
     <div className="glass-panel" style={{ background: '#12121a', border: '1px solid rgba(255, 255, 255, 0.1)', padding: '2rem', display: 'flex', flexDirection: 'column', gap: '1.5rem', width: '100%', position: 'relative' }}>
-      
+
       {onClose && (
         <button
           onClick={onClose}
@@ -634,7 +358,7 @@ export default function SocialPublishingPanel({ clip, onClose }) {
               1. Choose Platforms
             </h4>
 
-            {['instagram', 'facebook'].map((plat) => {
+            {['youtube', 'facebook', 'instagram'].map((plat) => {
               const connected = connections[plat];
               const isSelected = selectedPlatforms[plat];
 
@@ -674,7 +398,7 @@ export default function SocialPublishingPanel({ clip, onClose }) {
 
                   {connected ? (
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                      {isSelected && <span style={{ color: '#8b5cf6', fontSize: '1.2rem' }}>✓</span>}
+                      {isSelected && <span style={{ color: '#8b5cf6', fontSize: '1.2rem' }}>OK</span>}
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
@@ -779,9 +503,9 @@ export default function SocialPublishingPanel({ clip, onClose }) {
                     outline: 'none',
                   }}
                 >
-                  <option value="public">🌐 Public (Immediate release)</option>
-                  <option value="unlisted">🔗 Unlisted (Link access only)</option>
-                  <option value="private">🔒 Private (Only you can view)</option>
+                  <option value="public">Public (Immediate release)</option>
+                  <option value="unlisted">Unlisted (Link access only)</option>
+                  <option value="private">Private (Only you can view)</option>
                 </select>
               </div>
             )}
@@ -797,7 +521,7 @@ export default function SocialPublishingPanel({ clip, onClose }) {
                 marginTop: '0.5rem',
               }}
             >
-              🚀 Publish Selected Platforms
+              Publish Selected Platforms
             </button>
           </div>
         </div>
@@ -807,7 +531,7 @@ export default function SocialPublishingPanel({ clip, onClose }) {
           <motion.div
             animate={{ rotate: 360 }}
             transition={{ repeat: Infinity, duration: 2, ease: 'linear' }}
-            style={{ width: 48, height: 48, borderRadius: '50%', border: '3px solid rgba(139,92,246,0.2)', borderTopColor: '#8b5cf6', display: 'flex', alignItems: 'center', justify: 'center' }}
+            style={{ width: 48, height: 48, borderRadius: '50%', border: '3px solid rgba(139,92,246,0.2)', borderTopColor: '#8b5cf6', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
           />
           <div>
             <h4 style={{ margin: 0, fontSize: '1.2rem', color: '#fff' }}>Publishing in Progress</h4>
@@ -818,14 +542,16 @@ export default function SocialPublishingPanel({ clip, onClose }) {
 
           <div style={{ width: '100%', maxWidth: 450, background: 'rgba(0,0,0,0.3)', padding: '1.2rem', borderRadius: 12, border: '1px solid rgba(255,255,255,0.05)', display: 'flex', flexDirection: 'column', gap: '0.8rem', textAlign: 'left' }}>
             {publishProgress.map((item, idx) => (
-              <div key={idx} style={{ display: 'flex', alignItems: 'center', justify: 'space-between', fontSize: '0.85rem' }}>
+              <div key={idx} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '0.85rem' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                   {getPlatformIcon(item.platform, 16)}
                   <span style={{ fontWeight: 600 }}>{getPlatformLabel(item.platform)}:</span>
                   <span style={{ color: '#cbd5e1' }}>{item.label}</span>
                 </div>
                 {item.status === 'completed' ? (
-                  <span style={{ color: '#10b981', fontWeight: 600 }}>✓ Done</span>
+                  <span style={{ color: '#10b981', fontWeight: 600 }}>Done</span>
+                ) : item.status === 'failed' ? (
+                  <span style={{ color: '#ef4444', fontWeight: 600 }}>Failed</span>
                 ) : (
                   <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 1.5, ease: 'linear' }}>
                     <Loader size={14} color="#8b5cf6" />
@@ -914,7 +640,7 @@ export default function SocialPublishingPanel({ clip, onClose }) {
 
       {/* Security note */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'center', borderTop: '1px solid rgba(255,255,255,0.04)', paddingTop: '1rem', fontSize: '0.75rem', color: '#475569' }}>
-        <ShieldCheck size={14} /> Encrypted API Handshake. Content authorized via verified developer sandbox.
+        <ShieldCheck size={14} /> Encrypted API Handshake. Content authorized via verified developer OAuth credentials.
       </div>
     </div>
   );

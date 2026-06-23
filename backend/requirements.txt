@@ -22,4 +22,7 @@ mediapipe==0.10.14
 deep-sort-realtime
 scipy
 faster-whisper
-opencv-python
+opencv-python-headless
+gTTS>=2.3.2
+google-cloud-speech>=2.21.0
+deep-translator>=1.11.4

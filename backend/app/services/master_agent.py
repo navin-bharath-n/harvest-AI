@@ -13,17 +13,18 @@ class MasterAIAgent:
         pass  # Heavy services are imported lazily inside generate_shorts()
 
     def generate_shorts(
-        self, 
-        video_path: str, 
-        length: float = 60.0, 
-        platform: str = "youtube", 
-        optional_prompt: str = "", 
-        progress_callback=None, 
+        self,
+        video_path: str,
+        length: float = 60.0,
+        platform: str = "youtube",
+        optional_prompt: str = "",
+        progress_callback=None,
         db_video=None,
         translate_language: str = "none",
         dub_voice: bool = False,
         caption_language: str = "translated",
-        dub_mix_mode: str = "replace"
+        dub_mix_mode: str = "replace",
+        speaker_gender: str = "female"
     ) -> List[str]:
         """
         End-to-end pipeline to generate 5 stylistic variations of the best highlight from a video.
@@ -68,7 +69,7 @@ class MasterAIAgent:
         # 3. Content Understanding to find highlight
         if progress_callback: progress_callback("analyzing")
         logger.info("Analyzing content for highlights...")
-        
+
         if (not full_transcript or len(full_transcript) < 5) and audio_path and os.path.exists(audio_path):
             logger.info("Transcription is empty or very short. Directly processing audio peaks to detect gameplay/action highlights.")
             try:
@@ -102,7 +103,7 @@ class MasterAIAgent:
             # Pick highest score
             best_highlight = max(scores, key=lambda x: x.get("score", 0))
             h_start = float(best_highlight.get("start", 0.0))
-            
+
             best_start = h_start
             if is_long_video:
                 h_end = float(best_highlight.get("end", h_start + 15.0))
@@ -164,7 +165,7 @@ class MasterAIAgent:
             # Determine parts
             MAX_PART_DURATION = 60.0
             total_duration = best_end - best_start
-            
+
             parts = []
             if total_duration > MAX_PART_DURATION and not is_long_video:
                 import math
@@ -183,10 +184,10 @@ class MasterAIAgent:
 
             for part_start, part_end, part_num, total_parts in parts:
                 logger.info(f"Rendering part {part_num}/{total_parts} ({part_start:.2f}s to {part_end:.2f}s)")
-                
+
                 part_suffix = f"_part_{part_num}" if total_parts > 1 else ""
                 variation_base = os.path.join(base_dir, f"variation_{idx}")
-                
+
                 clip_path = f"{variation_base}{part_suffix}_clip.mp4"
                 ass_path = f"{variation_base}{part_suffix}_subs.ass"
                 subbed_path = f"{variation_base}{part_suffix}_subbed.mp4"
@@ -197,27 +198,18 @@ class MasterAIAgent:
                 if not part_trajectory:
                     part_trajectory = [{"timestamp": part_start, "x": 0, "y": 0, "width": 1080, "height": 1920}]
 
-                # Filter and shift words for this part
-                part_words = [w for w in full_transcript if w["start"] >= part_start and w["end"] <= part_end]
-                shifted_words = []
-                for w in part_words:
-                    shifted_words.append({
-                        "start": w["start"] - part_start,
-                        "end": w["end"] - part_start,
-                        "text": w["text"]
-                    })
-
+                caption_extras = []
                 # If this is not the last part in a multi-part split, append transition subtitle
                 if part_num < total_parts:
                     ord_words = {2: "second", 3: "third", 4: "fourth", 5: "fifth", 6: "sixth", 7: "seventh", 8: "eighth", 9: "ninth", 10: "tenth"}
                     next_part_word = ord_words.get(part_num + 1, f"part {part_num + 1}")
                     text_msg = f"Previous one is to continue, moving to {next_part_word}"
-                    
+
                     part_dur = part_end - part_start
                     msg_start = max(0.0, part_dur - 3.0)
                     msg_end = part_dur
-                    
-                    shifted_words.append({
+
+                    caption_extras.append({
                         "start": msg_start,
                         "end": msg_end,
                         "text": text_msg
@@ -226,7 +218,7 @@ class MasterAIAgent:
                 # If this is a long video, prepend the theme title subtitle for the first 3 seconds
                 if is_long_video:
                     topic = analysis.get("topic", "General Highlight")
-                    shifted_words.insert(0, {
+                    caption_extras.append({
                         "start": 0.0,
                         "end": min(3.0, part_end - part_start),
                         "text": f"THEME: {topic.upper()}"
@@ -234,7 +226,7 @@ class MasterAIAgent:
 
                 # Determine subtitle options and translate
                 caption_preset = instructions.get("caption_style", "standard")
-                
+
                 # Filter and shift words for this part
                 part_words = [w for w in full_transcript if w["start"] >= part_start and w["end"] <= part_end]
                 shifted_words = []
@@ -245,12 +237,12 @@ class MasterAIAgent:
                         "text": w["text"]
                     })
                 orig_shifted_words = shifted_words.copy()
-                
+
                 # Resolve translation parameters
                 t_lang = instructions.get("translate_language", translate_language)
                 if t_lang == "none":
-                    t_lang = instructions.get("language", "en")
-                    
+                    t_lang = instructions.get("language", "none")
+
                 cap_lang_opt = instructions.get("caption_language", caption_language)
                 d_voice = instructions.get("dub_voice", dub_voice)
                 d_mix_mode = instructions.get("dub_mix_mode", dub_mix_mode)
@@ -283,6 +275,9 @@ class MasterAIAgent:
                         except Exception as te:
                             logger.warning(f"Subtitle translation failed: {te}")
 
+                if caption_extras and cap_lang_opt != "none":
+                    shifted_words = sorted([*caption_extras, *shifted_words], key=lambda item: item["start"])
+
                 # Dub voice if requested
                 dubbed_audio_path = None
                 if d_voice and t_lang != "none" and audio_path and os.path.exists(audio_path):
@@ -291,12 +286,13 @@ class MasterAIAgent:
                         dubbed_audio_path = f"{variation_base}{part_suffix}_dubbed.wav"
                         voice_service.dub_voice(
                             original_audio_path=audio_path,
-                            transcript_words=orig_shifted_words,
+                            transcript_words=part_words,
                             target_lang=t_lang,
                             start_time=part_start,
                             end_time=part_end,
                             output_path=dubbed_audio_path,
-                            mix_mode=d_mix_mode
+                            mix_mode=d_mix_mode,
+                            speaker_gender=speaker_gender
                         )
                         logger.info("Successfully generated dubbed audio track for master variation.")
                     except Exception as de:
@@ -369,7 +365,9 @@ class MasterAIAgent:
                     generated_files.append({
                         "path": final_path,
                         "title": title,
-                        "duration": part_end - part_start
+                        "duration": part_end - part_start,
+                        "start_time": part_start,
+                        "end_time": part_end
                     })
                     logger.info(f"Variation {idx} Part {part_num} saved to {final_path}")
 

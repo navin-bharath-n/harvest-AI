@@ -100,5 +100,6 @@ class Clip(Base):
     
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     edit_options = Column(JSON, nullable=True)
+    published_urls = Column(JSON, nullable=True)
     
     video = relationship("Video", back_populates="clips")

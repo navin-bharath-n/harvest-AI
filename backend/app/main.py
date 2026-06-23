@@ -79,9 +79,55 @@ def auto_migrate_database(engine):
     except Exception as e:
         logger.warning(f"Auto-database migration failed: {e}", exc_info=True)
 
+def seed_default_user_and_project(engine):
+    from sqlalchemy.orm import sessionmaker
+    from app.models.user import User
+    from app.models.project import Project
+    
+    Session = sessionmaker(bind=engine)
+    db = Session()
+    try:
+        # Check if default user exists
+        default_user = db.query(User).filter(User.id == 1).first()
+        if not default_user:
+            # Check if email is already taken (to avoid unique constraint violation if id is different)
+            email_user = db.query(User).filter(User.email == "user1@harvest.ai").first()
+            if email_user:
+                default_user = email_user
+            else:
+                logger.info("Seeding default user...")
+                default_user = User(
+                    id=1,
+                    email="user1@harvest.ai",
+                    full_name="Default User",
+                    hashed_password="fakehashedpassword", # not used since oauth/auth is removed
+                    is_active=True
+                )
+                db.add(default_user)
+                db.flush() # get the id if generated or assigned
+        
+        # Check if default project exists
+        default_project = db.query(Project).filter(Project.id == 1).first()
+        if not default_project:
+            logger.info("Seeding default project...")
+            default_project = Project(
+                id=1,
+                title="Default Project",
+                description="Auto-created default project",
+                owner_id=default_user.id
+            )
+            db.add(default_project)
+        db.commit()
+    except Exception as e:
+        logger.warning(f"Failed to seed default database records: {e}", exc_info=True)
+        db.rollback()
+    finally:
+        db.close()
+
 # Create database tables
 Base.metadata.create_all(bind=engine)
 auto_migrate_database(engine)
+seed_default_user_and_project(engine)
 
 # ---------------------------------------------------------------
 # Background processes managed by this server
@@ -98,6 +144,10 @@ def _is_ollama_running() -> bool:
 
 def _start_ollama():
     """Start the Ollama server if it is not already running."""
+    if settings.QWEN_API_KEY and settings.QWEN_API_KEY != "your_openrouter_api_key_here":
+        logger.info("QWEN_API_KEY is configured. Skipping local Ollama startup.")
+        return
+
     if _is_ollama_running():
         logger.info("Ollama is already running on port 11434.")
         return
@@ -217,8 +267,20 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:5173",
         "http://127.0.0.1:5173",
+        "https://localhost:5173",
+        "https://127.0.0.1:5173",
+        "http://localhost:5174",
+        "http://127.0.0.1:5174",
+        "https://localhost:5174",
+        "https://127.0.0.1:5174",
+        "http://localhost:5175",
+        "http://127.0.0.1:5175",
+        "https://localhost:5175",
+        "https://127.0.0.1:5175",
         "http://localhost:8000",
         "http://127.0.0.1:8000",
+        "https://localhost:8000",
+        "https://127.0.0.1:8000",
     ],
     allow_credentials=True,
     allow_methods=["*"],

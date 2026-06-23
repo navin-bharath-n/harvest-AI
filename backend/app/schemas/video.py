@@ -24,6 +24,7 @@ class MasterGenerateRequest(BaseModel):
     dub_voice: Optional[bool] = False
     caption_language: Optional[str] = "translated"
     dub_mix_mode: Optional[str] = "replace"
+    speaker_gender: Optional[str] = "female"
 
 class ClipPublishRequest(BaseModel):
     platforms: list[str]
@@ -49,6 +50,7 @@ class Clip(BaseModel):
     storage_path: Optional[str] = None
     created_at: Optional[datetime] = None
     edit_options: Optional[dict] = None
+    published_urls: Optional[dict] = None
     
     class Config:
         from_attributes = True
@@ -56,7 +58,7 @@ class Clip(BaseModel):
 class Video(VideoBase):
     id: int
     storage_path: str
-    status: VideoStatus
+    status: Optional[VideoStatus] = None
     
     # Metadata fields
     duration: Optional[float] = None
@@ -68,19 +70,19 @@ class Video(VideoBase):
     short_path: Optional[str] = None
     
     # Transcription fields
-    transcription_status: TranscriptionStatus
+    transcription_status: Optional[TranscriptionStatus] = None
     transcript: Optional[list] = None
     
     # Content Understanding fields
-    analysis_status: ContentAnalysisStatus
+    analysis_status: Optional[ContentAnalysisStatus] = None
     content_analysis: Optional[dict] = None
     
     # Highlight Detection fields
-    highlight_status: HighlightDetectionStatus
+    highlight_status: Optional[HighlightDetectionStatus] = None
     highlights: Optional[dict] = None
     
     # Smart Cropping fields
-    crop_status: CropStatus
+    crop_status: Optional[CropStatus] = None
     crop_metadata: Optional[dict] = None
 
     project_id: int

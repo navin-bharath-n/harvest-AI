@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-const API_BASE_URL = 'http://localhost:8000/api/v1';
+const API_BASE_URL = 'https://localhost:8000/api/v1';
 
 const client = axios.create({
   baseURL: API_BASE_URL,
@@ -81,6 +81,12 @@ export const api = {
   // Get social connections for a user
   getUserConnections: async (userId = 1) => {
     const response = await client.get(`/users/${userId}/connections`);
+    return response.data;
+  },
+
+  // Get details of a single clip
+  getClip: async (clipId) => {
+    const response = await client.get(`/videos/clips/${clipId}`);
     return response.data;
   },
 

@@ -38,10 +38,10 @@ graph TD
 
 ## 3. Detailed Model Workflows
 
-### 3.1 Audio Transcription Pipeline (Faster-Whisper)
-* **Purpose**: Transcribe speech from video files with word-level timestamps.
-* **Mechanism**: Extracts the audio stream into a temporary wave file, processes it using `faster-whisper-base`, and outputs precise start/end timings for every spoken word.
-* **Value**: Enables sync-accurate subtitle overlay and feeds text content to the LLM for highlight selection.
+### 3.1 Audio Transcription, Subtitle Translation & Timing Alignment
+* **Whisper Transcription**: Extracts the audio stream into a temporary wave file and transcribes it using `faster-whisper-base` to output precise word-level start/end timestamps.
+* **Multilingual Subtitle Translation**: Integrates `deep-translator` (Google Translate) for standard translations, and uses local/API-based Qwen models for colloquial Tamil and Latinized Tanglish optimizations (e.g., short, punchy, chat-style words like "வீடியோ", "work aagudhu" suitable for fast vertical reading).
+* **Word Timing Distribution**: Re-groups the original word-level timestamps into sentence lines, translates the entire sentence, and distributes the word timing proportionally across the translated word list, avoiding translation drift.
 
 ### 3.2 Target Subject Tracking & Active Speaker Focusing
 Rather than standard center-cropping, Harvest AI implements an advanced three-tier vision pipeline:
@@ -50,11 +50,17 @@ Rather than standard center-cropping, Harvest AI implements an advanced three-ti
 3. **MediaPipe FaceMesh**: Tracks facial landmarks and calculates the **Mouth Aspect Ratio (MAR)**.
 4. **Active Speaker Identification**: Computes the variance of the lip movements over time. The character tracking ID displaying the highest MAR variance is targeted as the active speaker, and the video's crop frame automatically pans to frame them.
 
-### 3.3 LLM-Powered Viral Clip Curation (Qwen 2.5 via Ollama)
-* **Purpose**: Automate highlight curation and match audio-visual editing prompts.
-* **Highlight Detection**: Analyzes the timestamped speech transcript to score segments based on hook strength, pacing, and completeness, returning logical 30–60 second clip cuts.
-* **Editing Suggestions**: Interprets natural language prompts (e.g., *"Make it hype and gold"*) into subtitle sizing, colors, transition styles, and zoom frequencies.
-* **Music Matching**: Matches the emotional tone of the video to background audio presets (Lofi, Cinematic, Upbeat, etc.) with custom volume mixing.
+### 3.3 LLM-Powered Highlight Selection & Gameplay Fallback
+* **Viral Highlight Selection**: Qwen 2.5 (via Ollama or OpenRouter) analyzes the transcript to score segments based on hook strength, pacing, and completeness, outputting optimal 15–60 second clip cuts.
+* **Gameplay Fallback**: If the transcription is empty or very short, the `audio_analyzer` service extracts wave amplitude peaks directly from the audio file to locate action-heavy zones (e.g. gameplay clips or loud sound effects).
+* **Music Matching & Ducking**: Mixes a background audio track (Lofi, Cinematic, Upbeat, etc.) into the final clip. If speech is detected, it automatically ducks the background music volume.
+
+### 3.4 Dynamic Voice Dubbing & Pacing Alignment
+Harvest AI supports dynamic translation-dubbing workflows:
+1. **Voice Synthesis**: Uses Google Cloud Text-to-Speech (Wavenet/Neural) or pitch-shifted local `gTTS` fallbacks to clone speech in the target language.
+2. **Pitch Shifting**: Applies custom FFmpeg filter chains to modify audio pitch based on target speaker profiles (`male` uses `asetrate=22050*0.82,atempo=1.22`, `female` uses `asetrate=22050*1.12,atempo=0.89`).
+3. **Pacing Match**: Speeds up or stretches synthesized segments using FFmpeg's `atempo` to precisely fit the original speech durations.
+4. **Audio Mixing**: Compiles dub segments on a silent timeline and mixes with the video under three modes: `keep` (original audio only), `replace` (dubbed audio only), or `mix` (blend original at 0.3 ducked volume with dubbed voice).
 
 ---
 
@@ -104,14 +110,20 @@ When a user publishes a clip, the system resolves credentials in the following h
 3. **Environment Settings**: Falls back to the global developer application developer credentials defined in the site-owner's `.env` configuration file.
 4. **Mock Simulator**: Executes a high-fidelity visual upload simulation for testing environments if no tokens are found.
 
+### 4.3 Resumable Publishing APIs
+1. **YouTube Shorts API**: Executes a resumable upload starting with metadata registration (title, description, status) and maps a custom content stream upload chunk to the resulting Google endpoint. Automatically restricts title properties to a maximum length of 100 characters.
+2. **Facebook Reels (Graph API)**: Initializes a session via the Meta Graph API (`video_reels` endpoint), uploads raw binary chunks, and finishes the session to publish the reel with custom descriptions.
+3. **Instagram Reels (Graph API)**: Creates a media container by referencing a public MP4 URL (`PUBLIC_VIDEO_URL`), polls Meta's servers for the `FINISHED` container render status (up to 15 attempts with 3s intervals), and triggers publishing.
+
 ---
 
 ## 5. Technology Stack Summary
 
-* **Frontend**: React (Vite, Tailwind CSS, Framer Motion for premium 3D landing transitions and Obsidion Dark layouts).
+* **Frontend**: React (Vite, Tailwind CSS, Framer Motion for premium 3D landing transitions and Obsidian Dark layouts).
 * **Backend API**: FastAPI (Python 3.10+, SQLite database with SQLAlchemy).
 * **Task Queue**: Celery (Redis as broker and result storage).
 * **Vision Models**: YOLOv11 (Ultralytics), DeepSort, MediaPipe.
-* **Audio Models**: Faster-Whisper.
+* **Audio & Voice Models**: Faster-Whisper, Google Cloud Text-to-Speech (Neural/Wavenet), gTTS.
+* **Translation**: Google Translate (`deep-translator` API), Qwen 2.5 translation prompts.
 * **LLM Integration**: Ollama (Qwen 2.5 local model) / OpenRouter API fallback.
-* **Rendering Engine**: FFmpeg / MoviePy (handling subtitle draws, margins, overlays, and transition animations).
+* **Rendering Engine**: FFmpeg / MoviePy (handling subtitle draws, margins, overlays, pacing filters, and transition animations).
