@@ -188,9 +188,9 @@ const bentoFeatures = [
   {
     icon: Globe,
     iconBg: '#fef3c7', iconColor: '#b45309',
-    title: '38 Languages',
+    title: 'Languages',
     desc: 'Faster-Whisper transcribes, then translates & burns word-level captions in any language.',
-    tag: '38 locales', tagBg: '#fef3c7', tagColor: '#b45309',
+    tag: 'locales', tagBg: '#fef3c7', tagColor: '#b45309',
     size: 'mid',
   },
   {
@@ -388,7 +388,7 @@ export default function LandingPage() {
             style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0,1fr))', gap: '0.7rem' }}
           >
             {[
-              { icon: Languages, label: 'Multilingual translation', value: '38 Languages' },
+              { icon: Languages, label: 'Multilingual translation', value: 'Languages' },
               { icon: Captions, label: 'Caption burn-in', value: 'Word-level sync' },
               { icon: Cpu, label: 'AI highlight engine', value: 'Smart 9:16 crop' },
             ].map(({ icon: Icon, label, value }) => (
