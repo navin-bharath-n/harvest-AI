@@ -78,7 +78,7 @@ export default function SocialPublishingPanel({ clip, onClose }) {
     const left = window.screen.width / 2 - w / 2;
     const top = window.screen.height / 2 - h / 2;
 
-    const loginUrl = `https://localhost:8000/api/v1/users/auth/${platform}/login?user_id=1`;
+    const loginUrl = `http://localhost:8000/api/v1/users/auth/${platform}/login?user_id=1`;
 
     const popup = window.open(
       loginUrl,
