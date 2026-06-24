@@ -37,10 +37,10 @@ echo [OK] Redis is running.
 REM ── Launch FastAPI + auto-Celery in Terminal 1 ──────────
 echo.
 echo [1/2] Starting FastAPI backend  (Celery launches automatically inside it)
-echo       URL: http://localhost:8000
-echo       API: http://localhost:8000/api/v1
+echo       URL: https://localhost:8000
+echo       API: https://localhost:8000/api/v1
 echo.
-start "HarvestAI - Backend" cmd /k "cd /d "%BACKEND_DIR%" && "%VENV_PYTHON%" -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000"
+start "HarvestAI - Backend" cmd /k "cd /d "%BACKEND_DIR%" && "%VENV_PYTHON%" -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000 --ssl-keyfile key.pem --ssl-certfile cert.pem"
 
 REM Give the backend a moment to boot
 timeout /t 3 /nobreak >nul
@@ -56,9 +56,9 @@ echo  ==========================================
 echo   All services launched in separate windows
 echo  ==========================================
 echo.
-echo   Backend   : http://localhost:8000
+echo   Backend   : https://localhost:8000
 echo   Frontend  : http://localhost:5173
-echo   API Docs  : http://localhost:8000/docs
+echo   API Docs  : https://localhost:8000/docs
 echo   Celery Log: %BACKEND_DIR%\celery_worker.log
 echo.
 echo  Close this window or press any key to exit launcher.

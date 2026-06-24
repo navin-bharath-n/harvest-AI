@@ -237,6 +237,36 @@ def platform_callback(
     from app.core.config import settings
     
     try:
+        def save_connection(plat: str, conn_details: dict):
+            db_conn = db.query(models.SocialConnection).filter(
+                models.SocialConnection.user_id == user_id,
+                models.SocialConnection.platform == plat
+            ).first()
+
+            new_credentials = conn_details["credentials"] or {}
+            if db_conn:
+                existing_credentials = db_conn.credentials or {}
+                if plat == "youtube" and not new_credentials.get("youtube_refresh_token") and existing_credentials.get("youtube_refresh_token"):
+                    new_credentials["youtube_refresh_token"] = existing_credentials["youtube_refresh_token"]
+                
+                db_conn.account_name = conn_details["account_name"]
+                db_conn.account_handle = conn_details["account_handle"]
+                db_conn.account_avatar = conn_details["account_avatar"]
+                db_conn.credentials = new_credentials
+                from sqlalchemy.orm.attributes import flag_modified
+                flag_modified(db_conn, "credentials")
+            else:
+                db_conn = models.SocialConnection(
+                    user_id=user_id,
+                    platform=plat,
+                    account_name=conn_details["account_name"],
+                    account_handle=conn_details["account_handle"],
+                    account_avatar=conn_details["account_avatar"],
+                    credentials=new_credentials
+                )
+                db.add(db_conn)
+            db.commit()
+
         if platform == "youtube":
             token_url = "https://oauth2.googleapis.com/token"
             data = {
@@ -257,6 +287,7 @@ def platform_callback(
                 "youtube_access_token": access_token,
                 "youtube_refresh_token": refresh_token
             })
+            save_connection("youtube", details)
             
         elif platform in ("facebook", "instagram"):
             redirect_uri = settings.META_REDIRECT_URI if platform == "facebook" else settings.INSTAGRAM_REDIRECT_URI
@@ -273,111 +304,89 @@ def platform_callback(
             access_token = tokens.get("access_token")
             
             from app.services.social_publish_service import SocialPublishService
-            if platform == "facebook":
-                pages_url = "https://graph.facebook.com/v20.0/me/accounts"
-                p_res = requests.get(pages_url, params={"access_token": access_token}, timeout=15)
-                p_res.raise_for_status()
-                pages_data = p_res.json().get("data", [])
-                if not pages_data:
-                    raise ValueError("No Facebook Pages linked to this Meta account.")
-                page_token = pages_data[0]["access_token"]
-                page_id = pages_data[0]["id"]
+            
+            # Query pages with fields access_token,instagram_business_account,name
+            pages_url = "https://graph.facebook.com/v20.0/me/accounts"
+            p_res = requests.get(
+                pages_url, 
+                params={
+                    "fields": "access_token,instagram_business_account,name",
+                    "access_token": access_token
+                }, 
+                timeout=15
+            )
+            p_res.raise_for_status()
+            pages_data = p_res.json().get("data", [])
+            if not pages_data:
+                raise ValueError("No Facebook Pages linked to this Meta account.")
                 
-                details = SocialPublishService.verify_connection("facebook", {
-                    "facebook_access_token": page_token,
-                    "facebook_page_id": page_id
+            facebook_details = None
+            instagram_details = None
+            
+            # Resolve Facebook Details using the first page
+            default_page = pages_data[0]
+            fb_token = default_page.get("access_token")
+            fb_id = default_page.get("id")
+            if fb_token and fb_id:
+                facebook_details = SocialPublishService.verify_connection("facebook", {
+                    "facebook_access_token": fb_token,
+                    "facebook_page_id": fb_id
                 })
-            else:
-                # For Instagram, we must find the Page linked to Instagram and use its Page Access Token
-                pages_url = "https://graph.facebook.com/v20.0/me/accounts"
-                p_res = requests.get(
-                    pages_url, 
-                    params={
-                        "fields": "access_token,instagram_business_account,name",
-                        "access_token": access_token
-                    }, 
-                    timeout=15
-                )
-                p_res.raise_for_status()
-                pages_data = p_res.json().get("data", [])
                 
-                target_page_token = None
-                ig_biz_id = None
+            # Resolve Instagram Details
+            ig_biz_id = None
+            target_page_token = None
+            
+            for p in pages_data:
+                # Method 1: Check inline instagram_business_account field
+                ig_acct = p.get("instagram_business_account")
+                if ig_acct:
+                    ig_biz_id = ig_acct["id"]
+                    target_page_token = p.get("access_token")
+                    break
                 
-                for p in pages_data:
-                    # Method 1: Check inline instagram_business_account field
-                    ig_acct = p.get("instagram_business_account")
-                    if ig_acct:
-                        ig_biz_id = ig_acct["id"]
-                        target_page_token = p.get("access_token")
-                        break
-                    
-                    # Method 2: Fallback query specific /{page_id}/instagram_accounts endpoint
-                    page_id = p.get("id")
-                    page_token = p.get("access_token")
-                    if page_id and page_token:
-                        logger.info(f"Page '{p.get('name')}' did not return inline IG account. Querying /{page_id}/instagram_accounts fallback...")
-                        try:
-                            ig_url = f"https://graph.facebook.com/v20.0/{page_id}/instagram_accounts"
-                            ig_res = requests.get(
-                                ig_url, 
-                                params={
-                                    "fields": "id,username,name",
-                                    "access_token": page_token
-                                }, 
-                                timeout=10
-                            )
-                            if ig_res.status_code == 200:
-                                ig_data = ig_res.json().get("data", [])
-                                if ig_data:
-                                    ig_biz_id = ig_data[0]["id"]
-                                    target_page_token = page_token
-                                    logger.info(f"Successfully resolved Instagram Business Account ID '{ig_biz_id}' via page fallback.")
-                                    break
-                        except Exception as ex:
-                            logger.warning(f"Failed to query instagram_accounts endpoint for page {page_id}: {ex}")
+                # Method 2: Fallback query specific /{page_id}/instagram_accounts endpoint
+                page_id = p.get("id")
+                page_token = p.get("access_token")
+                if page_id and page_token:
+                    logger.info(f"Page '{p.get('name')}' did not return inline IG account. Querying /{page_id}/instagram_accounts fallback...")
+                    try:
+                        ig_url = f"https://graph.facebook.com/v20.0/{page_id}/instagram_accounts"
+                        ig_res = requests.get(
+                            ig_url, 
+                            params={
+                                "fields": "id,username,name",
+                                "access_token": page_token
+                            }, 
+                            timeout=10
+                        )
+                        if ig_res.status_code == 200:
+                            ig_data = ig_res.json().get("data", [])
+                            if ig_data:
+                                ig_biz_id = ig_data[0]["id"]
+                                target_page_token = page_token
+                                logger.info(f"Successfully resolved Instagram Business Account ID '{ig_biz_id}' via page fallback.")
+                                break
+                    except Exception as ex:
+                        logger.warning(f"Failed to query instagram_accounts endpoint for page {page_id}: {ex}")
                         
-                if not ig_biz_id or not target_page_token:
-                    raise ValueError(
-                        "Could not find any Facebook Page linked to an Instagram Business account. "
-                        "Please ensure your Instagram account is linked to your Facebook Page in Page settings."
-                    )
-                    
-                details = SocialPublishService.verify_connection("instagram", {
+            if ig_biz_id and target_page_token:
+                instagram_details = SocialPublishService.verify_connection("instagram", {
                     "instagram_access_token": target_page_token,
                     "instagram_business_id": ig_biz_id
                 })
-
-        # Save Live Connection to DB
-        db_conn = db.query(models.SocialConnection).filter(
-            models.SocialConnection.user_id == user_id,
-            models.SocialConnection.platform == platform
-        ).first()
-
-        new_credentials = details["credentials"] or {}
-        if db_conn:
-            # Preserve refresh token if the new exchange didn't return one
-            existing_credentials = db_conn.credentials or {}
-            if platform == "youtube" and not new_credentials.get("youtube_refresh_token") and existing_credentials.get("youtube_refresh_token"):
-                new_credentials["youtube_refresh_token"] = existing_credentials["youtube_refresh_token"]
             
-            db_conn.account_name = details["account_name"]
-            db_conn.account_handle = details["account_handle"]
-            db_conn.account_avatar = details["account_avatar"]
-            db_conn.credentials = new_credentials
-            from sqlalchemy.orm.attributes import flag_modified
-            flag_modified(db_conn, "credentials")
-        else:
-            db_conn = models.SocialConnection(
-                user_id=user_id,
-                platform=platform,
-                account_name=details["account_name"],
-                account_handle=details["account_handle"],
-                account_avatar=details["account_avatar"],
-                credentials=new_credentials
-            )
-            db.add(db_conn)
-        db.commit()
+            if platform == "instagram" and not instagram_details:
+                raise ValueError(
+                    "Could not find any Facebook Page linked to an Instagram Business account. "
+                    "Please ensure your Instagram account is linked to your Facebook Page in Page settings."
+                )
+                
+            # Save connections that we resolved
+            if facebook_details:
+                save_connection("facebook", facebook_details)
+            if instagram_details:
+                save_connection("instagram", instagram_details)
 
     except Exception as e:
         error_msg = str(e).replace("'", "\\'")

@@ -5,13 +5,13 @@ import { api } from '../api/client';
 
 const Youtube = ({ size = 20, ...props }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" {...props}>
-    <path d="M23.498 6.163a3.003 3.003 0 0 0-2.11-2.107C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.388.511a3.003 3.003 0 0 0-2.11 2.107C0 8.051 0 12 0 12s0 3.949.502 5.837a3.003 3.003 0 0 0 2.11 2.107c1.883.511 9.388.511 9.388.511s7.505 0 9.388-.511a3.003 3.003 0 0 0 2.11-2.107c.502-1.888.502-5.837.502-5.837s0-3.949-.502-5.837zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/>
+    <path d="M23.498 6.163a3.003 3.003 0 0 0-2.11-2.107C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.388.511a3.003 3.003 0 0 0-2.11 2.107C0 8.051 0 12 0 12s0 3.949.502 5.837a3.003 3.003 0 0 0 2.11 2.107c1.883.511 9.388.511 9.388.511s7.505 0 9.388-.511a3.003 3.003 0 0 0 2.11-2.107c.502-1.888.502-5.837.502-5.837s0-3.949-.502-5.837zM9.545 15.568V8.432L15.818 12l-6.273 3.568z" />
   </svg>
 );
 
 const Facebook = ({ size = 20, ...props }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" {...props}>
-    <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/>
+    <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z" />
   </svg>
 );
 
@@ -78,7 +78,7 @@ export default function SocialPublishingPanel({ clip, onClose }) {
     const left = window.screen.width / 2 - w / 2;
     const top = window.screen.height / 2 - h / 2;
 
-    const loginUrl = `http://localhost:8000/api/v1/users/auth/${platform}/login?user_id=1`;
+    const loginUrl = `https://localhost:8000/api/v1/users/auth/${platform}/login?user_id=1`;
 
     const popup = window.open(
       loginUrl,
@@ -100,6 +100,7 @@ export default function SocialPublishingPanel({ clip, onClose }) {
           // Load updated connections from backend DB
           const data = await api.getUserConnections(1);
           const loaded = { youtube: null, facebook: null, instagram: null };
+          const newSelect = { youtube: false, facebook: false, instagram: false };
           data.forEach((conn) => {
             loaded[conn.platform] = {
               name: conn.account_name,
@@ -107,9 +108,10 @@ export default function SocialPublishingPanel({ clip, onClose }) {
               avatar: conn.account_avatar,
               credentials: conn.credentials || {},
             };
+            newSelect[conn.platform] = true;
           });
           setConnections(loaded);
-          setSelectedPlatforms((prev) => ({ ...prev, [platform]: true }));
+          setSelectedPlatforms(newSelect);
         } catch (e) {
           console.error("Failed to sync connection after live login:", e);
         }
@@ -134,16 +136,19 @@ export default function SocialPublishingPanel({ clip, onClose }) {
         const found = data.find((conn) => conn.platform === platform);
         if (found) {
           clearInterval(pollInterval);
-          setConnections((prev) => ({
-            ...prev,
-            [platform]: {
-              name: found.account_name,
-              handle: found.account_handle,
-              avatar: found.account_avatar,
-              credentials: found.credentials || {},
-            }
-          }));
-          setSelectedPlatforms((prev) => ({ ...prev, [platform]: true }));
+          const loaded = { youtube: null, facebook: null, instagram: null };
+          const newSelect = { youtube: false, facebook: false, instagram: false };
+          data.forEach((conn) => {
+            loaded[conn.platform] = {
+              name: conn.account_name,
+              handle: conn.account_handle,
+              avatar: conn.account_avatar,
+              credentials: conn.credentials || {},
+            };
+            newSelect[conn.platform] = true;
+          });
+          setConnections(loaded);
+          setSelectedPlatforms(newSelect);
           try {
             popup.close();
           } catch (e) {
@@ -220,7 +225,7 @@ export default function SocialPublishingPanel({ clip, onClose }) {
       // Start real polling loop to track the backend publish state
       let attempt = 0;
       const maxAttempts = 100; // Poll up to 5 minutes
-      
+
       // Update progress state to uploading
       setPublishProgress(activePlatforms.map(p => ({
         platform: p,
@@ -233,7 +238,7 @@ export default function SocialPublishingPanel({ clip, onClose }) {
         try {
           const clipData = await api.getClip(clip.id);
           const urls = clipData.published_urls || {};
-          
+
           attempt++;
           if (attempt >= maxAttempts) {
             clearInterval(interval);

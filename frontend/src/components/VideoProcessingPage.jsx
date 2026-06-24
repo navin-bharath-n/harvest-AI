@@ -70,7 +70,7 @@ export default function VideoProcessingPage() {
     (async () => {
       setTranslating(true);
       try {
-        const res = await fetch('http://localhost:8000/api/v1/videos/translate-transcript', {
+        const res = await fetch('https://localhost:8000/api/v1/videos/translate-transcript', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ words: video.transcript, target_lang: translateLanguage }),
         });
@@ -88,7 +88,7 @@ export default function VideoProcessingPage() {
     (async () => {
       setFetchingEnglish(true);
       try {
-        const res = await fetch('http://localhost:8000/api/v1/videos/translate-transcript', {
+        const res = await fetch('https://localhost:8000/api/v1/videos/translate-transcript', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ words: video.transcript, target_lang: 'en' }),
         });
@@ -154,17 +154,17 @@ export default function VideoProcessingPage() {
           if (u) setVideo(u);
 
           // Fetch detailed status
-          const statusRes = await fetch(`http://localhost:8000/api/v1/videos/${video.id}/status`);
+          const statusRes = await fetch(`https://localhost:8000/api/v1/videos/${video.id}/status`);
           if (statusRes.ok) {
             setPipelineStatus(await statusRes.json());
           }
 
-          const r = await fetch(`http://localhost:8000/api/v1/videos/${video.id}/clips`);
+          const r = await fetch(`https://localhost:8000/api/v1/videos/${video.id}/clips`);
           if (r.ok) { setClips(await r.json()); setCacheBust(Date.now()); }
         } catch (e) { console.error(e); }
       }, 2000);
     } else {
-      fetch(`http://localhost:8000/api/v1/videos/${video.id}/clips`)
+      fetch(`https://localhost:8000/api/v1/videos/${video.id}/clips`)
         .then(r => r.json()).then(d => { setClips(d); setCacheBust(Date.now()); }).catch(console.error);
     }
     return () => clearInterval(id);
@@ -206,7 +206,7 @@ export default function VideoProcessingPage() {
   const capLabel = captionLanguage === 'english' ? 'English' : captionLanguage === 'original' ? 'Original' :
     LANGUAGES.find(l => l.code === translateLanguage)?.name || translateLanguage;
 
-  const backendUrl = 'http://localhost:8000';
+  const backendUrl = 'https://localhost:8000';
   const origStoragePath = (video.storage_path || '').replace(/\\/g, '/');
   const origRelPath = origStoragePath.includes('uploads/') ? origStoragePath.substring(origStoragePath.indexOf('uploads/')) : origStoragePath;
   const videoUrl = video.storage_path ? `${backendUrl}/${origRelPath}?t=${cacheBust}` : '';
@@ -219,19 +219,19 @@ export default function VideoProcessingPage() {
     { key: 'metadata', title: 'Video Metadata Extraction', description: 'Extract FPS, resolution, bitrate, and audio streams.', status: video.status, canTrigger: false },
     {
       key: 'transcription', title: 'Audio Transcription', description: 'Convert audio track into word-level timestamps using Google STT or local Whisper.', status: video.transcription_status, canTrigger: video.status === 'completed',
-      triggerAction: () => fetch(`http://localhost:8000/api/v1/videos/${video.id}/transcribe`, { method: 'POST' })
+      triggerAction: () => fetch(`https://localhost:8000/api/v1/videos/${video.id}/transcribe`, { method: 'POST' })
     },
     {
       key: 'analysis', title: 'AI Content Analysis (Qwen3)', description: 'Understand topic, key scenes, and outline highlights.', status: video.analysis_status, canTrigger: video.transcription_status === 'completed',
-      triggerAction: () => fetch(`http://localhost:8000/api/v1/videos/${video.id}/analyze`, { method: 'POST' })
+      triggerAction: () => fetch(`https://localhost:8000/api/v1/videos/${video.id}/analyze`, { method: 'POST' })
     },
     {
       key: 'highlights', title: 'Highlight Candidates Selection', description: 'Detect top visual sequences and viral appeal.', status: video.highlight_status, canTrigger: video.analysis_status === 'completed',
-      triggerAction: () => fetch(`http://localhost:8000/api/v1/videos/${video.id}/detect-highlights`, { method: 'POST' })
+      triggerAction: () => fetch(`https://localhost:8000/api/v1/videos/${video.id}/detect-highlights`, { method: 'POST' })
     },
     {
       key: 'crop', title: 'Smart Cropping Trajectory (9:16)', description: 'Track primary subjects for vertical formatting.', status: video.crop_status, canTrigger: video.status === 'completed',
-      triggerAction: () => fetch(`http://localhost:8000/api/v1/videos/${video.id}/smart-crop`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ target_fps: parseInt(targetFps) }) })
+      triggerAction: () => fetch(`https://localhost:8000/api/v1/videos/${video.id}/smart-crop`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ target_fps: parseInt(targetFps) }) })
     },
   ];
 
@@ -373,7 +373,7 @@ export default function VideoProcessingPage() {
                           title={video.crop_status !== 'completed' ? 'Generate Smart Crop first' : ''}
                           onClick={async () => {
                             try {
-                              await fetch(`http://localhost:8000/api/v1/videos/${video.id}/clips`, {
+                              await fetch(`https://localhost:8000/api/v1/videos/${video.id}/clips`, {
                                 method: 'POST', headers: { 'Content-Type': 'application/json' },
                                 body: JSON.stringify({ title: clip.title, start_time: clip.start_time, end_time: clip.end_time, edit_options: { translate_language: translateLanguage, dub_voice: dubVoice, caption_language: captionLanguage, dub_mix_mode: dubMixMode, subtitles: getSubtitles() } }),
                               });
@@ -408,7 +408,7 @@ export default function VideoProcessingPage() {
                       <StatusChip status={c.status} />
                     </div>
                     {c.status === 'completed' && c.storage_path ? (
-                      <video src={`http://localhost:8000/${(c.storage_path || '').replace(/\\/g, '/').includes('uploads/') ? (c.storage_path || '').replace(/\\/g, '/').substring((c.storage_path || '').replace(/\\/g, '/').indexOf('uploads/')) : c.storage_path}?t=${cacheBust}`} controls style={{ width: '100%', borderRadius: 'var(--radius-sm)' }} />
+                      <video src={`https://localhost:8000/${(c.storage_path || '').replace(/\\/g, '/').includes('uploads/') ? (c.storage_path || '').replace(/\\/g, '/').substring((c.storage_path || '').replace(/\\/g, '/').indexOf('uploads/')) : c.storage_path}?t=${cacheBust}`} controls style={{ width: '100%', borderRadius: 'var(--radius-sm)' }} />
                     ) : (
                       <div style={{ height: 130, background: 'var(--bg-inset)', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 'var(--radius-sm)' }}>
                         {c.status === 'rendering' ? (

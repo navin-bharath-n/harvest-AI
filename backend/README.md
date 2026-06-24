@@ -39,9 +39,9 @@ This is the FastAPI backend for the AI Shorts Generator application.
     ```
 
 4.  **Access the Application**:
-    *   **API Documentation (Swagger UI)**: http://localhost:8000/docs
-    *   **API Documentation (ReDoc)**: http://localhost:8000/redoc
-    *   **Health Check Endpoint**: http://localhost:8000/api/v1/health
+    *   **API Documentation (Swagger UI)**: https://localhost:8000/docs
+    *   **API Documentation (ReDoc)**: https://localhost:8000/redoc
+    *   **Health Check Endpoint**: https://localhost:8000/api/v1/health
 
 ## Project Structure
 
