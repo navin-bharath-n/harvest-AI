@@ -111,7 +111,9 @@ class SubtitleService:
 
     def generate_ass(self, words: List[Dict], output_path: str, style_config: Dict = None):
         """
-        Generate an ASS file with karaoke (word-by-word) highlighting and specific keyword colors.
+        Generate an ASS file with clean, fixed-text subtitles.
+        Shows whole phrases/lines at once (standard subtitle format),
+        with optional keyword color highlighting.
         """
         if style_config is None:
             style_config = {}
@@ -127,6 +129,18 @@ class SubtitleService:
                 text_val = w.get("text", "")
                 if any(ord(c) >= 0x0B80 and ord(c) <= 0x0BFF for c in text_val):
                     is_tamil = True
+                    break
+
+        # Detect if words contain non-Latin script (CJK, Devanagari, Arabic, etc.)
+        is_non_latin = is_tamil
+        if not is_non_latin:
+            for w in words:
+                text_val = w.get("text", "")
+                for c in text_val:
+                    if ord(c) > 0x024F and not c.isspace() and not c in ".,!?'-\"":
+                        is_non_latin = True
+                        break
+                if is_non_latin:
                     break
 
         default_font = "Nirmala UI" if is_tamil else "Arial Black"
@@ -187,7 +201,10 @@ Style: Default,{font_name},{font_size},{primary_color},&H000000FF&,{outline_colo
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
-        lines = self.group_words_into_lines(words)
+        # Group words into phrase-level lines for display
+        # Use larger groups for non-Latin scripts (whole phrases read better)
+        max_words = 6 if is_non_latin else 4
+        lines = self.group_words_into_lines(words, max_words=max_words, max_duration=2.5)
 
         with open(output_path, "w", encoding="utf-8") as f:
             f.write(header)
@@ -196,31 +213,28 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 start_str = self._format_time_ass(line["start"])
                 end_str = self._format_time_ass(line["end"])
                 
-                ass_text = ""
-                # Calculate karaoke tags
-                for i, word in enumerate(line["words"]):
-                    word_duration = word["end"] - word["start"]
-                    # ASS duration is in centiseconds (1/100th of a second)
-                    duration_cs = int(round(word_duration * 100))
-                    
-                    # Highlight important words
+                # Build the full line text — show the entire phrase at once
+                # (no karaoke word-by-word timing, just clean fixed text)
+                line_parts = []
+                for word in line["words"]:
                     text_content = word["text"].strip()
-                    is_important = self._is_important_word(text_content)
-                    
-                    if is_important:
-                        # Color tag {\c&H...&} text {\c} to reset
-                        colored_text = f"{{\\c{highlight_color}}}{text_content}{{\\c}}"
-                    else:
-                        colored_text = text_content
-                        
-                    # Prepend space if not the first word
-                    prefix_space = " " if i > 0 else ""
-                        
-                    # Karaoke effect: {\k<duration>}
-                    # Using \kf for fill effect or \k for simple highlight
-                    ass_text += f"{prefix_space}{{\\k{duration_cs}}}{colored_text}"
+                    if not text_content:
+                        continue
 
-                # Event line
+                    # For non-Latin scripts, skip keyword highlighting
+                    # (it doesn't work well with non-English text and causes visual clutter)
+                    if is_non_latin:
+                        line_parts.append(text_content)
+                    else:
+                        is_important = self._is_important_word(text_content)
+                        if is_important:
+                            line_parts.append(f"{{\\c{highlight_color}}}{text_content}{{\\c}}")
+                        else:
+                            line_parts.append(text_content)
+
+                ass_text = " ".join(line_parts)
+
+                # Event line — fixed display, no karaoke tags
                 event_line = f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{ass_text}\n"
                 f.write(event_line)
 

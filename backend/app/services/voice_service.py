@@ -5,12 +5,12 @@ import uuid
 import json
 from pathlib import Path
 from typing import List, Dict
+from gtts import gTTS
 
 logger = logging.getLogger(__name__)
 
 class VoiceService:
     def __init__(self):
-        import gtts
         logger.info("Google Text-to-Speech (gTTS) engine initialized successfully.")
 
     def generate_speech(self, text: str, language: str, speaker_wav: str, output_path: str, speaker_gender: str = "female"):
@@ -132,7 +132,6 @@ class VoiceService:
 
         # 2. Fallback to gTTS with FFmpeg Pitch Shift
         try:
-            from gtts import gTTS
             temp_mp3 = output_path.replace(".wav", ".mp3")
             
             logger.info(f"Generating gTTS for text: '{text}' in language '{target_lang}'")
@@ -166,9 +165,14 @@ class VoiceService:
             raise
 
     def get_audio_duration(self, audio_path: str) -> float:
-        cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", audio_path]
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        return float(result.stdout.strip())
+        try:
+            cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", audio_path]
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            val = result.stdout.strip()
+            return float(val) if val else 0.0
+        except Exception as e:
+            logger.warning(f"Failed to get audio duration for {audio_path}: {e}")
+            return 0.0
 
     def match_pacing(self, input_wav: str, target_duration: float, output_wav: str):
         """
@@ -288,7 +292,18 @@ class VoiceService:
             "-ac", "1",
             speaker_wav
         ]
-        subprocess.run(cmd, capture_output=True, check=True)
+        try:
+            subprocess.run(cmd, capture_output=True, check=True)
+        except Exception as e:
+            logger.warning(f"Could not extract speaker reference audio, generating a silent fallback reference. Error: {e}")
+            cmd_silence = [
+                "ffmpeg", "-y", "-loglevel", "error",
+                "-f", "lavfi", "-i", "anullsrc=r=22050:cl=mono",
+                "-t", "1.0",
+                "-acodec", "pcm_s16le",
+                speaker_wav
+            ]
+            subprocess.run(cmd_silence, capture_output=True, check=True)
         
         # 2. Group words into lines
         lines = subtitle_service.group_words_into_lines(transcript_words)

@@ -45,6 +45,7 @@ You MUST output exactly and ONLY valid JSON matching this schema:
   "zooms": "frequent|subtle|none",
   "caption_style": "energetic|minimalist|standard",
   "music_style": "upbeat|lofi|none",
+  "content_type": "speech|music_only|auto",
   "language": "en|ta|es|fr|hi|etc",
   "transition": "fade|zoom|none",
   "translate_language": "en|ta|es|fr|hi|none",
@@ -55,6 +56,7 @@ You MUST output exactly and ONLY valid JSON matching this schema:
 
 Instructions:
 - Analyze the user's prompt carefully to determine the intent.
+- content_type: Set to "speech" if the user mentions a person speaking, talking, narration, commentary, interview, podcast, lecture, or any spoken content. Set to "music_only" ONLY if the user explicitly asks for a music video, instrumental, or says there is no speech. Default to "auto" if not mentioned.
 - If a parameter isn't mentioned in the prompt, use a reasonable default based on the rest of the prompt (or default to standard/none/en).
 - language and translate_language should be the ISO language code (e.g., 'ta' for Tamil, 'en' for English).
 - Only output the raw JSON object.
@@ -84,6 +86,7 @@ Instructions:
                 "zooms": "none",
                 "caption_style": "standard",
                 "music_style": "none",
+                "content_type": "auto",
                 "language": "en",
                 "transition": "fade",
                 "translate_language": "none",

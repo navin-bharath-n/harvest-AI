@@ -8,6 +8,91 @@ logger = logging.getLogger(__name__)
 _BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 
+def _detect_audio_has_speech(audio_path: str) -> bool:
+    """
+    Lightweight check to determine whether an audio file contains human speech
+    (as opposed to pure music/sound effects). Analyzes energy variation patterns
+    in the audio — speech has characteristic bursts with gaps between phrases.
+    Returns True if speech is likely present, False otherwise.
+    """
+    try:
+        import numpy as np
+        import scipy.io.wavfile as wavfile
+
+        sample_rate, data = wavfile.read(audio_path)
+
+        # Convert to mono if stereo
+        if len(data.shape) > 1:
+            data = data.mean(axis=1)
+
+        # Normalize
+        if data.dtype == np.int16:
+            data = data.astype(np.float32) / 32768.0
+        elif data.dtype == np.int32:
+            data = data.astype(np.float32) / 2147483648.0
+        else:
+            data = data.astype(np.float32)
+            max_val = np.max(np.abs(data))
+            if max_val > 0:
+                data = data / max_val
+
+        total_duration = len(data) / sample_rate
+        if total_duration < 1.0:
+            return False
+
+        # Use larger windows (100ms) for more stable energy measurement
+        # and analyze the FULL audio, not just the first ~50 seconds
+        window_size = int(sample_rate * 0.1)  # 100ms windows
+        hop_size = int(sample_rate * 0.05)  # 50ms hop
+        num_windows = max(1, (len(data) - window_size) // hop_size)
+
+        energies = []
+        for i in range(num_windows):
+            start = i * hop_size
+            window = data[start:start + window_size]
+            if len(window) == 0:
+                break
+            energy = np.sqrt(np.mean(window ** 2))
+            energies.append(energy)
+
+        if not energies:
+            return False
+
+        energies = np.array(energies)
+
+        # Speech characteristics (more lenient thresholds for real-world audio):
+        # 1. Energy coefficient of variation — speech has more variation than pure music
+        energy_cv = np.std(energies) / (np.mean(energies) + 1e-10)
+
+        # 2. Silent ratio — fraction of windows below a low-energy threshold
+        threshold = np.mean(energies) * 0.2
+        silent_ratio = np.sum(energies < threshold) / len(energies)
+
+        # 3. Energy dynamic range — speech typically has wider dynamic range
+        sorted_energies = np.sort(energies)
+        low_10 = np.mean(sorted_energies[:max(1, len(sorted_energies) // 10)])
+        high_10 = np.mean(sorted_energies[-max(1, len(sorted_energies) // 10):])
+        dynamic_range = high_10 / (low_10 + 1e-10)
+
+        # Decision: Use OR logic — any strong speech indicator triggers True
+        # - energy_cv > 0.2 means there's noticeable energy variation (speech has gaps)
+        # - silent_ratio > 0.02 means there are some quiet moments (between words/phrases)
+        # - dynamic_range > 3.0 means loud and quiet parts differ significantly
+        # Pure music typically has energy_cv < 0.15, silent_ratio < 0.01, dynamic_range < 2.0
+        has_speech_pattern = (energy_cv > 0.2 and silent_ratio > 0.02) or dynamic_range > 4.0
+
+        logger.info(
+            f"Speech detection — energy_cv={energy_cv:.3f}, silent_ratio={silent_ratio:.3f}, "
+            f"dynamic_range={dynamic_range:.1f}, has_speech_pattern={has_speech_pattern}"
+        )
+        return has_speech_pattern
+
+    except Exception as e:
+        logger.warning(f"Speech detection heuristic failed (assuming speech exists): {e}")
+        # If detection fails, assume speech exists to avoid drowning it with music
+        return True
+
+
 class MasterAIAgent:
     def __init__(self):
         pass  # Heavy services are imported lazily inside generate_shorts()
@@ -70,8 +155,44 @@ class MasterAIAgent:
         if progress_callback: progress_callback("analyzing")
         logger.info("Analyzing content for highlights...")
 
-        if (not full_transcript or len(full_transcript) < 5) and audio_path and os.path.exists(audio_path):
-            logger.info("Transcription is empty or very short. Directly processing audio peaks to detect gameplay/action highlights.")
+        # Determine whether this video contains speech or is music/sfx only.
+        # This drives both highlight detection strategy and music mixing volume.
+        audio_has_speech = False
+        if audio_path and os.path.exists(audio_path):
+            audio_has_speech = _detect_audio_has_speech(audio_path)
+            logger.info(f"Audio speech detection result: {audio_has_speech}")
+
+        # Decide the analysis path:
+        # - If we have a meaningful transcript (>=5 words), always use LLM analysis
+        # - If transcript is sparse BUT speech is detected, still use LLM analysis
+        #   (the transcript, however small, is still useful context)
+        # - Only fall back to audio-peaks when there's truly no speech
+        has_meaningful_transcript = full_transcript and len(full_transcript) >= 5
+        use_audio_peaks = False
+
+        if has_meaningful_transcript:
+            # Good transcript — use LLM content analysis
+            try:
+                analysis = content_understanding_service.analyze(full_transcript, metadata)
+            except Exception as e:
+                logger.warning(f"Content analysis failed (using defaults): {e}")
+                analysis = {"importance_scores": []}
+        elif audio_has_speech:
+            # Sparse transcript but speech detected — still try LLM with what we have,
+            # falling back to audio peaks if analysis fails
+            logger.info("Transcript is sparse but speech was detected in audio. Attempting LLM analysis with available words.")
+            if full_transcript:
+                try:
+                    analysis = content_understanding_service.analyze(full_transcript, metadata)
+                except Exception as e:
+                    logger.warning(f"Content analysis failed with sparse transcript: {e}")
+                    analysis = {"importance_scores": []}
+            else:
+                analysis = {"importance_scores": []}
+        elif audio_path and os.path.exists(audio_path):
+            # No speech detected and no meaningful transcript — pure music/gameplay
+            logger.info("No speech detected. Processing audio peaks for gameplay/action highlights.")
+            use_audio_peaks = True
             try:
                 from app.services.audio_analyzer import detect_audio_highlights
                 audio_highlights = detect_audio_highlights(audio_path)
@@ -84,11 +205,7 @@ class MasterAIAgent:
                 logger.warning(f"Audio highlight peak detection failed: {e}")
                 analysis = {"importance_scores": []}
         else:
-            try:
-                analysis = content_understanding_service.analyze(full_transcript, metadata)
-            except Exception as e:
-                logger.warning(f"Content analysis failed (using defaults): {e}")
-                analysis = {"importance_scores": []}
+            analysis = {"importance_scores": []}
 
         video_duration = metadata.get("duration", 0.0) or 0.0
         is_long_video = video_duration > 300.0
@@ -161,6 +278,21 @@ class MasterAIAgent:
             if dub_mix_mode:
                 instructions["dub_mix_mode"] = dub_mix_mode
             logger.info(f"Parsed Instructions: {instructions}")
+
+            # Resolve content_type: user prompt override > auto-detection
+            user_content_type = instructions.get("content_type", "auto")
+            if user_content_type == "speech":
+                # User explicitly said this has speech
+                video_has_speech = True
+                logger.info("Content type forced to SPEECH by user prompt.")
+            elif user_content_type == "music_only":
+                # User explicitly said this is music only
+                video_has_speech = False
+                logger.info("Content type forced to MUSIC_ONLY by user prompt.")
+            else:
+                # Auto: use detection result
+                video_has_speech = audio_has_speech
+                logger.info(f"Content type AUTO — detected speech: {video_has_speech}")
 
             # Determine parts
             MAX_PART_DURATION = 60.0
@@ -349,11 +481,15 @@ class MasterAIAgent:
                                     pass
 
                     # Step C: Music Mixing
+                    # has_voice should be True if speech was detected OR transcript has words.
+                    # This ensures music stays at background volume (0.15) when speech exists,
+                    # even if the transcript is sparse.
+                    effective_has_voice = video_has_speech or len(shifted_words) > 0
                     music_agent.apply_music(
                         video_path=temp_video_source,
                         music_path=music_track,
                         output_path=final_path,
-                        options={"disable_music": disable_music, "has_voice": len(shifted_words) > 0}
+                        options={"disable_music": disable_music, "has_voice": effective_has_voice}
                     )
 
                     # Determine descriptive title

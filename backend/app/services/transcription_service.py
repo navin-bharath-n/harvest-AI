@@ -123,7 +123,10 @@ class TranscriptionService:
             beam_size=5,
             vad_filter=True,
             word_timestamps=True,
-            condition_on_previous_text=False
+            condition_on_previous_text=False,
+            no_speech_threshold=0.6,
+            log_prob_threshold=-1.0,
+            compression_ratio_threshold=2.4
         )
 
         logger.info(

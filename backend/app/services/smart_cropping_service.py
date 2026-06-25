@@ -3,34 +3,25 @@ import numpy as np
 import logging
 import os
 from collections import deque
+import mediapipe as mp
+from ultralytics import YOLO
+from deep_sort_realtime.deepsort_tracker import DeepSort
 
 logger = logging.getLogger(__name__)
 
-# ── MediaPipe (legacy solutions API — mediapipe <= 0.10.14) ──────────────────
-# mediapipe 0.10.15+ removed mp.solutions entirely. We guard against that here.
-_MP_AVAILABLE = False
-try:
-    import mediapipe as mp
-    if hasattr(mp, "solutions") and hasattr(mp.solutions, "face_mesh"):
-        _MP_AVAILABLE = True
-        logger.info("MediaPipe face_mesh loaded successfully.")
-    else:
-        logger.warning(
-            f"mediapipe {mp.__version__} does not expose mp.solutions.face_mesh. "
-            "Face-based active-speaker detection disabled. Install mediapipe==0.10.14 to re-enable."
-        )
-except ImportError as e:
-    logger.warning(f"mediapipe not available ({e}). Smart cropping will use fallback.")
+# ── MediaPipe Solutions Configuration ──────────────────
+_MP_AVAILABLE = hasattr(mp, "solutions") and hasattr(mp.solutions, "face_mesh")
+if not _MP_AVAILABLE:
+    logger.warning(
+        f"mediapipe {mp.__version__} does not expose mp.solutions.face_mesh. "
+        "Face-based active-speaker detection disabled. Install mediapipe==0.10.14 to re-enable."
+    )
+else:
+    logger.info("MediaPipe face_mesh loaded successfully.")
 
-# ── YOLO + DeepSort (optional) ───────────────────────────────────────────────
-_YOLO_AVAILABLE = False
-try:
-    from ultralytics import YOLO
-    from deep_sort_realtime.deepsort_tracker import DeepSort
-    _YOLO_AVAILABLE = True
-    logger.info("YOLO + DeepSort loaded successfully.")
-except ImportError as e:
-    logger.warning(f"YOLO/DeepSort not available ({e}). Will use face-center fallback only.")
+# ── YOLO + DeepSort Configuration ───────────────────────────────────────────────
+_YOLO_AVAILABLE = True
+logger.info("YOLO + DeepSort loaded successfully.")
 
 
 class SmartCroppingService:

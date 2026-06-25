@@ -108,9 +108,33 @@ class VideoProcessor:
         try:
             subprocess.run(cmd, capture_output=True, check=True)
         except subprocess.CalledProcessError as e:
-            logger.error(f"FFmpeg audio extraction error: {e.stderr}")
-            # If the video has no audio, ffmpeg will fail. This is ok.
-            pass
+            logger.warning(f"FFmpeg audio extraction failed (likely no audio stream). Generating silent fallback audio track. Error: {e}")
+            # Get video duration to match the silence duration
+            duration = 10.0  # default fallback
+            try:
+                duration_cmd = [
+                    "ffprobe", "-v", "error", "-show_entries", "format=duration",
+                    "-of", "default=noprint_wrappers=1:nokey=1", str(video_path)
+                ]
+                res = subprocess.run(duration_cmd, capture_output=True, text=True, check=True)
+                if res.stdout.strip():
+                    duration = float(res.stdout.strip())
+            except Exception as de:
+                logger.warning(f"Could not read video duration for silence generation: {de}")
+            
+            # Generate silent wav of the same duration
+            silence_cmd = [
+                "ffmpeg", "-y", "-loglevel", "error",
+                "-f", "lavfi", "-i", "anullsrc=r=22050:cl=mono",
+                "-t", str(duration),
+                "-acodec", "pcm_s16le",
+                str(output_path)
+            ]
+            try:
+                subprocess.run(silence_cmd, capture_output=True, check=True)
+                logger.info(f"Generated silent fallback audio of duration {duration}s at {output_path}")
+            except Exception as se:
+                logger.error(f"Failed to generate fallback silent audio: {se}")
             
     def _extract_frames(self, video_path: Path, output_dir: Path):
         cmd = [
