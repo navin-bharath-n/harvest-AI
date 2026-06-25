@@ -31,9 +31,12 @@ class SubtitleService:
         # or if it's not a stop word.
         return True
 
-    def group_words_into_lines(self, words: List[Dict], max_words: int = 4, max_duration: float = 2.0) -> List[Dict]:
+    def group_words_into_lines(self, words: List[Dict], max_words: int = 12, max_duration: float = 4.0) -> List[Dict]:
         """
-        Group word-level timestamps into short phrases for captions (e.g., for Shorts).
+        Group word-level timestamps into sentence-level lines for captions.
+        - Splits primarily at sentence-ending punctuation (. ! ?)
+        - Splits at large silences (gaps of > 1.0s between words)
+        - Applies safety limits for max_words and max_duration to prevent layout overflowing
         """
         lines = []
         current_line_words = []
@@ -47,15 +50,31 @@ class SubtitleService:
             if not current_line_words:
                 current_start = word_data["start"]
 
+            # Check for a large silence gap before adding this word
+            large_gap = False
+            if current_line_words:
+                last_word = current_line_words[-1]
+                if word_data["start"] - last_word["end"] > 1.0:
+                    large_gap = True
+
+            if large_gap and current_line_words:
+                # Close the current line before adding the new word
+                lines.append({
+                    "start": current_start,
+                    "end": current_line_words[-1]["end"],
+                    "words": current_line_words
+                })
+                current_line_words = []
+                current_start = word_data["start"]
+
             current_line_words.append(word_data)
             duration = word_data["end"] - current_start
 
-            # Check if we should break the line
-            # Break if max words reached, max duration reached, or end of sentence punctuation
-            has_punctuation = any(p in word_text for p in ['.', '!', '?'])
-            
-            if len(current_line_words) >= max_words or duration >= max_duration or has_punctuation or i == len(words) - 1:
-                # Add line
+            # Break if we hit sentence-ending punctuation or reach safety limits
+            has_sentence_end = any(word_text.endswith(p) or p in word_text for p in ['.', '!', '?'])
+            reached_limits = len(current_line_words) >= max_words or duration >= max_duration
+
+            if has_sentence_end or reached_limits or i == len(words) - 1:
                 lines.append({
                     "start": current_start,
                     "end": word_data["end"],
@@ -201,10 +220,10 @@ Style: Default,{font_name},{font_size},{primary_color},&H000000FF&,{outline_colo
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
-        # Group words into phrase-level lines for display
-        # Use larger groups for non-Latin scripts (whole phrases read better)
-        max_words = 6 if is_non_latin else 4
-        lines = self.group_words_into_lines(words, max_words=max_words, max_duration=2.5)
+        # Group words into sentence-level lines for display
+        max_words = style_config.get("max_words", 12)
+        max_duration = style_config.get("max_duration", 4.0)
+        lines = self.group_words_into_lines(words, max_words=max_words, max_duration=max_duration)
 
         with open(output_path, "w", encoding="utf-8") as f:
             f.write(header)
