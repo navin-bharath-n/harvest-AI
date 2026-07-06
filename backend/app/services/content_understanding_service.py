@@ -1,6 +1,7 @@
 import json
 import logging
 from openai import OpenAI
+from app.services.llm_client import safe_chat_completion, parse_json_robust
 
 logger = logging.getLogger(__name__)
 
@@ -79,19 +80,21 @@ Rules for importance_scores:
         logger.info(f"Sending prompt to {self.model} via {provider_name}...")
         
         try:
-            response = self.client.chat.completions.create(
+            response = safe_chat_completion(
+                client=self.client,
                 model=self.model,
                 messages=[
                     {"role": "system", "content": "You are a helpful assistant that strictly outputs raw JSON."},
                     {"role": "user", "content": prompt}
                 ],
+                is_openrouter=self.is_openrouter,
                 response_format={"type": "json_object"}
             )
             
             result_text = response.choices[0].message.content
             logger.info("Successfully received analysis from Qwen.")
             
-            return json.loads(result_text)
+            return parse_json_robust(result_text)
             
         except Exception as e:
             logger.error(f"Failed to analyze content with Qwen: {e}")

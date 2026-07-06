@@ -1,4 +1,4 @@
-# Virtual environments
+﻿# Virtual environments
 .venv/
 venv/
 ENV/
@@ -43,3 +43,8 @@ key.pem
 # OS metadata
 .DS_Store
 Thumbs.db
+backend/gcp-key.json
+
+*.env
+
+

@@ -8,6 +8,7 @@ import unicodedata
 from functools import lru_cache
 from typing import List, Dict
 from deep_translator import GoogleTranslator
+from app.services.llm_client import safe_chat_completion
 
 logger = logging.getLogger(__name__)
 
@@ -91,12 +92,14 @@ def translate_text_llm(text: str, target_lang: str) -> str:
         )
 
     try:
-        response = prompt_editing_agent.client.chat.completions.create(
+        response = safe_chat_completion(
+            client=prompt_editing_agent.client,
             model=prompt_editing_agent.model,
             messages=[
                 {"role": "system", "content": system_msg},
                 {"role": "user", "content": normalized_text}
             ],
+            is_openrouter=prompt_editing_agent.is_openrouter,
             temperature=0.3,
             max_tokens=150
         )

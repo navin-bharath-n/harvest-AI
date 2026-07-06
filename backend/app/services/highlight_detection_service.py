@@ -2,6 +2,7 @@ import json
 import logging
 from openai import OpenAI
 from app.core.config import settings
+from app.services.llm_client import safe_chat_completion, parse_json_robust
 
 logger = logging.getLogger(__name__)
 
@@ -77,19 +78,21 @@ You MUST output exactly and ONLY valid JSON matching this schema, with no markdo
         logger.info(f"Sending highlight detection prompt to {self.model} via OpenRouter...")
         
         try:
-            response = self.client.chat.completions.create(
+            response = safe_chat_completion(
+                client=self.client,
                 model=self.model,
                 messages=[
                     {"role": "system", "content": "You are a helpful assistant that strictly outputs raw JSON."},
                     {"role": "user", "content": prompt}
                 ],
+                is_openrouter=True,
                 response_format={"type": "json_object"}
             )
             
             result_text = response.choices[0].message.content
             logger.info("Successfully received highlights from Qwen.")
             
-            return json.loads(result_text)
+            return parse_json_robust(result_text)
             
         except Exception as e:
             logger.error(f"Failed to detect highlights with Qwen: {e}")

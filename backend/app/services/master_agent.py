@@ -236,6 +236,9 @@ class MasterAIAgent:
                 else:
                     best_start = max(0.0, best_end - length)
 
+            best_start = round(best_start, 2)
+            best_end = round(best_end, 2)
+
         logger.info(f"Selected highlight: {best_start}s to {best_end}s (Is long video? {is_long_video})")
 
         # 4. Smart Cropping Trajectory
@@ -296,16 +299,17 @@ class MasterAIAgent:
 
             # Determine parts
             MAX_PART_DURATION = 60.0
-            total_duration = best_end - best_start
+            total_duration = round(best_end - best_start, 2)
 
             parts = []
             if total_duration > MAX_PART_DURATION and not is_long_video:
                 import math
                 num_parts = math.ceil(total_duration / MAX_PART_DURATION)
                 for p in range(num_parts):
-                    part_start = best_start + p * MAX_PART_DURATION
-                    part_end = min(best_end, part_start + MAX_PART_DURATION)
-                    parts.append((part_start, part_end, p + 1, num_parts))
+                    part_start = round(best_start + p * MAX_PART_DURATION, 2)
+                    part_end = round(min(best_end, part_start + MAX_PART_DURATION), 2)
+                    if part_end - part_start > 0.5:
+                        parts.append((part_start, part_end, p + 1, num_parts))
             else:
                 parts.append((best_start, best_end, 1, 1))
 

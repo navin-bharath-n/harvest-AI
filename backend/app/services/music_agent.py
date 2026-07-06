@@ -3,6 +3,7 @@ import logging
 import os
 import subprocess
 from typing import Dict, List
+from app.services.llm_client import safe_chat_completion, parse_json_robust
 
 logger = logging.getLogger(__name__)
 
@@ -62,15 +63,17 @@ Output ONLY valid JSON:
         try:
             if self.client is None:
                 raise RuntimeError("LLM client not initialized (openai not installed)")
-            response = self.client.chat.completions.create(
+            response = safe_chat_completion(
+                client=self.client,
                 model=self.model,
                 messages=[
                     {"role": "system", "content": "You are an AI that outputs raw JSON only."},
                     {"role": "user", "content": prompt}
                 ],
+                is_openrouter=self.is_openrouter,
                 response_format={"type": "json_object"}
             )
-            result = json.loads(response.choices[0].message.content)
+            result = parse_json_robust(response.choices[0].message.content)
             if result.get("style") not in self.valid_styles:
                 result["style"] = "standard"
             return result

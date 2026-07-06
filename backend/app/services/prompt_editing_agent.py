@@ -2,6 +2,7 @@ import json
 import logging
 from app.core.config import settings
 from typing import List, Dict
+from app.services.llm_client import safe_chat_completion, parse_json_robust
 
 logger = logging.getLogger(__name__)
 
@@ -64,19 +65,21 @@ Instructions:
 
         logger.info(f"Parsing user prompt: '{prompt}'")
         try:
-            response = self.client.chat.completions.create(
+            response = safe_chat_completion(
+                client=self.client,
                 model=self.model,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": prompt}
                 ],
+                is_openrouter=self.is_openrouter,
                 response_format={"type": "json_object"}
             )
             
             result_text = response.choices[0].message.content
             logger.info("Successfully parsed prompt into editing instructions.")
             
-            return json.loads(result_text)
+            return parse_json_robust(result_text)
             
         except Exception as e:
             logger.error(f"Failed to parse prompt with Qwen: {e}")
