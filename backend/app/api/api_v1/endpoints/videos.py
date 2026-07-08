@@ -203,6 +203,15 @@ def generate_master_shorts(
     if not db_video:
         raise HTTPException(status_code=404, detail="Video not found")
 
+    # Reset status fields in database immediately so progress displays correctly in UI
+    db_video.status = models.VideoStatus.PROCESSING
+    db_video.transcription_status = models.TranscriptionStatus.NONE
+    db_video.analysis_status = models.ContentAnalysisStatus.NONE
+    db_video.highlight_status = models.HighlightDetectionStatus.NONE
+    db_video.crop_status = models.CropStatus.NONE
+    db.commit()
+    db.refresh(db_video)
+
     from app.tasks.video_tasks import generate_master_shorts_task
     generate_master_shorts_task.apply_async(
         args=[

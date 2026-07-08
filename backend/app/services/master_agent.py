@@ -146,6 +146,8 @@ class MasterAIAgent:
             logger.info(f"Transcribing audio: {audio_path}")
             try:
                 full_transcript = transcription_service.transcribe(audio_path)
+                if db_video is not None:
+                    db_video.transcript = full_transcript
             except Exception as e:
                 logger.warning(f"Transcription failed (continuing without transcript): {e}")
         else:

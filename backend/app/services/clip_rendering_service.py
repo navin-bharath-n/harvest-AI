@@ -72,15 +72,10 @@ class ClipRenderingService:
                 import shutil
                 ext = os.path.splitext(subtitle_path)[1]
                 temp_sub_name = f"_tmp_sub_{uuid.uuid4().hex[:8]}{ext}"
-                temp_sub_path = os.path.join(os.path.dirname(os.path.abspath(output_path)), temp_sub_name)
+                # Copy to current working directory to avoid any Windows drive letter colon and escaping issues in FFmpeg filters
+                temp_sub_path = os.path.join(os.getcwd(), temp_sub_name)
                 shutil.copy2(subtitle_path, temp_sub_path)
-                try:
-                    safe_sub_path = os.path.relpath(temp_sub_path).replace("\\", "/")
-                except ValueError:
-                    safe_sub_path = temp_sub_path.replace("\\", "/")
-                    if ":" in safe_sub_path:
-                        drive, rest = safe_sub_path.split(":", 1)
-                        safe_sub_path = f"{drive}\\:{rest}"
+                safe_sub_path = temp_sub_name
                 filters.append(f"subtitles='{safe_sub_path}'")
 
             # FFmpeg command to read raw frames from stdin and encode to H264

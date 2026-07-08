@@ -569,15 +569,9 @@ def render_clip_task(clip_id: int):
                 import shutil
                 ext = os.path.splitext(ass_path)[1]
                 temp_sub_name = f"_tmp_sub_{uuid.uuid4().hex[:8]}{ext}"
-                temp_sub_path = os.path.join(os.path.dirname(os.path.abspath(temp_video_source)), temp_sub_name)
+                temp_sub_path = os.path.join(os.getcwd(), temp_sub_name)
                 shutil.copy2(ass_path, temp_sub_path)
-                try:
-                    safe_sub_path = os.path.relpath(temp_sub_path).replace("\\", "/")
-                except ValueError:
-                    safe_sub_path = temp_sub_path.replace("\\", "/")
-                    if ":" in safe_sub_path:
-                        drive, rest = safe_sub_path.split(":", 1)
-                        safe_sub_path = f"{drive}\\:{rest}"
+                safe_sub_path = temp_sub_name
 
                 ffmpeg_cmd.extend(["-vf", f"subtitles='{safe_sub_path}'"])
 
@@ -701,6 +695,15 @@ def generate_master_shorts_task(
         if not video:
             logger.error(f"Video {video_id} not found")
             return
+
+        # Reset statuses so progress displays correctly in UI
+        from app.models.video import VideoStatus, TranscriptionStatus, ContentAnalysisStatus, HighlightDetectionStatus, CropStatus
+        video.status = VideoStatus.PROCESSING
+        video.transcription_status = TranscriptionStatus.NONE
+        video.analysis_status = ContentAnalysisStatus.NONE
+        video.highlight_status = HighlightDetectionStatus.NONE
+        video.crop_status = CropStatus.NONE
+        db.commit()
 
         import os
         import shutil

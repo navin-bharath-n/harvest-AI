@@ -162,9 +162,9 @@ class SubtitleService:
                 if is_non_latin:
                     break
 
-        default_font = "Nirmala UI" if is_tamil else "Arial Black"
-        default_energetic_font = "Nirmala UI" if is_tamil else "Impact"
-        default_minimalist_font = "Nirmala UI" if is_tamil else "Arial"
+        default_font = "Nirmala UI" if is_non_latin else "Arial Black"
+        default_energetic_font = "Nirmala UI" if is_non_latin else "Impact"
+        default_minimalist_font = "Nirmala UI" if is_non_latin else "Arial"
 
         # Resolve predefined caption styles from prompt_editing_agent
         caption_style_preset = style_config.get("caption_style", "standard")
@@ -185,8 +185,8 @@ class SubtitleService:
             style_config["outline_size"] = style_config.get("outline_size", 5)
             style_config["highlight_color"] = style_config.get("highlight_color", "#00FF00") # Green
 
-        # Ensure we don't fall back to non-Tamil fonts if Tamil text is detected
-        if is_tamil and style_config.get("font_name") in ["Arial Black", "Impact", "Arial", "Outfit", "standard", None, ""]:
+        # Ensure we don't fall back to non-Latin fonts if non-Latin text is detected
+        if is_non_latin and style_config.get("font_name") in ["Arial Black", "Impact", "Arial", "Outfit", "standard", None, ""]:
             style_config["font_name"] = "Nirmala UI"
 
         # Defaults for styling
@@ -272,22 +272,14 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         if not os.path.exists(subtitle_path):
             raise FileNotFoundError(f"Subtitle file not found: {subtitle_path}")
 
-        # Copy subtitle to a flat temp filename in the same dir as the output
+        # Copy subtitle to a flat temp filename in the current working directory
         # This sidesteps all Windows drive-letter path escaping issues in FFmpeg filters
         ext = os.path.splitext(subtitle_path)[1]
         temp_sub_name = f"_tmp_sub_{uuid.uuid4().hex[:8]}{ext}"
-        temp_sub_path = os.path.join(os.path.dirname(os.path.abspath(output_path)), temp_sub_name)
+        temp_sub_path = os.path.join(os.getcwd(), temp_sub_name)
         shutil.copy2(subtitle_path, temp_sub_path)
 
-        # Use relative path if possible to avoid Windows drive-letter colon issues in FFmpeg filters
-        try:
-            safe_sub_path = os.path.relpath(temp_sub_path).replace("\\", "/")
-        except ValueError:
-            # Fallback to absolute path with colon escaped (e.g. E\:/path)
-            safe_sub_path = temp_sub_path.replace("\\", "/")
-            if ":" in safe_sub_path:
-                drive, rest = safe_sub_path.split(":", 1)
-                safe_sub_path = f"{drive}\\:{rest}"
+        safe_sub_path = temp_sub_name
 
         cmd = [
             "ffmpeg",

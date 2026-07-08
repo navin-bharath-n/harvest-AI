@@ -1,6 +1,22 @@
 import sys
 import os
 import subprocess
+import glob
+
+# Add Winget FFmpeg path to PATH dynamically if not present
+try:
+    winget_packages_dir = os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\WinGet\Packages")
+    if os.path.exists(winget_packages_dir):
+        matches = glob.glob(os.path.join(winget_packages_dir, "Gyan.FFmpeg_*"))
+        for match in matches:
+            bin_paths = glob.glob(os.path.join(match, "*", "bin"))
+            if bin_paths and os.path.exists(bin_paths[0]):
+                ffmpeg_bin = bin_paths[0]
+                if ffmpeg_bin not in os.environ["PATH"]:
+                    os.environ["PATH"] = ffmpeg_bin + os.pathsep + os.environ["PATH"]
+except Exception:
+    pass
+
 import socket
 import logging
 from contextlib import asynccontextmanager
@@ -192,8 +208,20 @@ def _start_celery():
     backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
     logger.info("Starting Celery worker...")
     
-    # Open log file for celery
-    celery_log = open(os.path.join(backend_dir, "celery_worker.log"), "a")
+    # Open log file for celery, handling Windows file locks gracefully
+    celery_log = None
+    try:
+        celery_log = open(os.path.join(backend_dir, "celery_worker.log"), "a")
+    except PermissionError:
+        try:
+            logger.warning("celery_worker.log is locked by another process. Falling back to celery_worker_reload.log")
+            celery_log = open(os.path.join(backend_dir, "celery_worker_reload.log"), "a")
+        except Exception as e:
+            logger.error(f"Failed to open fallback log file: {e}")
+            celery_log = subprocess.DEVNULL
+    except Exception as e:
+        logger.error(f"Failed to open celery_worker.log: {e}")
+        celery_log = subprocess.DEVNULL
     
     proc = subprocess.Popen(
         [
@@ -207,11 +235,12 @@ def _start_celery():
         cwd=backend_dir,
         env={**os.environ, "PYTHONPATH": backend_dir},
         stdout=celery_log,
-        stderr=subprocess.STDOUT,
+        stderr=subprocess.STDOUT if celery_log != subprocess.DEVNULL else subprocess.DEVNULL,
         creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
     )
     # Store the file object so it doesn't get garbage collected
-    proc._log_file = celery_log
+    if celery_log != subprocess.DEVNULL:
+        proc._log_file = celery_log
     _bg_processes["celery"] = proc
     logger.info(f"Celery worker started (PID {proc.pid}).")
 
