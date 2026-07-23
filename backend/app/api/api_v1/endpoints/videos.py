@@ -30,8 +30,16 @@ def upload_video(
     # Ensure upload directory exists
     os.makedirs(UPLOAD_DIR, exist_ok=True)
 
+    # Validate file extension
+    ALLOWED_EXTENSIONS = {".mp4", ".mkv", ".avi", ".mov", ".webm", ".flv"}
+    file_ext = os.path.splitext(file.filename)[1].lower()
+    if file_ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid file type. Please upload a valid video file. Supported formats: {', '.join(sorted(ALLOWED_EXTENSIONS))}"
+        )
+
     # Save file
-    file_ext = os.path.splitext(file.filename)[1]
     unique_filename = f"{uuid.uuid4()}{file_ext}"
     file_path = os.path.join(UPLOAD_DIR, unique_filename)
 
