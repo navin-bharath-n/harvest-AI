@@ -1,8 +1,39 @@
 import os
+import uuid
 import logging
 from typing import List
 
 logger = logging.getLogger(__name__)
+
+# Cancellation registry to immediately terminate any running generation task cooperatively
+_cancelled_videos = set()
+_cancel_all_flag = False
+
+def cancel_video_job(video_id: int):
+    """Mark a video as cancelled so running tasks abort immediately."""
+    if video_id is not None:
+        _cancelled_videos.add(int(video_id))
+        logger.info(f"Cancellation registered for video {video_id}")
+
+def cancel_all_video_jobs():
+    """Cancel all active video generation tasks across the server."""
+    global _cancel_all_flag
+    _cancel_all_flag = True
+    logger.info("Cancellation registered for ALL active video tasks")
+
+def clear_video_cancellation(video_id: int):
+    """Clear cancellation flag when starting a new generation."""
+    global _cancel_all_flag
+    _cancel_all_flag = False
+    if video_id is not None:
+        _cancelled_videos.discard(int(video_id))
+
+def is_video_cancelled(video_id: int) -> bool:
+    if _cancel_all_flag:
+        return True
+    if video_id is not None and int(video_id) in _cancelled_videos:
+        return True
+    return False
 
 # Absolute path anchor for this file — used to resolve video paths
 _BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -11,7 +42,7 @@ _BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..
 def _detect_audio_has_speech(audio_path: str) -> bool:
     """
     Lightweight check to determine whether an audio file contains human speech
-    (as opposed to pure music/sound effects). Analyzes energy variation patterns
+    (as opposed to pure music/sound effects or silence). Analyzes energy variation patterns
     in the audio — speech has characteristic bursts with gaps between phrases.
     Returns True if speech is likely present, False otherwise.
     """
@@ -40,10 +71,9 @@ def _detect_audio_has_speech(audio_path: str) -> bool:
         if total_duration < 1.0:
             return False
 
-        # Use larger windows (100ms) for more stable energy measurement
-        # and analyze the FULL audio, not just the first ~50 seconds
-        window_size = int(sample_rate * 0.1)  # 100ms windows
-        hop_size = int(sample_rate * 0.05)  # 50ms hop
+        # Use 100ms windows and 50ms hop
+        window_size = int(sample_rate * 0.1)
+        hop_size = int(sample_rate * 0.05)
         num_windows = max(1, (len(data) - window_size) // hop_size)
 
         energies = []
@@ -60,25 +90,15 @@ def _detect_audio_has_speech(audio_path: str) -> bool:
 
         energies = np.array(energies)
 
-        # Speech characteristics (more lenient thresholds for real-world audio):
-        # 1. Energy coefficient of variation — speech has more variation than pure music
+        # Speech characteristics:
         energy_cv = np.std(energies) / (np.mean(energies) + 1e-10)
-
-        # 2. Silent ratio — fraction of windows below a low-energy threshold
         threshold = np.mean(energies) * 0.2
         silent_ratio = np.sum(energies < threshold) / len(energies)
-
-        # 3. Energy dynamic range — speech typically has wider dynamic range
         sorted_energies = np.sort(energies)
         low_10 = np.mean(sorted_energies[:max(1, len(sorted_energies) // 10)])
         high_10 = np.mean(sorted_energies[-max(1, len(sorted_energies) // 10):])
         dynamic_range = high_10 / (low_10 + 1e-10)
 
-        # Decision: Use OR logic — any strong speech indicator triggers True
-        # - energy_cv > 0.2 means there's noticeable energy variation (speech has gaps)
-        # - silent_ratio > 0.02 means there are some quiet moments (between words/phrases)
-        # - dynamic_range > 3.0 means loud and quiet parts differ significantly
-        # Pure music typically has energy_cv < 0.15, silent_ratio < 0.01, dynamic_range < 2.0
         has_speech_pattern = (energy_cv > 0.2 and silent_ratio > 0.02) or dynamic_range > 4.0
 
         logger.info(
@@ -89,13 +109,12 @@ def _detect_audio_has_speech(audio_path: str) -> bool:
 
     except Exception as e:
         logger.warning(f"Speech detection heuristic failed (assuming speech exists): {e}")
-        # If detection fails, assume speech exists to avoid drowning it with music
         return True
 
 
 class MasterAIAgent:
     def __init__(self):
-        pass  # Heavy services are imported lazily inside generate_shorts()
+        pass
 
     def generate_shorts(
         self,
@@ -103,20 +122,25 @@ class MasterAIAgent:
         length: float = 60.0,
         platform: str = "youtube",
         optional_prompt: str = "",
+        audio_theme: str = "auto",
         progress_callback=None,
         db_video=None,
         translate_language: str = "none",
         dub_voice: bool = False,
         caption_language: str = "translated",
         dub_mix_mode: str = "replace",
-        speaker_gender: str = "female"
-    ) -> List[str]:
+        speaker_gender: str = "female",
+        framing_mode: str = "fit_blur",
+        on_variation_complete=None
+    ) -> List[dict]:
         """
-        End-to-end pipeline to generate 5 stylistic variations of the best highlight from a video.
-        All heavy ML imports are deferred to here so the Celery worker doesn't crash at startup
-        if a package is missing.
+        End-to-end pipeline to generate 5 distinct video variations featuring:
+        - 5 Smooth Animated Caption Styles (Viral Pop, Karaoke Flow, Cinematic Fade, Boxed Pill, Neon Pulse)
+        - Smart Content-Based BGM / Music Soundtrack:
+            * If speech is present: Softly ducked BGM underneath (~0.16 volume).
+            * If NO sound/speech is detected (silent video, gameplay without mic): Full-soundtrack song (1.0 volume) matched to video content.
+        - Pristine 9:16 vertical smart crop without jarring cuts.
         """
-        # --- Lazy imports (deferred so module-level import failures don't kill the worker) ---
         from app.services.video_processor import VideoProcessor
         from app.services.transcription_service import transcription_service
         from app.services.content_understanding_service import content_understanding_service
@@ -131,16 +155,25 @@ class MasterAIAgent:
         if not os.path.exists(video_path):
             raise FileNotFoundError(f"Video not found: {video_path}")
 
+        video_id = db_video.id if db_video else None
+        if is_video_cancelled(video_id):
+            logger.info(f"Video {video_id} is marked cancelled. Aborting master pipeline.")
+            return []
+
         logger.info(f"Starting Master AI Agent for {video_path}")
 
         # 1. Metadata extraction
         logger.info("Extracting metadata...")
         metadata = video_processor.process(video_path)
-
         audio_path = metadata.get("audio_path")
 
-        # 2. Transcription — use extracted audio file, NOT the video file
-        if progress_callback: progress_callback("transcribing")
+        if is_video_cancelled(video_id):
+            logger.info(f"Video {video_id} cancelled after metadata extraction. Aborting.")
+            return []
+
+        # 2. Transcription — use extracted audio file
+        if progress_callback:
+            progress_callback("transcribing")
         full_transcript = []
         if audio_path and os.path.exists(audio_path):
             logger.info(f"Transcribing audio: {audio_path}")
@@ -153,98 +186,100 @@ class MasterAIAgent:
         else:
             logger.warning("No audio track found. Skipping transcription.")
 
+        if is_video_cancelled(video_id):
+            logger.info(f"Video {video_id} cancelled after transcription. Aborting.")
+            return []
+
         # 3. Content Understanding to find highlight
-        if progress_callback: progress_callback("analyzing")
+        if progress_callback:
+            progress_callback("analyzing")
         logger.info("Analyzing content for highlights...")
 
-        # Determine whether this video contains speech or is music/sfx only.
-        # This drives both highlight detection strategy and music mixing volume.
         audio_has_speech = False
         if audio_path and os.path.exists(audio_path):
             audio_has_speech = _detect_audio_has_speech(audio_path)
             logger.info(f"Audio speech detection result: {audio_has_speech}")
 
-        # Decide the analysis path:
-        # - If we have a meaningful transcript (>=5 words), always use LLM analysis
-        # - If transcript is sparse BUT speech is detected, still use LLM analysis
-        #   (the transcript, however small, is still useful context)
-        # - Only fall back to audio-peaks when there's truly no speech
         has_meaningful_transcript = full_transcript and len(full_transcript) >= 5
-        use_audio_peaks = False
 
         if has_meaningful_transcript:
-            # Good transcript — use LLM content analysis
             try:
                 analysis = content_understanding_service.analyze(full_transcript, metadata)
             except Exception as e:
                 logger.warning(f"Content analysis failed (using defaults): {e}")
-                analysis = {"importance_scores": []}
-        elif audio_has_speech:
-            # Sparse transcript but speech detected — still try LLM with what we have,
-            # falling back to audio peaks if analysis fails
-            logger.info("Transcript is sparse but speech was detected in audio. Attempting LLM analysis with available words.")
-            if full_transcript:
-                try:
-                    analysis = content_understanding_service.analyze(full_transcript, metadata)
-                except Exception as e:
-                    logger.warning(f"Content analysis failed with sparse transcript: {e}")
-                    analysis = {"importance_scores": []}
-            else:
-                analysis = {"importance_scores": []}
+                analysis = {"topic": "Highlight", "importance_scores": []}
+        elif audio_has_speech and full_transcript:
+            try:
+                analysis = content_understanding_service.analyze(full_transcript, metadata)
+            except Exception as e:
+                logger.warning(f"Content analysis failed with sparse transcript: {e}")
+                analysis = {"topic": "Highlight", "importance_scores": []}
         elif audio_path and os.path.exists(audio_path):
-            # No speech detected and no meaningful transcript — pure music/gameplay
             logger.info("No speech detected. Processing audio peaks for gameplay/action highlights.")
-            use_audio_peaks = True
             try:
                 from app.services.audio_analyzer import detect_audio_highlights
                 audio_highlights = detect_audio_highlights(audio_path)
                 analysis = {
-                    "topic": "Gameplay Highlight",
+                    "topic": "Action / Gameplay Highlight",
                     "summary": "Highlight detected directly from wave audio amplitude peaks.",
                     "importance_scores": audio_highlights
                 }
             except Exception as e:
                 logger.warning(f"Audio highlight peak detection failed: {e}")
-                analysis = {"importance_scores": []}
+                analysis = {"topic": "Visual Highlight", "importance_scores": []}
         else:
-            analysis = {"importance_scores": []}
+            analysis = {"topic": "Video Highlight", "importance_scores": []}
 
-        video_duration = metadata.get("duration", 0.0) or 0.0
-        is_long_video = video_duration > 300.0
-
+        video_duration = float(metadata.get("duration", 0.0) or 0.0)
         scores = analysis.get("importance_scores", [])
-        if not scores:
-            logger.warning("No highlights found. Defaulting to beginning of video.")
-            best_start = 0.0
-            default_len = 30.0 if is_long_video else length
-            best_end = min(default_len, video_duration or default_len)
-        else:
-            # Pick highest score
-            best_highlight = max(scores, key=lambda x: x.get("score", 0))
-            h_start = float(best_highlight.get("start", 0.0))
 
-            best_start = h_start
-            if is_long_video:
-                h_end = float(best_highlight.get("end", h_start + 15.0))
-                best_end = min(h_end, h_start + 30.0)
+        # User-selected length
+        requested_length = float(length) if length and float(length) > 0 else 60.0
+        target_dur = requested_length
+        if video_duration > 0 and target_dur > video_duration:
+            target_dur = video_duration
+
+        def _calc_window(st_val: float):
+            st_val = max(0.0, float(st_val))
+            calc_en = st_val + target_dur
+            if video_duration > 0 and calc_en > video_duration:
+                calc_en = video_duration
+                st_val = max(0.0, calc_en - target_dur)
+            return round(st_val, 2), round(calc_en, 2)
+
+        # Build candidate highlight windows for the 5 variations
+        candidate_windows = []
+        if scores:
+            sorted_scores = sorted(scores, key=lambda x: float(x.get("score", 0)), reverse=True)
+            for sc in sorted_scores:
+                st = float(sc.get("start", 0.0))
+                candidate_windows.append(_calc_window(st))
+
+        target_variation_count = 5
+        if not candidate_windows:
+            if video_duration > target_dur * 1.2:
+                step = max(5.0, (video_duration - target_dur) / max(1, target_variation_count - 1))
+                for i in range(target_variation_count):
+                    s_t = min(i * step, max(0.0, video_duration - target_dur))
+                    candidate_windows.append(_calc_window(s_t))
             else:
-                h_end = h_start + length
-                best_end = h_end
-
-            if video_duration and best_end > video_duration:
-                best_end = video_duration
-                if is_long_video:
-                    best_start = max(0.0, best_end - 30.0)
+                default_w = _calc_window(0.0)
+                candidate_windows = [default_w] * target_variation_count
+        else:
+            while len(candidate_windows) < target_variation_count:
+                if video_duration > target_dur * 1.2:
+                    idx_needed = len(candidate_windows)
+                    step = (video_duration - target_dur) / max(1, target_variation_count - 1)
+                    s_t = min(idx_needed * step, max(0.0, video_duration - target_dur))
+                    candidate_windows.append(_calc_window(s_t))
                 else:
-                    best_start = max(0.0, best_end - length)
+                    candidate_windows.append(candidate_windows[len(candidate_windows) % len(candidate_windows)])
 
-            best_start = round(best_start, 2)
-            best_end = round(best_end, 2)
-
-        logger.info(f"Selected highlight: {best_start}s to {best_end}s (Is long video? {is_long_video})")
+        logger.info(f"Candidate highlight windows: {candidate_windows}")
 
         # 4. Smart Cropping Trajectory
-        if progress_callback: progress_callback("rendering")
+        if progress_callback:
+            progress_callback("cropping")
         logger.info("Calculating crop trajectory...")
         try:
             crop_data = smart_cropping_service.generate_crop_metadata(video_path)
@@ -257,24 +292,86 @@ class MasterAIAgent:
             logger.warning(f"Smart cropping failed (using static center crop): {e}")
             full_trajectory = []
 
-        # 5. The 1 AI Persona for quick testing
+        # Analyze topic for content-matched songs / BGM
+        video_topic = analysis.get("topic", "")
+        music_analysis = music_agent.analyze_video(full_transcript, metadata, topic_hint=video_topic)
+        logger.info(f"Video content music analysis: {music_analysis}")
+
+        # 5. Define 5 smooth animated caption variations
+        prompt_suffix = f" {optional_prompt}".strip() if optional_prompt else ""
         personas = [
-            f"Make it a highly viral hook. Energetic captions, frequent zooms, upbeat music. {optional_prompt}"
+            {
+                "name": "Viral Pop Bounce",
+                "caption_style": "pop",
+                "music_style": "upbeat",
+                "prompt": f"Viral short with energetic word pop-in bounce animated captions, upbeat BGM, and clean video flow.{prompt_suffix}",
+                "zooms": "none",
+                "transition": "none"
+            },
+            {
+                "name": "Karaoke Flow Sweep",
+                "caption_style": "karaoke",
+                "music_style": "standard",
+                "prompt": f"Modern short with smooth word-by-word karaoke highlight sweep animated captions and chill BGM.{prompt_suffix}",
+                "zooms": "none",
+                "transition": "none"
+            },
+            {
+                "name": "Cinematic Smooth Fade",
+                "caption_style": "minimalist",
+                "music_style": "cinematic",
+                "prompt": f"Cinematic aesthetic with minimalist smooth fade subtitles and atmospheric soundtrack.{prompt_suffix}",
+                "zooms": "none",
+                "transition": "none"
+            },
+            {
+                "name": "Boxed Pill Highlight",
+                "caption_style": "boxed",
+                "music_style": "upbeat",
+                "prompt": f"Clean short with modern boxed pill tag animated captions and upbeat background music.{prompt_suffix}",
+                "zooms": "none",
+                "transition": "none"
+            },
+            {
+                "name": "Neon Pulse Glow",
+                "caption_style": "neon",
+                "music_style": "suspenseful",
+                "prompt": f"High-energy short with glowing neon pulse animated captions and dynamic background soundtrack.{prompt_suffix}",
+                "zooms": "none",
+                "transition": "none"
+            }
         ]
 
         generated_files = []
         base_dir = os.path.dirname(video_path)
 
-        for idx, persona_prompt in enumerate(personas, 1):
-            logger.info(f"--- Generating Variation {idx}/1 ---")
-            logger.info(f"Persona Prompt: {persona_prompt}")
+        if progress_callback:
+            progress_callback("rendering")
 
-            # Parse instructions
+        for idx, persona_info in enumerate(personas, 1):
+            if is_video_cancelled(video_id):
+                logger.info(f"Video {video_id} cancelled before variation {idx}. Aborting.")
+                return generated_files
+
+            persona_name = persona_info["name"]
+            persona_prompt = persona_info["prompt"]
+            logger.info(f"--- Generating Variation {idx}/{len(personas)} ({persona_name}) ---")
+
+            window_idx = (idx - 1) % len(candidate_windows)
+            best_start, best_end = candidate_windows[window_idx]
+            logger.info(f"Variation {idx} window: {best_start}s to {best_end}s ({best_end - best_start}s)")
+
+            # Parse instructions with LLM
             instructions = prompt_editing_agent.parse_prompt(persona_prompt)
-            if "transition" not in instructions:
-                instructions["transition"] = "fade"
-            # Merge explicit translation/dubbing parameters
-            if translate_language != "none":
+            # Enforce persona's specific animated caption style and BGM
+            instructions["caption_style"] = persona_info["caption_style"]
+            instructions["music_style"] = persona_info.get("music_style", "standard")
+            instructions["zooms"] = "none"
+            instructions["transition"] = "none"
+            instructions["framing_mode"] = framing_mode
+
+            # Translation / Dubbing if requested by user in UI
+            if translate_language and translate_language != "none":
                 instructions["translate_language"] = translate_language
             if dub_voice:
                 instructions["dub_voice"] = dub_voice
@@ -282,90 +379,50 @@ class MasterAIAgent:
                 instructions["caption_language"] = caption_language
             if dub_mix_mode:
                 instructions["dub_mix_mode"] = dub_mix_mode
-            logger.info(f"Parsed Instructions: {instructions}")
 
-            # Resolve content_type: user prompt override > auto-detection
-            user_content_type = instructions.get("content_type", "auto")
-            if user_content_type == "speech":
-                # User explicitly said this has speech
-                video_has_speech = True
-                logger.info("Content type forced to SPEECH by user prompt.")
-            elif user_content_type == "music_only":
-                # User explicitly said this is music only
-                video_has_speech = False
-                logger.info("Content type forced to MUSIC_ONLY by user prompt.")
+            logger.info(f"Variation {idx} instructions: {instructions}")
+
+            parts = [(best_start, best_end, 1, 1)]
+
+            # Recommend music track for this variation based on selected audio theme
+            if audio_theme == "none":
+                music_track = None
+            elif audio_theme and audio_theme != "auto":
+                # User selected a specific theme (e.g. cinematic, upbeat, lofi, gaming, etc.)
+                music_track = music_agent.recommend_music({
+                    "style": audio_theme,
+                    "topic": video_topic,
+                    "search_query": f"{audio_theme} {video_topic}".strip()
+                })
             else:
-                # Auto: use detection result
-                video_has_speech = audio_has_speech
-                logger.info(f"Content type AUTO — detected speech: {video_has_speech}")
-
-            # Determine parts
-            MAX_PART_DURATION = 60.0
-            total_duration = round(best_end - best_start, 2)
-
-            parts = []
-            if total_duration > MAX_PART_DURATION and not is_long_video:
-                import math
-                num_parts = math.ceil(total_duration / MAX_PART_DURATION)
-                for p in range(num_parts):
-                    part_start = round(best_start + p * MAX_PART_DURATION, 2)
-                    part_end = round(min(best_end, part_start + MAX_PART_DURATION), 2)
-                    if part_end - part_start > 0.5:
-                        parts.append((part_start, part_end, p + 1, num_parts))
-            else:
-                parts.append((best_start, best_end, 1, 1))
-
-            # Recommend music once per variation to keep style consistent across parts
-            music_analysis = {"style": instructions.get("music_style", "standard")}
-            music_track = music_agent.recommend_music(music_analysis)
-            disable_music = True if instructions.get("music_style") == "none" else False
+                # Auto: Use content analysis + variation persona complementary style
+                target_music_style = instructions.get("music_style", persona_info.get("music_style", "standard"))
+                music_track = music_agent.recommend_music({
+                    "style": target_music_style,
+                    "topic": video_topic,
+                    "search_query": f"{target_music_style} {video_topic}".strip()
+                })
 
             for part_start, part_end, part_num, total_parts in parts:
-                logger.info(f"Rendering part {part_num}/{total_parts} ({part_start:.2f}s to {part_end:.2f}s)")
-
+                if is_video_cancelled(video_id):
+                    logger.info(f"Video {video_id} cancelled before rendering clip part. Aborting.")
+                    return generated_files
                 part_suffix = f"_part_{part_num}" if total_parts > 1 else ""
-                variation_base = os.path.join(base_dir, f"variation_{idx}")
+                var_uid = uuid.uuid4().hex[:8]
+                variation_base = os.path.join(base_dir, f"var_{idx}_{var_uid}")
 
                 clip_path = f"{variation_base}{part_suffix}_clip.mp4"
                 ass_path = f"{variation_base}{part_suffix}_subs.ass"
                 subbed_path = f"{variation_base}{part_suffix}_subbed.mp4"
                 final_path = f"{variation_base}{part_suffix}_final.mp4"
 
-                # Filter trajectory for this part
+                # Filter trajectory
                 part_trajectory = [t for t in full_trajectory if part_start <= t["timestamp"] <= part_end]
                 if not part_trajectory:
                     part_trajectory = [{"timestamp": part_start, "x": 0, "y": 0, "width": 1080, "height": 1920}]
 
-                caption_extras = []
-                # If this is not the last part in a multi-part split, append transition subtitle
-                if part_num < total_parts:
-                    ord_words = {2: "second", 3: "third", 4: "fourth", 5: "fifth", 6: "sixth", 7: "seventh", 8: "eighth", 9: "ninth", 10: "tenth"}
-                    next_part_word = ord_words.get(part_num + 1, f"part {part_num + 1}")
-                    text_msg = f"Previous one is to continue, moving to {next_part_word}"
-
-                    part_dur = part_end - part_start
-                    msg_start = max(0.0, part_dur - 3.0)
-                    msg_end = part_dur
-
-                    caption_extras.append({
-                        "start": msg_start,
-                        "end": msg_end,
-                        "text": text_msg
-                    })
-
-                # If this is a long video, prepend the theme title subtitle for the first 3 seconds
-                if is_long_video:
-                    topic = analysis.get("topic", "General Highlight")
-                    caption_extras.append({
-                        "start": 0.0,
-                        "end": min(3.0, part_end - part_start),
-                        "text": f"THEME: {topic.upper()}"
-                    })
-
-                # Determine subtitle options and translate
-                caption_preset = instructions.get("caption_style", "standard")
-
                 # Filter and shift words for this part
+                caption_preset = instructions.get("caption_style", "pop")
                 part_words = [w for w in full_transcript if w["start"] >= part_start and w["end"] <= part_end]
                 shifted_words = []
                 for w in part_words:
@@ -376,13 +433,10 @@ class MasterAIAgent:
                     })
                 orig_shifted_words = shifted_words.copy()
 
-                # Resolve translation parameters
-                t_lang = instructions.get("translate_language", translate_language)
-                if t_lang == "none":
-                    t_lang = instructions.get("language", "none")
-
-                cap_lang_opt = instructions.get("caption_language", caption_language)
-                d_voice = instructions.get("dub_voice", dub_voice)
+                # Translation
+                t_lang = instructions.get("translate_language", "none")
+                cap_lang_opt = instructions.get("caption_language", "original")
+                d_voice = instructions.get("dub_voice", False)
                 d_mix_mode = instructions.get("dub_mix_mode", dub_mix_mode)
 
                 from app.services.translation_service import translate_and_distribute_words
@@ -392,11 +446,6 @@ class MasterAIAgent:
                     pass
                 elif cap_lang_opt == "english":
                     if t_lang != "en" and t_lang != "none":
-                        try:
-                            shifted_words = translate_and_distribute_words(orig_shifted_words, "en")
-                        except Exception as te:
-                            logger.warning(f"Subtitle translation to English failed: {te}")
-                    else:
                         try:
                             shifted_words = translate_and_distribute_words(orig_shifted_words, "en")
                         except Exception as te:
@@ -413,39 +462,40 @@ class MasterAIAgent:
                         except Exception as te:
                             logger.warning(f"Subtitle translation failed: {te}")
 
-                if caption_extras and cap_lang_opt != "none":
-                    shifted_words = sorted([*caption_extras, *shifted_words], key=lambda item: item["start"])
-
-                # Dub voice if requested
+                # Dub voice if explicitly requested
                 dubbed_audio_path = None
-                if d_voice and t_lang != "none" and audio_path and os.path.exists(audio_path):
+                if d_voice and audio_path and os.path.exists(audio_path) and part_words:
                     from app.services.voice_service import voice_service
                     try:
                         dubbed_audio_path = f"{variation_base}{part_suffix}_dubbed.wav"
                         voice_service.dub_voice(
                             original_audio_path=audio_path,
                             transcript_words=part_words,
-                            target_lang=t_lang,
+                            target_lang=t_lang if t_lang != "none" else "en",
                             start_time=part_start,
                             end_time=part_end,
                             output_path=dubbed_audio_path,
                             mix_mode=d_mix_mode,
-                            speaker_gender=speaker_gender
+                            speaker_gender=speaker_gender,
+                            variation_index=idx
                         )
-                        logger.info("Successfully generated dubbed audio track for master variation.")
+                        logger.info(f"Successfully generated dubbed audio track for Variation {idx}.")
                     except Exception as de:
-                        logger.error(f"Voice dubbing failed for master variation: {de}", exc_info=True)
+                        logger.error(f"Voice dubbing failed for Variation {idx}: {de}", exc_info=True)
                         dubbed_audio_path = None
 
                 has_subtitles = caption_preset != "none" and len(shifted_words) > 0
 
                 try:
-                    # Step A: Subtitles and ASS file generation
+                    # Step A: Subtitles and Animated ASS file generation
                     if has_subtitles:
-                        style_config = {"caption_style": caption_preset}
+                        style_config = {
+                            "caption_style": caption_preset,
+                            "target_lang": t_lang
+                        }
                         subtitle_service.generate_ass(shifted_words, ass_path, style_config)
 
-                    # Step B: Render Crop with Zooms and on-the-fly subtitle burning
+                    # Step B: Render Crop with on-the-fly subtitle burning
                     temp_video_source = subbed_path if has_subtitles else clip_path
                     clip_rendering_service.render_clip(
                         video_path=video_path,
@@ -461,7 +511,7 @@ class MasterAIAgent:
                     if dubbed_audio_path and os.path.exists(dubbed_audio_path):
                         import shutil
                         import subprocess
-                        logger.info(f"Replacing master variation audio with dubbed audio: {dubbed_audio_path}")
+                        logger.info(f"Replacing Variation {idx} audio with dubbed audio: {dubbed_audio_path}")
                         temp_dubbed_video = f"{variation_base}{part_suffix}_temp_dubbed.mp4"
                         mux_cmd = [
                             "ffmpeg", "-y", "-loglevel", "error",
@@ -486,38 +536,48 @@ class MasterAIAgent:
                                 except Exception:
                                     pass
 
-                    # Step C: Music Mixing
-                    # has_voice should be True if speech was detected OR transcript has words.
-                    # This ensures music stays at background volume (0.15) when speech exists,
-                    # even if the transcript is sparse.
-                    effective_has_voice = video_has_speech or len(shifted_words) > 0
+                    # Step C: Smart Music & BGM Mixing
+                    # If video has speech: mix BGM ducked underneath (~0.16 volume)
+                    # If NO sound/speech was detected in video: apply song at full volume (1.0)
+                    has_voice_in_clip = audio_has_speech or len(shifted_words) > 0
+                    music_vol = 0.16 if has_voice_in_clip else 1.0
+
                     music_agent.apply_music(
                         video_path=temp_video_source,
                         music_path=music_track,
                         output_path=final_path,
-                        options={"disable_music": disable_music, "has_voice": effective_has_voice}
+                        options={
+                            "disable_music": False if music_track else True,
+                            "has_voice": has_voice_in_clip,
+                            "volume": music_vol
+                        }
                     )
 
-                    # Determine descriptive title
-                    if total_parts > 1:
-                        title = f"Master Variation {idx} - Part {part_num}"
-                    else:
-                        title = f"Master Variation {idx}"
+                    title = f"Master Variation {idx} - {persona_name}"
 
-                    generated_files.append({
+                    var_item = {
                         "path": final_path,
                         "title": title,
-                        "duration": part_end - part_start,
+                        "duration": round(part_end - part_start, 2),
                         "start_time": part_start,
-                        "end_time": part_end
-                    })
-                    logger.info(f"Variation {idx} Part {part_num} saved to {final_path}")
+                        "end_time": part_end,
+                        "persona": persona_name,
+                        "variation_index": idx
+                    }
+                    generated_files.append(var_item)
+                    logger.info(f"Variation {idx} saved to {final_path} (Duration: {var_item['duration']}s)")
+
+                    if on_variation_complete:
+                        try:
+                            on_variation_complete(var_item, idx, len(personas))
+                        except Exception as ce:
+                            logger.warning(f"on_variation_complete callback error: {ce}")
 
                 except Exception as e:
-                    logger.error(f"Variation {idx} Part {part_num} failed: {e}", exc_info=True)
+                    logger.error(f"Variation {idx} failed: {e}", exc_info=True)
 
                 finally:
-                    # Cleanup intermediates regardless of success/failure
+                    # Cleanup intermediates
                     for temp_file in [clip_path, ass_path, subbed_path]:
                         if os.path.exists(temp_file):
                             try:

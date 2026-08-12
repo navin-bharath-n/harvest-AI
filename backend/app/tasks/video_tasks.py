@@ -537,22 +537,26 @@ def render_clip_task(clip_id: int):
                 logger.error(f"Subtitle ASS generation failed: {se}")
                 has_subtitles = False
 
-        # 6. OpenCV crop rendering with zooms and transitions (if crop trajectory available)
+        # 6. Render clip with chosen framing mode (fit_blur, fit_black, or smart_crop)
+        framing_mode = instructions.get("framing_mode") or edit_options.get("framing_mode", "fit_blur")
+        instructions["framing_mode"] = framing_mode
         temp_video_source = subbed_path if has_subtitles else cropped_path
 
-        if has_crop_trajectory:
-            from app.services.clip_rendering_service import clip_rendering_service
+        from app.services.clip_rendering_service import clip_rendering_service
+        trajectory = video.crop_metadata.get("trajectory", []) if (video.crop_metadata and isinstance(video.crop_metadata, dict)) else []
+
+        if framing_mode in ["fit", "fit_blur", "fit_black"] or has_crop_trajectory:
             clip_rendering_service.render_clip(
                 video_path=video_path,
                 output_path=temp_video_source,
                 start_time=clip.start_time,
                 end_time=clip.end_time,
-                crop_trajectory=video.crop_metadata["trajectory"],
+                crop_trajectory=trajectory,
                 editing_instructions=instructions,
                 subtitle_path=ass_path if has_subtitles else None
             )
         else:
-            # Fallback: direct FFmpeg trim (no smart crop, but respects start/end times and burns subtitles if needed)
+            # Fallback: direct FFmpeg trim
             logger.info(f"No crop trajectory for clip {clip_id}, using direct FFmpeg trim fallback.")
             import subprocess
             duration = clip.end_time - clip.start_time
@@ -566,14 +570,8 @@ def render_clip_task(clip_id: int):
             ]
 
             if has_subtitles:
-                import shutil
-                ext = os.path.splitext(ass_path)[1]
-                temp_sub_name = f"_tmp_sub_{uuid.uuid4().hex[:8]}{ext}"
-                temp_sub_path = os.path.join(os.getcwd(), temp_sub_name)
-                shutil.copy2(ass_path, temp_sub_path)
-                safe_sub_path = temp_sub_name
-
-                ffmpeg_cmd.extend(["-vf", f"subtitles='{safe_sub_path}'"])
+                escaped_sub = os.path.abspath(ass_path).replace('\\', '/').replace(':', r'\:')
+                ffmpeg_cmd.extend(["-vf", f"subtitles=filename='{escaped_sub}'"])
 
             ffmpeg_cmd.extend([
                 "-c:v", "libx264", "-preset", "fast", "-crf", "18", # Higher quality encoding
@@ -582,16 +580,20 @@ def render_clip_task(clip_id: int):
                 temp_video_source
             ])
 
-            try:
-                result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
-                if result.returncode != 0:
+            result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                if has_subtitles:
+                    logger.warning("FFmpeg trim with subtitles failed. Retrying without subtitles...")
+                    retry_cmd = [
+                        "ffmpeg", "-y", "-ss", str(clip.start_time), "-t", str(duration),
+                        "-i", video_path, "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+                        "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", temp_video_source
+                    ]
+                    retry_res = subprocess.run(retry_cmd, capture_output=True, text=True)
+                    if retry_res.returncode != 0:
+                        raise RuntimeError(f"FFmpeg trim failed: {retry_res.stderr[-500:]}")
+                else:
                     raise RuntimeError(f"FFmpeg trim failed: {result.stderr[-500:]}")
-            finally:
-                if has_subtitles and 'temp_sub_path' in locals() and os.path.exists(temp_sub_path):
-                    try:
-                        os.remove(temp_sub_path)
-                    except Exception:
-                        pass
 
         # 6.5. Replace video audio with dubbed audio if available
         if dubbed_audio_path and os.path.exists(dubbed_audio_path):
@@ -686,7 +688,9 @@ def generate_master_shorts_task(
     dub_voice: bool = False,
     caption_language: str = "translated",
     dub_mix_mode: str = "replace",
-    speaker_gender: str = "female"
+    speaker_gender: str = "female",
+    audio_theme: str = "auto",
+    framing_mode: str = "fit_blur"
 ):
     logger.info(f"Starting master shorts generation for video {video_id}")
     db = SessionLocal()
@@ -724,64 +728,45 @@ def generate_master_shorts_task(
 
         logger.info(f"Processing video at absolute path: {video_path}")
 
-        def _update_progress(stage: str):
-            from app.models import VideoStatus, TranscriptionStatus, ContentAnalysisStatus
-            video.status = VideoStatus.COMPLETED
-            if stage == "transcribing":
-                video.transcription_status = TranscriptionStatus.PROCESSING
-            elif stage == "analyzing":
-                video.transcription_status = TranscriptionStatus.COMPLETED
-                video.analysis_status = ContentAnalysisStatus.PROCESSING
-            elif stage == "rendering":
-                video.analysis_status = ContentAnalysisStatus.COMPLETED
-            db.commit()
+        # Clean up existing Master Variation clips for this video to ensure a fresh set of 5
+        old_variations = db.query(models.Clip).filter(
+            models.Clip.video_id == video_id,
+            models.Clip.title.like("%Master Variation%")
+        ).all()
+        for old_clip in old_variations:
+            if old_clip.storage_path:
+                old_file = os.path.join(_app_dir, old_clip.storage_path)
+                if os.path.exists(old_file):
+                    try:
+                        os.remove(old_file)
+                    except Exception:
+                        pass
+            db.delete(old_clip)
+        db.commit()
 
-        results = master_agent.generate_shorts(
-            video_path=video_path,
-            length=length,
-            platform=platform,
-            optional_prompt=optional_prompt,
-            progress_callback=_update_progress,
-            db_video=video,
-            translate_language=translate_language,
-            dub_voice=dub_voice,
-            caption_language=caption_language,
-            dub_mix_mode=dub_mix_mode,
-            speaker_gender=speaker_gender
-        )
-
-        # Save the results as Clip records
         clips_dir = os.path.join(os.path.dirname(video_path), "clips")
         os.makedirs(clips_dir, exist_ok=True)
 
-        for i, item in enumerate(results):
-            start_val = 0.0
-            end_val = length
+        saved_paths = set()
 
-            if isinstance(item, dict):
-                path = item["path"]
-                title = item["title"]
-                clip_dur = item.get("duration", length)
-                start_val = item.get("start_time", 0.0)
-                end_val = item.get("end_time", start_val + clip_dur)
-                # Form descriptive filename based on title
-                sanitized_title = title.lower().replace(" ", "_").replace("-", "")
-                output_filename = f"{sanitized_title}_{uuid.uuid4().hex[:8]}.mp4"
-            else:
-                path = item
-                title = f"Master Variation {i+1}"
-                clip_dur = length
-                end_val = length
-                output_filename = f"variation_{i+1}_{uuid.uuid4().hex[:8]}.mp4"
+        def _save_variation_clip(item, current_idx, total_count):
+            if not isinstance(item, dict):
+                return
+            src_path = item.get("path")
+            if not src_path or not os.path.exists(src_path) or src_path in saved_paths:
+                return
 
-            if not path or not os.path.exists(path):
-                logger.warning(f"Result file not found at {path}, skipping.")
-                continue
+            saved_paths.add(src_path)
+            title = item.get("title", f"Master Variation {current_idx}")
+            clip_dur = item.get("duration", length)
+            start_val = item.get("start_time", 0.0)
+            end_val = item.get("end_time", start_val + clip_dur)
 
+            sanitized_title = title.lower().replace(" ", "_").replace("-", "").replace("(", "").replace(")", "")
+            output_filename = f"{sanitized_title}_{uuid.uuid4().hex[:8]}.mp4"
             final_path = os.path.join(clips_dir, output_filename)
-            shutil.copy2(path, final_path)
+            shutil.copy2(src_path, final_path)
 
-            # Store path relative to app dir for serving via /uploads/
             rel_path = os.path.relpath(final_path, _app_dir).replace("\\", "/")
 
             db_clip = models.Clip(
@@ -794,13 +779,81 @@ def generate_master_shorts_task(
                 storage_path=rel_path
             )
             db.add(db_clip)
+            video.status = models.VideoStatus.PROCESSING
+            video.transcription_status = models.TranscriptionStatus.COMPLETED
+            video.analysis_status = models.ContentAnalysisStatus.COMPLETED
+            video.highlight_status = models.HighlightDetectionStatus.COMPLETED
+            video.crop_status = models.CropStatus.COMPLETED
+            db.commit()
+            logger.info(f"Progressively saved variation {current_idx}/{total_count} ({title}) to DB.")
 
-        db.commit()
+        def _update_progress(stage: str):
+            from app.models import VideoStatus, TranscriptionStatus, ContentAnalysisStatus, HighlightDetectionStatus, CropStatus
+            video.status = VideoStatus.PROCESSING
+            if stage == "transcribing":
+                video.transcription_status = TranscriptionStatus.PROCESSING
+            elif stage == "analyzing":
+                video.transcription_status = TranscriptionStatus.COMPLETED
+                video.analysis_status = ContentAnalysisStatus.PROCESSING
+            elif stage == "highlighting":
+                video.transcription_status = TranscriptionStatus.COMPLETED
+                video.analysis_status = ContentAnalysisStatus.COMPLETED
+                video.highlight_status = HighlightDetectionStatus.PROCESSING
+            elif stage == "cropping":
+                video.transcription_status = TranscriptionStatus.COMPLETED
+                video.analysis_status = ContentAnalysisStatus.COMPLETED
+                video.highlight_status = HighlightDetectionStatus.COMPLETED
+                video.crop_status = CropStatus.PROCESSING
+            elif stage == "rendering":
+                video.transcription_status = TranscriptionStatus.COMPLETED
+                video.analysis_status = ContentAnalysisStatus.COMPLETED
+                video.highlight_status = HighlightDetectionStatus.COMPLETED
+                video.crop_status = CropStatus.COMPLETED
+            db.commit()
+
+        results = master_agent.generate_shorts(
+            video_path=video_path,
+            length=length,
+            platform=platform,
+            optional_prompt=optional_prompt,
+            audio_theme=audio_theme,
+            progress_callback=_update_progress,
+            db_video=video,
+            translate_language=translate_language,
+            dub_voice=dub_voice,
+            caption_language=caption_language,
+            dub_mix_mode=dub_mix_mode,
+            speaker_gender=speaker_gender,
+            framing_mode=framing_mode,
+            on_variation_complete=_save_variation_clip
+        )
+
+        # Fallback check to ensure any result not captured by callback is persisted
+        for i, item in enumerate(results, 1):
+            if isinstance(item, dict) and item.get("path") not in saved_paths:
+                _save_variation_clip(item, i, len(results))
+
         logger.info(f"Successfully generated {len(results)} master variations for video {video_id}")
+
+        # Ensure final video status and pipeline fields are marked completed in DB
+        video = db.query(models.Video).filter(models.Video.id == video_id).first()
+        if video:
+            from app.models import VideoStatus, TranscriptionStatus, ContentAnalysisStatus, HighlightDetectionStatus, CropStatus
+            video.status = VideoStatus.COMPLETED
+            video.transcription_status = TranscriptionStatus.COMPLETED
+            video.analysis_status = ContentAnalysisStatus.COMPLETED
+            video.highlight_status = HighlightDetectionStatus.COMPLETED
+            video.crop_status = CropStatus.COMPLETED
+            db.commit()
 
     except Exception as e:
         logger.error(f"Error generating master variations for video {video_id}: {e}", exc_info=True)
         db.rollback()
+        video = db.query(models.Video).filter(models.Video.id == video_id).first()
+        if video:
+            from app.models import VideoStatus
+            video.status = VideoStatus.FAILED
+            db.commit()
     finally:
         db.close()
 

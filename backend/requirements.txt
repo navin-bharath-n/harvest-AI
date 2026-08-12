@@ -24,6 +24,7 @@ scipy
 faster-whisper
 opencv-python-headless
 gTTS>=2.3.2
+edge-tts>=7.0.0
 google-cloud-speech>=2.21.0
 deep-translator>=1.11.4
 openai

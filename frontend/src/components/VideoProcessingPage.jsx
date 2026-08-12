@@ -5,6 +5,9 @@ import { ChevronLeft, Scissors, Mic, Wand, PlayCircle, Film, RefreshCw, Video, G
 import { api } from '../api/client';
 import SocialPublishingPanel from './SocialPublishingPanel';
 
+const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'https://localhost:8000';
+const API_BASE = `${SERVER_URL}/api/v1`;
+
 const LANGUAGES = [
   { code: 'en', name: 'English' }, { code: 'es', name: 'Spanish' },
   { code: 'fr', name: 'French' }, { code: 'de', name: 'German' },
@@ -52,6 +55,7 @@ export default function VideoProcessingPage() {
   const [dubVoice, setDubVoice] = useState(false);
   const [captionLanguage, setCaptionLanguage] = useState('original');
   const [dubMixMode, setDubMixMode] = useState('replace');
+  const [framingMode, setFramingMode] = useState('fit_blur'); // 'fit_blur', 'fit_black', 'smart_crop'
   const [translatedTranscript, setTranslatedTranscript] = useState(null);
   const [translating, setTranslating] = useState(false);
   const [englishTranscript, setEnglishTranscript] = useState(null);
@@ -61,6 +65,7 @@ export default function VideoProcessingPage() {
 
   const videoRef = useRef(null);
   const previewVideoRef = useRef(null);
+  const previewBgVideoRef = useRef(null);
   const requestRef = useRef();
 
   /* Translation effect */
@@ -70,7 +75,7 @@ export default function VideoProcessingPage() {
     (async () => {
       setTranslating(true);
       try {
-        const res = await fetch('https://localhost:8000/api/v1/videos/translate-transcript', {
+        const res = await fetch(`${API_BASE}/videos/translate-transcript`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ words: video.transcript, target_lang: translateLanguage }),
         });
@@ -88,7 +93,7 @@ export default function VideoProcessingPage() {
     (async () => {
       setFetchingEnglish(true);
       try {
-        const res = await fetch('https://localhost:8000/api/v1/videos/translate-transcript', {
+        const res = await fetch(`${API_BASE}/videos/translate-transcript`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ words: video.transcript, target_lang: 'en' }),
         });
@@ -110,21 +115,27 @@ export default function VideoProcessingPage() {
     })();
   }, [videoId]);
 
-  /* Smart crop preview loop */
+  /* 9:16 Vertical Preview Sync loop */
   const updatePreview = () => {
-    if (!videoRef.current || !previewVideoRef.current || !video?.crop_metadata?.trajectory) {
+    if (!videoRef.current || !previewVideoRef.current) {
       requestRef.current = requestAnimationFrame(updatePreview); return;
     }
-    const t = videoRef.current.currentTime;
-    const traj = video.crop_metadata.trajectory;
-    let cur = traj[0];
-    for (let i = 0; i < traj.length; i++) {
-      if (traj[i].timestamp <= t) cur = traj[i]; else break;
-    }
-    const origH = previewVideoRef.current.videoHeight || 1080;
-    const prevH = previewVideoRef.current.clientHeight;
-    if (origH > 0 && prevH > 0 && cur) {
-      previewVideoRef.current.style.transform = `translateX(${-(cur.x * (prevH / origH))}px)`;
+    if (framingMode === 'smart_crop' && video?.crop_metadata?.trajectory) {
+      const t = videoRef.current.currentTime;
+      const traj = video.crop_metadata.trajectory;
+      let cur = traj[0];
+      for (let i = 0; i < traj.length; i++) {
+        if (traj[i].timestamp <= t) cur = traj[i]; else break;
+      }
+      const origH = previewVideoRef.current.videoHeight || 1080;
+      const prevH = previewVideoRef.current.clientHeight;
+      if (origH > 0 && prevH > 0 && cur) {
+        previewVideoRef.current.style.transform = `translateX(${-(cur.x * (prevH / origH))}px)`;
+      }
+    } else {
+      if (previewVideoRef.current.style.transform && previewVideoRef.current.style.transform !== 'none') {
+        previewVideoRef.current.style.transform = 'none';
+      }
     }
     requestRef.current = requestAnimationFrame(updatePreview);
   };
@@ -132,7 +143,7 @@ export default function VideoProcessingPage() {
   useEffect(() => {
     requestRef.current = requestAnimationFrame(updatePreview);
     return () => cancelAnimationFrame(requestRef.current);
-  }, [video]);
+  }, [video, framingMode]);
 
   /* Polling */
   const isPipelineActive = video && (
@@ -154,17 +165,17 @@ export default function VideoProcessingPage() {
           if (u) setVideo(u);
 
           // Fetch detailed status
-          const statusRes = await fetch(`https://localhost:8000/api/v1/videos/${video.id}/status`);
+          const statusRes = await fetch(`${API_BASE}/videos/${video.id}/status`);
           if (statusRes.ok) {
             setPipelineStatus(await statusRes.json());
           }
 
-          const r = await fetch(`https://localhost:8000/api/v1/videos/${video.id}/clips`);
+          const r = await fetch(`${API_BASE}/videos/${video.id}/clips`);
           if (r.ok) { setClips(await r.json()); setCacheBust(Date.now()); }
         } catch (e) { console.error(e); }
       }, 2000);
     } else {
-      fetch(`https://localhost:8000/api/v1/videos/${video.id}/clips`)
+      fetch(`${API_BASE}/videos/${video.id}/clips`)
         .then(r => r.json()).then(d => { setClips(d); setCacheBust(Date.now()); }).catch(console.error);
     }
     return () => clearInterval(id);
@@ -206,7 +217,7 @@ export default function VideoProcessingPage() {
   const capLabel = captionLanguage === 'english' ? 'English' : captionLanguage === 'original' ? 'Original' :
     LANGUAGES.find(l => l.code === translateLanguage)?.name || translateLanguage;
 
-  const backendUrl = 'https://localhost:8000';
+  const backendUrl = SERVER_URL;
   const origStoragePath = (video.storage_path || '').replace(/\\/g, '/');
   const origRelPath = origStoragePath.includes('uploads/') ? origStoragePath.substring(origStoragePath.indexOf('uploads/')) : origStoragePath;
   const videoUrl = video.storage_path ? `${backendUrl}/${origRelPath}?t=${cacheBust}` : '';
@@ -219,19 +230,19 @@ export default function VideoProcessingPage() {
     { key: 'metadata', title: 'Video Metadata Extraction', description: 'Extract FPS, resolution, bitrate, and audio streams.', status: video.status, canTrigger: false },
     {
       key: 'transcription', title: 'Audio Transcription', description: 'Convert audio track into word-level timestamps using Google STT or local Whisper.', status: video.transcription_status, canTrigger: video.status === 'completed',
-      triggerAction: () => fetch(`https://localhost:8000/api/v1/videos/${video.id}/transcribe`, { method: 'POST' })
+      triggerAction: () => fetch(`${API_BASE}/videos/${video.id}/transcribe`, { method: 'POST' })
     },
     {
       key: 'analysis', title: 'AI Content Analysis (Qwen3)', description: 'Understand topic, key scenes, and outline highlights.', status: video.analysis_status, canTrigger: video.transcription_status === 'completed',
-      triggerAction: () => fetch(`https://localhost:8000/api/v1/videos/${video.id}/analyze`, { method: 'POST' })
+      triggerAction: () => fetch(`${API_BASE}/videos/${video.id}/analyze`, { method: 'POST' })
     },
     {
       key: 'highlights', title: 'Highlight Candidates Selection', description: 'Detect top visual sequences and viral appeal.', status: video.highlight_status, canTrigger: video.analysis_status === 'completed',
-      triggerAction: () => fetch(`https://localhost:8000/api/v1/videos/${video.id}/detect-highlights`, { method: 'POST' })
+      triggerAction: () => fetch(`${API_BASE}/videos/${video.id}/detect-highlights`, { method: 'POST' })
     },
     {
       key: 'crop', title: 'Smart Cropping Trajectory (9:16)', description: 'Track primary subjects for vertical formatting.', status: video.crop_status, canTrigger: video.status === 'completed',
-      triggerAction: () => fetch(`https://localhost:8000/api/v1/videos/${video.id}/smart-crop`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ target_fps: parseInt(targetFps) }) })
+      triggerAction: () => fetch(`${API_BASE}/videos/${video.id}/smart-crop`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ target_fps: parseInt(targetFps) }) })
     },
   ];
 
@@ -287,12 +298,23 @@ export default function VideoProcessingPage() {
                   <video
                     ref={videoRef} src={videoUrl} controls
                     style={{ width: '100%', display: 'block', maxHeight: 460 }}
-                    onPlay={() => previewVideoRef.current?.play()}
-                    onPause={() => previewVideoRef.current?.pause()}
-                    onSeeked={() => { if (previewVideoRef.current && videoRef.current) previewVideoRef.current.currentTime = videoRef.current.currentTime; }}
+                    onPlay={() => {
+                      previewVideoRef.current?.play();
+                      previewBgVideoRef.current?.play();
+                    }}
+                    onPause={() => {
+                      previewVideoRef.current?.pause();
+                      previewBgVideoRef.current?.pause();
+                    }}
+                    onSeeked={() => {
+                      if (previewVideoRef.current && videoRef.current) previewVideoRef.current.currentTime = videoRef.current.currentTime;
+                      if (previewBgVideoRef.current && videoRef.current) previewBgVideoRef.current.currentTime = videoRef.current.currentTime;
+                    }}
                     onTimeUpdate={() => {
                       if (previewVideoRef.current && videoRef.current && Math.abs(previewVideoRef.current.currentTime - videoRef.current.currentTime) > 0.2)
                         previewVideoRef.current.currentTime = videoRef.current.currentTime;
+                      if (previewBgVideoRef.current && videoRef.current && Math.abs(previewBgVideoRef.current.currentTime - videoRef.current.currentTime) > 0.2)
+                        previewBgVideoRef.current.currentTime = videoRef.current.currentTime;
                       setCurrentVideoTime(videoRef.current?.currentTime || 0);
                     }}
                   />
@@ -316,12 +338,92 @@ export default function VideoProcessingPage() {
               )}
             </div>
 
-            {/* Smart crop 9:16 preview */}
-            {video.crop_metadata?.trajectory && videoUrl && (
-              <div style={{ height: videoRef.current ? `${videoRef.current.clientHeight}px` : 460, aspectRatio: '9/16', borderRadius: 'var(--radius-lg)', overflow: 'hidden', background: '#000', boxShadow: '0 4px 20px rgba(79,70,229,0.2)', border: '2px solid var(--indigo-600)', position: 'relative', flexShrink: 0 }}>
-                <video ref={previewVideoRef} src={videoUrl} muted style={{ height: '100%', maxWidth: 'none', display: 'block', transformOrigin: 'top left', willChange: 'transform' }} />
-                <div style={{ position: 'absolute', top: 8, right: 8, background: 'rgba(255,255,255,0.9)', color: 'var(--indigo-600)', padding: '3px 8px', borderRadius: 20, fontSize: '0.7rem', fontWeight: 800, display: 'flex', alignItems: 'center', gap: 4, backdropFilter: 'blur(8px)', border: '1px solid var(--indigo-100)' }}>
-                  <Wand size={11} /> AI Crop
+            {/* 9:16 Vertical Short Preview */}
+            {videoUrl && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', flexShrink: 0 }}>
+                {/* Framing Mode Toggle */}
+                <div style={{ display: 'flex', background: 'var(--bg-surface)', padding: '2px', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-subtle)', gap: '2px' }}>
+                  <button
+                    onClick={() => setFramingMode('fit_blur')}
+                    style={{
+                      flex: 1, padding: '3px 6px', fontSize: '0.68rem', fontWeight: 700, borderRadius: 'var(--radius-sm)', border: 'none', cursor: 'pointer',
+                      background: framingMode === 'fit_blur' ? 'var(--indigo-600)' : 'transparent',
+                      color: framingMode === 'fit_blur' ? '#fff' : 'var(--text-muted)',
+                      transition: 'all 0.2s', whiteSpace: 'nowrap'
+                    }}
+                    title="Fit full 16:9 frame with ambient blurred background (No crop)"
+                  >
+                    🖼️ Fit (Blur)
+                  </button>
+                  <button
+                    onClick={() => setFramingMode('fit_black')}
+                    style={{
+                      flex: 1, padding: '3px 6px', fontSize: '0.68rem', fontWeight: 700, borderRadius: 'var(--radius-sm)', border: 'none', cursor: 'pointer',
+                      background: framingMode === 'fit_black' ? 'var(--indigo-600)' : 'transparent',
+                      color: framingMode === 'fit_black' ? '#fff' : 'var(--text-muted)',
+                      transition: 'all 0.2s', whiteSpace: 'nowrap'
+                    }}
+                    title="Fit full 16:9 frame with black letterbox (No crop)"
+                  >
+                    ⬛ Fit (Black)
+                  </button>
+                  <button
+                    onClick={() => setFramingMode('smart_crop')}
+                    style={{
+                      flex: 1, padding: '3px 6px', fontSize: '0.68rem', fontWeight: 700, borderRadius: 'var(--radius-sm)', border: 'none', cursor: 'pointer',
+                      background: framingMode === 'smart_crop' ? 'var(--indigo-600)' : 'transparent',
+                      color: framingMode === 'smart_crop' ? '#fff' : 'var(--text-muted)',
+                      transition: 'all 0.2s', whiteSpace: 'nowrap'
+                    }}
+                    title="Dynamic 9:16 smart crop tracking subjects"
+                  >
+                    🔍 Crop
+                  </button>
+                </div>
+
+                <div style={{ height: videoRef.current ? `${videoRef.current.clientHeight - 32}px` : 428, aspectRatio: '9/16', borderRadius: 'var(--radius-lg)', overflow: 'hidden', background: '#000', boxShadow: '0 4px 20px rgba(79,70,229,0.2)', border: '2px solid var(--indigo-600)', position: 'relative' }}>
+                  {framingMode === 'fit_blur' ? (
+                    <div style={{ width: '100%', height: '100%', position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
+                      {/* Frosted ambient background */}
+                      <video
+                        ref={previewBgVideoRef}
+                        src={videoUrl}
+                        muted
+                        playsInline
+                        style={{ position: 'absolute', width: '100%', height: '100%', objectFit: 'cover', filter: 'blur(16px) brightness(0.42)', transform: 'scale(1.35)' }}
+                      />
+                      {/* Full uncropped 16:9 video */}
+                      <video
+                        ref={previewVideoRef}
+                        src={videoUrl}
+                        muted
+                        playsInline
+                        style={{ width: '100%', height: 'auto', maxHeight: '100%', objectFit: 'contain', position: 'relative', zIndex: 2, display: 'block', borderRadius: 4, boxShadow: '0 4px 16px rgba(0,0,0,0.6)' }}
+                      />
+                    </div>
+                  ) : framingMode === 'fit_black' ? (
+                    <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#000' }}>
+                      <video
+                        ref={previewVideoRef}
+                        src={videoUrl}
+                        muted
+                        playsInline
+                        style={{ width: '100%', height: 'auto', maxHeight: '100%', objectFit: 'contain', display: 'block' }}
+                      />
+                    </div>
+                  ) : (
+                    <video
+                      ref={previewVideoRef}
+                      src={videoUrl}
+                      muted
+                      playsInline
+                      style={{ height: '100%', maxWidth: 'none', display: 'block', transformOrigin: 'top left', willChange: 'transform' }}
+                    />
+                  )}
+
+                  <div style={{ position: 'absolute', top: 8, right: 8, zIndex: 10, background: 'rgba(255,255,255,0.92)', color: 'var(--indigo-600)', padding: '3px 8px', borderRadius: 20, fontSize: '0.68rem', fontWeight: 800, display: 'flex', alignItems: 'center', gap: 4, backdropFilter: 'blur(8px)', border: '1px solid var(--indigo-100)' }}>
+                    {framingMode === 'fit_blur' ? '🖼️ 16:9 in 9:16 (No Crop)' : framingMode === 'fit_black' ? '⬛ Black Letterbox' : <><Wand size={11} /> AI Crop</>}
+                  </div>
                 </div>
               </div>
             )}
@@ -368,14 +470,32 @@ export default function VideoProcessingPage() {
                           <PlayCircle size={12} /> Preview
                         </button>
                         <button
-                          style={{ padding: '0.3rem 0.8rem', fontSize: '0.76rem', display: 'flex', alignItems: 'center', gap: '0.3rem', fontWeight: 700, borderRadius: 'var(--radius-md)', cursor: video.crop_status !== 'completed' ? 'not-allowed' : 'pointer', background: video.crop_status !== 'completed' ? 'var(--bg-inset)' : 'var(--accent-dark)', color: video.crop_status !== 'completed' ? 'var(--text-faint)' : '#fff', border: 'none', transition: 'all 0.2s' }}
-                          disabled={video.crop_status !== 'completed'}
-                          title={video.crop_status !== 'completed' ? 'Generate Smart Crop first' : ''}
+                          style={{
+                            padding: '0.3rem 0.8rem', fontSize: '0.76rem', display: 'flex', alignItems: 'center', gap: '0.3rem', fontWeight: 700, borderRadius: 'var(--radius-md)',
+                            cursor: (framingMode === 'smart_crop' && video.crop_status !== 'completed') ? 'not-allowed' : 'pointer',
+                            background: (framingMode === 'smart_crop' && video.crop_status !== 'completed') ? 'var(--bg-inset)' : 'var(--accent-dark)',
+                            color: (framingMode === 'smart_crop' && video.crop_status !== 'completed') ? 'var(--text-faint)' : '#fff',
+                            border: 'none', transition: 'all 0.2s'
+                          }}
+                          disabled={framingMode === 'smart_crop' && video.crop_status !== 'completed'}
+                          title={framingMode === 'smart_crop' && video.crop_status !== 'completed' ? 'Generate Smart Crop first' : ''}
                           onClick={async () => {
                             try {
-                              await fetch(`https://localhost:8000/api/v1/videos/${video.id}/clips`, {
+                              await fetch(`${API_BASE}/videos/${video.id}/clips`, {
                                 method: 'POST', headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ title: clip.title, start_time: clip.start_time, end_time: clip.end_time, edit_options: { translate_language: translateLanguage, dub_voice: dubVoice, caption_language: captionLanguage, dub_mix_mode: dubMixMode, subtitles: getSubtitles() } }),
+                                body: JSON.stringify({
+                                  title: clip.title,
+                                  start_time: clip.start_time,
+                                  end_time: clip.end_time,
+                                  edit_options: {
+                                    translate_language: translateLanguage,
+                                    dub_voice: dubVoice,
+                                    caption_language: captionLanguage,
+                                    dub_mix_mode: dubMixMode,
+                                    framing_mode: framingMode,
+                                    subtitles: getSubtitles()
+                                  }
+                                }),
                               });
                             } catch (e) { console.error(e); }
                           }}
@@ -408,7 +528,7 @@ export default function VideoProcessingPage() {
                       <StatusChip status={c.status} />
                     </div>
                     {c.status === 'completed' && c.storage_path ? (
-                      <video src={`https://localhost:8000/${(c.storage_path || '').replace(/\\/g, '/').includes('uploads/') ? (c.storage_path || '').replace(/\\/g, '/').substring((c.storage_path || '').replace(/\\/g, '/').indexOf('uploads/')) : c.storage_path}?t=${cacheBust}`} controls style={{ width: '100%', borderRadius: 'var(--radius-sm)' }} />
+                      <video src={`${SERVER_URL}/${(c.storage_path || '').replace(/\\/g, '/').includes('uploads/') ? (c.storage_path || '').replace(/\\/g, '/').substring((c.storage_path || '').replace(/\\/g, '/').indexOf('uploads/')) : c.storage_path}?t=${cacheBust}`} controls style={{ width: '100%', borderRadius: 'var(--radius-sm)' }} />
                     ) : (
                       <div style={{ height: 130, background: 'var(--bg-inset)', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 'var(--radius-sm)' }}>
                         {c.status === 'rendering' ? (

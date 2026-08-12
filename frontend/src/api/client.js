@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-const API_BASE_URL = 'https://localhost:8000/api/v1';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://localhost:8000/api/v1';
 
 const client = axios.create({
   baseURL: API_BASE_URL,
@@ -99,6 +99,24 @@ export const api = {
   // Delete/disconnect a social connection
   deleteUserConnection: async (userId = 1, platform) => {
     const response = await client.delete(`/users/${userId}/connections/${platform}`);
+    return response.data;
+  },
+
+  // Get video processing & rendering status
+  getVideoStatus: async (videoId) => {
+    const response = await client.get(`/videos/${videoId}/status`);
+    return response.data;
+  },
+
+  // Cancel active video generation
+  cancelGeneration: async (videoId) => {
+    const response = await client.post(`/videos/${videoId}/cancel-generation`);
+    return response.data;
+  },
+
+  // Cancel all active video generation tasks across the system
+  cancelAllGenerations: async () => {
+    const response = await client.post('/videos/cancel-all');
     return response.data;
   }
 };

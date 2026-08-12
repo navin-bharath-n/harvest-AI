@@ -256,12 +256,29 @@ def _stop_bg_processes():
                 proc.kill()
             logger.info(f"   {name} stopped.")
 
+def _silence_windows_asyncio_socket_error(loop, context):
+    msg = context.get("message", "")
+    exc = context.get("exception")
+    # Silence Python 3.12 Windows SelectorSocketTransport connection_lost teardown bug during video range requests
+    if isinstance(exc, (AttributeError, ConnectionResetError, ConnectionAbortedError, OSError)):
+        if "connection_lost" in str(exc) or "close" in str(exc) or "NoneType" in str(exc):
+            return
+    if "connection_lost" in msg or "10053" in str(context):
+        return
+    loop.default_exception_handler(context)
+
 # ---------------------------------------------------------------
 # Lifespan: runs on startup and shutdown
 # ---------------------------------------------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # --- STARTUP ---
+    import asyncio
+    try:
+        loop = asyncio.get_running_loop()
+        loop.set_exception_handler(_silence_windows_asyncio_socket_error)
+    except Exception:
+        pass
     logger.info("=" * 50)
     logger.info("Harvest AI Server Starting...")
     logger.info("=" * 50)
@@ -332,3 +349,22 @@ app.include_router(api_router, prefix=settings.API_V1_STR)
 @app.get("/")
 def root():
     return {"message": f"Welcome to {settings.PROJECT_NAME} API"}
+
+if __name__ == "__main__":
+    import uvicorn
+    from generate_certs import generate_self_signed_cert
+    backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    key_path = os.path.join(backend_dir, "key.pem")
+    cert_path = os.path.join(backend_dir, "cert.pem")
+    
+    if not os.path.exists(key_path) or not os.path.exists(cert_path):
+        generate_self_signed_cert(backend_dir)
+        
+    ssl_kwargs = {}
+    if os.path.exists(key_path) and os.path.exists(cert_path):
+        ssl_kwargs = {"ssl_keyfile": key_path, "ssl_certfile": cert_path}
+        print(f"[HTTPS] Running FastAPI with SSL certificate: {cert_path}")
+    else:
+        print("[HTTP] Running FastAPI in plain HTTP mode")
+
+    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True, **ssl_kwargs)

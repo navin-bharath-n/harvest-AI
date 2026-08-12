@@ -7,6 +7,11 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+def escape_ffmpeg_filter_path(path: str) -> str:
+    """Escapes Windows file paths for FFmpeg filter strings (e.g. subtitles=filename=...)."""
+    abs_p = os.path.abspath(path).replace('\\', '/')
+    return abs_p.replace(':', r'\:')
+
 class ClipRenderingService:
     def render_clip(self, video_path: str, output_path: str, start_time: float, end_time: float, crop_trajectory: list, editing_instructions: dict = None, subtitle_path: str = None):
         """
@@ -24,7 +29,66 @@ class ClipRenderingService:
         if duration <= 0:
             raise ValueError("End time must be greater than start time")
 
-        # 1. Trim the video clip first using FFmpeg to avoid inaccurate OpenCV seeking.
+        framing_mode = (editing_instructions.get("framing_mode") or "fit_blur").lower()
+        is_crop_mode = framing_mode in ["crop", "smart_crop", "fill"] and crop_trajectory and len(crop_trajectory) > 0
+
+        # Fast direct multi-threaded FFmpeg pipeline for Fit (Blur / Black) modes
+        if not is_crop_mode:
+            try:
+                if framing_mode == "fit_black":
+                    base_filter = "[0:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black[vf]"
+                else:
+                    # High quality frosted ambient blur with subtle darkening for crisp foreground contrast
+                    base_filter = "[0:v]split=2[bgi][fgi];[bgi]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=20:4,eq=brightness=-0.35:contrast=0.95[bg];[fgi]scale=1080:1920:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2[vf]"
+
+                has_sub = subtitle_path and os.path.exists(subtitle_path)
+                if has_sub:
+                    escaped_sub = escape_ffmpeg_filter_path(subtitle_path)
+                    filter_complex = base_filter + f";[vf]subtitles=filename='{escaped_sub}'[vo]"
+                    map_v = "[vo]"
+                else:
+                    filter_complex = base_filter
+                    map_v = "[vf]"
+
+                def _build_fast_cmd(f_complex: str, v_map: str) -> list:
+                    return [
+                        'ffmpeg', '-y',
+                        '-ss', str(start_time),
+                        '-t', str(duration),
+                        '-i', video_path,
+                        '-filter_complex', f_complex,
+                        '-map', v_map,
+                        '-map', '0:a:0?',
+                        '-c:v', 'libx264',
+                        '-preset', 'veryfast',
+                        '-crf', '18',
+                        '-c:a', 'aac',
+                        '-b:a', '192k',
+                        '-movflags', '+faststart',
+                        output_path
+                    ]
+
+                logger.info(f"Rendering fit clip via fast FFmpeg. Duration: {duration}s")
+                res = subprocess.run(_build_fast_cmd(filter_complex, map_v), capture_output=True, text=True)
+
+                # Fallback: if subtitle burning failed, retry without subtitles
+                if res.returncode != 0 and has_sub:
+                    logger.warning(f"Fast FFmpeg with subtitles failed ({res.stderr[-300:] if res.stderr else 'unknown'}). Retrying without subtitle filter...")
+                    res = subprocess.run(_build_fast_cmd(base_filter, "[vf]"), capture_output=True, text=True)
+
+                if res.returncode != 0:
+                    err_msg = res.stderr[-500:] if res.stderr else "Unknown error"
+                    logger.error(f"Fast FFmpeg render failed: {err_msg}")
+                    raise RuntimeError(f"Fast FFmpeg render failed: {err_msg}")
+
+                logger.info(f"Successfully rendered clip to {output_path}")
+                return output_path
+
+            except Exception as e:
+                logger.error(f"Error during fit render: {e}")
+                raise e
+
+        # 1. Dynamic Subject Tracking / Pan & Scan Cropping mode
         temp_trimmed_path = output_path.replace(".mp4", f"_trimmed_{uuid.uuid4().hex[:8]}.mp4")
         temp_video_path = output_path.replace(".mp4", f"_temp_{uuid.uuid4().hex[:8]}.mp4")
         
@@ -69,26 +133,20 @@ class ClipRenderingService:
             # Prepare subtitles filter if subtitle path is provided
             filters = []
             if subtitle_path and os.path.exists(subtitle_path):
-                import shutil
-                ext = os.path.splitext(subtitle_path)[1]
-                temp_sub_name = f"_tmp_sub_{uuid.uuid4().hex[:8]}{ext}"
-                # Copy to current working directory to avoid any Windows drive letter colon and escaping issues in FFmpeg filters
-                temp_sub_path = os.path.join(os.getcwd(), temp_sub_name)
-                shutil.copy2(subtitle_path, temp_sub_path)
-                safe_sub_path = temp_sub_name
-                filters.append(f"subtitles='{safe_sub_path}'")
+                escaped_sub = escape_ffmpeg_filter_path(subtitle_path)
+                filters.append(f"subtitles=filename='{escaped_sub}'")
 
             # FFmpeg command to read raw frames from stdin and encode to H264
             ffmpeg_cmd = [
                 'ffmpeg',
-                '-y', # Overwrite
-                '-loglevel', 'error', # Crucial: prevents stderr buffer from filling and causing a deadlock
+                '-y',
+                '-loglevel', 'error',
                 '-f', 'rawvideo',
                 '-vcodec', 'rawvideo',
                 '-s', f'{target_w}x{target_h}',
                 '-pix_fmt', 'bgr24',
                 '-r', str(fps),
-                '-i', '-', # Input from stdin
+                '-i', '-',
             ]
             if filters:
                 ffmpeg_cmd.extend(['-vf', ','.join(filters)])
@@ -96,7 +154,7 @@ class ClipRenderingService:
             ffmpeg_cmd.extend([
                 '-c:v', 'libx264',
                 '-preset', 'fast',
-                '-crf', '18', # Visually lossless high-quality video encoding
+                '-crf', '18',
                 '-pix_fmt', 'yuv420p',
                 temp_video_path
             ])
@@ -105,7 +163,7 @@ class ClipRenderingService:
             process = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
 
             current_frame = 0
-            fade_duration = 0.5  # 0.5 seconds fade duration
+            fade_duration = 0.5
             fade_frames = max(1, int(fade_duration * fps))
             total_clip_frames = int(duration * fps)
 
@@ -145,10 +203,10 @@ class ClipRenderingService:
                 if transition_style == "zoom" and total_clip_frames > 2 * fade_frames:
                     if clip_frame_idx < fade_frames:
                         progress = clip_frame_idx / fade_frames
-                        t_factor = 1.25 - 0.25 * progress  # Zoom out at start
+                        t_factor = 1.25 - 0.25 * progress
                     elif clip_frame_idx > total_clip_frames - fade_frames:
                         progress = (clip_frame_idx - (total_clip_frames - fade_frames)) / fade_frames
-                        t_factor = 1.0 + 0.25 * progress  # Zoom in at end
+                        t_factor = 1.0 + 0.25 * progress
                     else:
                         t_factor = 1.0
                     
@@ -163,13 +221,12 @@ class ClipRenderingService:
                 crop_x = max(0, min(crop_x, width - crop_w))
                 crop_y = max(0, min(crop_y, height - crop_h))
                 
-                # Crop
+                # Crop and resize
                 cropped_frame = frame[crop_y:crop_y+crop_h, crop_x:crop_x+crop_w]
-                
-                # Resize to 1080x1920
                 resized_frame = cv2.resize(cropped_frame, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
-                
+
                 # Apply fade transition if requested
+                transition_style = editing_instructions.get("transition", "fade")
                 if transition_style == "fade" and total_clip_frames > 2 * fade_frames:
                     if clip_frame_idx < fade_frames:
                         alpha = clip_frame_idx / fade_frames
@@ -191,7 +248,7 @@ class ClipRenderingService:
                 logger.error(f"FFmpeg encoding failed: {stderr}")
                 raise RuntimeError(f"FFmpeg encoding failed: {stderr}")
 
-            logger.info(f"Finished frame processing. Muxing audio...")
+            logger.info("Finished frame processing. Muxing audio...")
             
             # Mux with trimmed audio + apply faststart flag for web streaming
             mux_cmd = [
@@ -203,7 +260,7 @@ class ClipRenderingService:
                 '-c:a', 'aac',
                 '-b:a', '192k',
                 '-map', '0:v:0',
-                '-map', '1:a:0?', # The ? allows it to succeed even if video has no audio
+                '-map', '1:a:0?',
                 '-movflags', '+faststart',
                 output_path
             ]
@@ -225,13 +282,11 @@ class ClipRenderingService:
         finally:
             if cap:
                 cap.release()
-            # Clean up temp subtitle copy
             if temp_sub_path and os.path.exists(temp_sub_path):
                 try:
                     os.remove(temp_sub_path)
                 except Exception:
                     pass
-            # Clean up temp files
             for path in [temp_trimmed_path, temp_video_path]:
                 if os.path.exists(path):
                     try:

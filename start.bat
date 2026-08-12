@@ -47,7 +47,7 @@ timeout /t 3 /nobreak >nul
 
 REM ── Launch Frontend in Terminal 2 ──────────────────────
 echo [2/2] Starting React frontend
-echo       URL: http://localhost:5173
+echo       URL: https://localhost:5173
 echo.
 start "HarvestAI - Frontend" cmd /k "cd /d "%FRONTEND_DIR%" && npm run dev"
 
@@ -57,7 +57,7 @@ echo   All services launched in separate windows
 echo  ==========================================
 echo.
 echo   Backend   : https://localhost:8000
-echo   Frontend  : http://localhost:5173
+echo   Frontend  : https://localhost:5173
 echo   API Docs  : https://localhost:8000/docs
 echo   Celery Log: %BACKEND_DIR%\celery_worker.log
 echo.

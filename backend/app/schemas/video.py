@@ -20,11 +20,13 @@ class MasterGenerateRequest(BaseModel):
     length: float = 60.0
     platform: str = "youtube"
     optional_prompt: str = ""
+    audio_theme: Optional[str] = "auto"
     translate_language: Optional[str] = "none"
     dub_voice: Optional[bool] = False
     caption_language: Optional[str] = "translated"
     dub_mix_mode: Optional[str] = "replace"
     speaker_gender: Optional[str] = "female"
+    framing_mode: Optional[str] = "fit_blur"
 
 class ClipPublishRequest(BaseModel):
     platforms: list[str]

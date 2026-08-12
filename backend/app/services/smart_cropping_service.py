@@ -26,6 +26,16 @@ logger.info("YOLO + DeepSort loaded successfully.")
 
 class SmartCroppingService:
     def __init__(self):
+        # ── GPU / CUDA Device Detection ──────────────────────────────────────
+        self.device = "cpu"
+        try:
+            import torch
+            if torch.cuda.is_available():
+                self.device = "cuda"
+                logger.info(f"GPU detected ({torch.cuda.get_device_name(0)}). Using CUDA acceleration for smart cropping.")
+        except ImportError:
+            pass
+
         # ── YOLO / DeepSort ──────────────────────────────────────────────────
         if _YOLO_AVAILABLE:
             try:
@@ -33,6 +43,8 @@ class SmartCroppingService:
                 _backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
                 yolo_model_path = os.path.join(_backend_dir, "yolo11n.pt")
                 self.yolo = YOLO(yolo_model_path)
+                if self.device == "cuda":
+                    self.yolo.to("cuda")
                 self.tracker = DeepSort(max_age=30, n_init=3, nms_max_overlap=1.0)
             except Exception as e:
                 logger.warning(f"YOLO model load failed ({e}). Using face-center fallback.")
@@ -114,7 +126,7 @@ class SmartCroppingService:
                 # ── 1. YOLO Detection ────────────────────────────────────────
                 if self.yolo is not None:
                     try:
-                        results = self.yolo(frame, classes=[0], verbose=False)
+                        results = self.yolo(frame, device=self.device, classes=[0], verbose=False)
                         for r in results:
                             for box in r.boxes:
                                 x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()

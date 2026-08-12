@@ -178,7 +178,7 @@ export default function DashboardPage() {
                 const proj = projects.find(p => p.id === video.project_id);
                 const completedVar = video.clips?.filter(c => c.title?.includes('Master Variation') && c.status === 'completed') || [];
                 const totalVar = video.clips?.filter(c => c.title?.includes('Master Variation')) || [];
-                const varText = `${completedVar.length} / ${Math.max(1, totalVar.length)}`;
+                const varText = `${completedVar.length} / ${Math.max(5, totalVar.length)}`;
 
                 return (
                   <motion.div

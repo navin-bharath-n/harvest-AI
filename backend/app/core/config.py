@@ -19,6 +19,13 @@ class Settings(BaseSettings):
 
     DATABASE_URI: str = _DEFAULT_DB_PATH
 
+    # Music & Audio APIs
+    AUDIUS_API_BASE: str = "https://api.audius.co"
+    AUDIUS_APP_NAME: str = "HARVEST_AI"
+    JAMENDO_CLIENT_ID: str = "56d30c95"
+    FREESOUND_API_KEY: Optional[str] = None
+    PIXABAY_API_KEY: Optional[str] = None
+
     YOUTUBE_ACCESS_TOKEN: Optional[str] = None
     FACEBOOK_ACCESS_TOKEN: Optional[str] = None
     FACEBOOK_PAGE_ID: Optional[str] = None
@@ -45,4 +52,3 @@ class Settings(BaseSettings):
     )
 
 settings = Settings()
-# Trigger settings reload

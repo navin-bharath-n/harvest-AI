@@ -31,10 +31,10 @@ class TranscriptionService:
             self.model_size = "small"
 
         # Check if Google Application Credentials file path is set in the environment or settings
-        gcp_creds = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+        gcp_creds = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
         if not gcp_creds:
             try:
-                # Try to load from .env file directly
+                # Try to load from .env file directly if present
                 backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
                 env_path = os.path.join(backend_dir, ".env")
                 if os.path.exists(env_path):
@@ -42,12 +42,12 @@ class TranscriptionService:
                         for line in f:
                             if line.strip().startswith("GOOGLE_APPLICATION_CREDENTIALS"):
                                 _, val = line.strip().split("=", 1)
-                                gcp_creds = val.strip().strip('"').strip("'")
-                                os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = gcp_creds
-                                logger.info(f"Loaded GOOGLE_APPLICATION_CREDENTIALS from .env: {gcp_creds}")
+                                gcp_creds = val.strip().strip('"').strip("'").strip()
+                                if gcp_creds:
+                                    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = gcp_creds
                                 break
             except Exception as e:
-                logger.warning(f"Failed to parse .env for credentials: {e}")
+                logger.debug(f"Failed to parse .env for credentials: {e}")
 
         if gcp_creds:
             if not os.path.exists(gcp_creds):
@@ -57,9 +57,8 @@ class TranscriptionService:
                 if os.path.exists(candidate):
                     gcp_creds = candidate
                     os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = gcp_creds
-                    logger.info(f"Resolved relative GOOGLE_APPLICATION_CREDENTIALS to: {gcp_creds}")
                 else:
-                    logger.warning(f"GOOGLE_APPLICATION_CREDENTIALS file not found at {gcp_creds} or {candidate}")
+                    gcp_creds = None
 
         if gcp_creds and os.path.exists(gcp_creds):
             try:
@@ -67,9 +66,12 @@ class TranscriptionService:
                 self.use_google = True
                 logger.info("Google Cloud Speech-to-Text configuration found. Using Google STT as primary transcription engine.")
             except ImportError:
-                logger.warning("google-cloud-speech library not found. Falling back to local Whisper.")
+                logger.debug("google-cloud-speech library not found. Falling back to local Whisper.")
             except Exception as e:
-                logger.error(f"Failed to initialize Google Speech-to-Text: {e}")
+                logger.debug(f"Failed to initialize Google Speech-to-Text: {e}")
+        else:
+            self.use_google = False
+            logger.info("Using high-speed local GPU Faster-Whisper for audio transcription.")
 
     def _is_quota_error(self, error):
         """Check if the error is a Google Cloud quota/resource exhausted error."""

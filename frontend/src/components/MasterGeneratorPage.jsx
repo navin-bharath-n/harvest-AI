@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ArrowLeft, Film, Video, Zap, CheckCircle, Loader, Clock, Globe, Mic, Download, RefreshCw, X, Wand, Share2 } from 'lucide-react';
+import { ArrowLeft, Film, Video, Zap, CheckCircle, Loader, Clock, Globe, Mic, Download, RefreshCw, X, Share2, Music, Sparkles, Maximize2 } from 'lucide-react';
 import { api } from '../api/client';
+import { useGeneration } from '../context/GenerationContext';
 import SocialPublishingPanel from './SocialPublishingPanel';
 
 const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'https://localhost:8000';
@@ -12,7 +13,7 @@ const PIPELINE_STEPS = [
   { key: 'processing', label: 'Extracting Metadata' },
   { key: 'transcribing', label: 'Transcribing Audio' },
   { key: 'analyzing', label: 'AI Content Analysis' },
-  { key: 'generating', label: 'Master AI Agent' },
+  { key: 'highlighting', label: 'Highlight & Framing' },
   { key: 'rendering', label: 'Rendering Variations' },
   { key: 'done', label: 'Complete' },
 ];
@@ -44,12 +45,15 @@ const LANGUAGES = [
 
 /* ---- Step indicator ---- */
 function StepIndicator({ stage }) {
-  const currentIdx = STAGE_ORDER.indexOf(stage);
+  let mappedStage = stage;
+  if (stage === 'cropping' || stage === 'generating') mappedStage = 'highlighting';
+  const currentIdx = Math.max(0, STAGE_ORDER.indexOf(mappedStage));
+  const isFinished = stage === 'done' || stage === 'completed';
   return (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 0, marginBottom: '2rem', flexWrap: 'wrap' }}>
       {PIPELINE_STEPS.map((step, i) => {
-        const done = i < currentIdx;
-        const active = i === currentIdx;
+        const done = i < currentIdx || (isFinished && i <= currentIdx);
+        const active = i === currentIdx && !isFinished;
         return (
           <React.Fragment key={step.key}>
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.35rem' }}>
@@ -89,19 +93,28 @@ function VariationCard({ clip, index, onPublishClick, cacheBust }) {
   const url = `${SERVER_URL}/${relPath}?t=${cacheBust}`;
 
   const personas = [
-    { name: 'Viral Hook', color: '#f43f5e', bg: '#fff1f2' },
-    { name: 'Storyteller', color: '#7c3aed', bg: '#faf5ff' },
-    { name: 'Minimalist', color: '#0891b2', bg: '#ecfeff' },
-    { name: 'Intense', color: '#ea580c', bg: '#fff7ed' },
-    { name: 'AI Custom', color: '#059669', bg: '#ecfdf5' },
+    { name: 'Viral Pop Bounce', color: '#f43f5e', bg: '#fff1f2', icon: '🔥' },
+    { name: 'Karaoke Flow Sweep', color: '#6366f1', bg: '#eef2ff', icon: '🎤' },
+    { name: 'Cinematic Smooth Fade', color: '#0284c7', bg: '#f0f9ff', icon: '🎬' },
+    { name: 'Boxed Pill Highlight', color: '#ea580c', bg: '#fff7ed', icon: '🏷️' },
+    { name: 'Neon Pulse Glow', color: '#10b981', bg: '#ecfdf5', icon: '✨' },
   ];
-  const persona = personas[index] || personas[4];
+  
+  let persona = personas[index % personas.length];
+  if (clip.title) {
+    const titleLower = clip.title.toLowerCase();
+    if (titleLower.includes('pop') || titleLower.includes('bounce') || titleLower.includes('viral')) persona = personas[0];
+    else if (titleLower.includes('karaoke') || titleLower.includes('sweep') || titleLower.includes('flow')) persona = personas[1];
+    else if (titleLower.includes('cinematic') || titleLower.includes('fade') || titleLower.includes('minimalist')) persona = personas[2];
+    else if (titleLower.includes('boxed') || titleLower.includes('pill') || titleLower.includes('tag')) persona = personas[3];
+    else if (titleLower.includes('neon') || titleLower.includes('pulse') || titleLower.includes('glow')) persona = personas[4];
+  }
 
   return (
     <div className="video-card" style={{ position: 'relative' }}>
       {/* Persona badge */}
-      <div style={{ position: 'absolute', top: 10, left: 10, zIndex: 10, background: persona.bg, border: `1px solid ${persona.color}44`, borderRadius: 'var(--radius-full)', padding: '3px 10px', fontSize: '0.7rem', fontWeight: 800, color: persona.color, backdropFilter: 'blur(8px)' }}>
-        {persona.name}
+      <div style={{ position: 'absolute', top: 10, left: 10, zIndex: 10, background: persona.bg, border: `1px solid ${persona.color}44`, borderRadius: 'var(--radius-full)', padding: '4px 10px', fontSize: '0.72rem', fontWeight: 800, color: persona.color, backdropFilter: 'blur(8px)', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+        <span>{persona.icon}</span> {persona.name}
       </div>
 
       <video src={url} controls loop playsInline style={{ width: '100%', aspectRatio: '9/16', objectFit: 'cover', background: '#000', display: 'block' }} />
@@ -141,6 +154,7 @@ function VariationCard({ clip, index, onPublishClick, cacheBust }) {
 export default function MasterGeneratorPage() {
   const { videoId } = useParams();
   const navigate = useNavigate();
+  const { startTracking, stopTracking, cancelGeneration: cancelGenContext, activeTasks } = useGeneration();
 
   const [page, setPage] = useState('setup');
   const [video, setVideo] = useState(null);
@@ -148,102 +162,18 @@ export default function MasterGeneratorPage() {
   const [cacheBust, setCacheBust] = useState(Date.now());
   const [prompt, setPrompt] = useState('');
   const [length, setLength] = useState(60);
+  const [audioTheme, setAudioTheme] = useState('auto');
   const [translateLanguage, setTranslateLang] = useState('none');
   const [dubVoice, setDubVoice] = useState(false);
   const [speakerGender, setSpeakerGender] = useState('female');
   const [captionLanguage, setCaptionLang] = useState('original');
   const [dubMixMode, setDubMixMode] = useState('replace');
+  const [framingMode, setFramingMode] = useState('fit_blur');
   const [pipelineStatus, setPipelineStatus] = useState(null);
   const [elapsedSecs, setElapsedSecs] = useState(0);
   const [activePublishClip, setActivePublishClip] = useState(null);
-
-  // Variation Editor State
-  const [editingClip, setEditingClip] = useState(null);
-  const [keepSameVideo, setKeepSameVideo] = useState(true);
-  const [editStart, setEditStart] = useState(0);
-  const [editEnd, setEditEnd] = useState(0);
-  const [editCaptionStyle, setEditCaptionStyle] = useState('standard');
-  const [editFontName, setEditFontName] = useState('Outfit');
-  const [editFontSize, setEditFontSize] = useState(24);
-  const [editPrimaryColor, setEditPrimaryColor] = useState('#ffffff');
-  const [editHighlightColor, setEditHighlightColor] = useState('#f59e0b');
-  const [editAlignment, setEditAlignment] = useState(2);
-  const [editMarginV, setEditMarginV] = useState(280);
-  const [editDubVoice, setEditDubVoice] = useState(false);
-  const [editSpeakerGender, setEditSpeakerGender] = useState('female');
-  const [editDubMixMode, setEditDubMixMode] = useState('replace');
-  const [editMusicPreset, setEditMusicPreset] = useState('none');
-  const [editMusicVolume, setEditMusicVolume] = useState(0.15);
-
-  const originalVideoRef = useRef(null);
-  const editedVideoRef = useRef(null);
-
-  const handleStartEdit = (clip) => {
-    setEditingClip(clip);
-    setEditStart(clip.start_time || 0);
-    setEditEnd(clip.end_time || 0);
-    setKeepSameVideo(true);
-
-    const opts = clip.edit_options || {};
-    setEditCaptionStyle(opts.caption_style || 'standard');
-    setEditFontName(opts.font_name || 'Outfit');
-    setEditFontSize(opts.font_size || 72);
-    setEditPrimaryColor(opts.primary_color || '#ffffff');
-    setEditHighlightColor(opts.highlight_color || '#00FF00');
-    setEditAlignment(opts.alignment || 2);
-    setEditMarginV(opts.margin_v || 280);
-    setEditDubVoice(opts.dub_voice || false);
-    setEditSpeakerGender(opts.speaker_gender || 'female');
-    setEditDubMixMode(opts.dub_mix_mode || 'replace');
-    setEditMusicPreset(opts.music_preset || 'none');
-    setEditMusicVolume(opts.music_volume || 0.15);
-
-    setPage('edit');
-  };
-
-  const handleSaveEdit = async () => {
-    if (!editingClip) return;
-    setPage('generating');
-    setPipelineStatus(null);
-    try {
-      const res = await fetch(`${API_BASE}/videos/clips/${editingClip.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          title: editingClip.title,
-          start_time: Number(keepSameVideo ? (editingClip.start_time || 0) : editStart),
-          end_time: Number(keepSameVideo ? (editingClip.end_time || 0) : editEnd),
-          edit_options: {
-            ...(editingClip.edit_options || {}),
-            translate_language: translateLanguage,
-            dub_voice: editDubVoice,
-            speaker_gender: editSpeakerGender,
-            dub_mix_mode: editDubMixMode,
-            caption_style: editCaptionStyle,
-            font_name: editFontName,
-            font_size: Number(editFontSize),
-            primary_color: editPrimaryColor,
-            highlight_color: editHighlightColor,
-            alignment: Number(editAlignment),
-            margin_v: Number(editMarginV),
-            music_preset: editMusicPreset,
-            music_volume: Number(editMusicVolume),
-            subtitles: video.transcript || []
-          }
-        })
-      });
-      if (res.ok) {
-        startPolling(video.id);
-      } else {
-        alert('Failed to save edits');
-        setPage('edit');
-      }
-    } catch (e) {
-      console.error(e);
-      alert('Failed to trigger re-render');
-      setPage('edit');
-    }
-  };
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [isCancelling, setIsCancelling] = useState(false);
 
   const intervalRef = useRef(null);
   const timerRef = useRef(null);
@@ -256,75 +186,181 @@ export default function MasterGeneratorPage() {
       const current = allVideos.find(v => v.id === parseInt(videoId));
       if (!current) { navigate('/dashboard'); return; }
       setVideo(current);
+      
       const varRes = await fetch(`${API_BASE}/videos/${videoId}/variations`);
       if (varRes.ok) {
         const varData = await varRes.json();
         setVariations(varData);
-        if (varData?.length > 0) setPage('results');
+        if (varData?.length >= 5) {
+          setPage('results');
+          return;
+        }
+      }
+
+      // Check if this video is actively generating shorts (explicitly tracked or running AI steps)
+      const isShortsGenerating =
+        activeTasks.some(t => t.videoId === parseInt(videoId)) ||
+        current.transcription_status === 'processing' ||
+        current.analysis_status === 'processing' ||
+        current.highlight_status === 'processing' ||
+        current.crop_status === 'processing';
+
+      if (isShortsGenerating) {
+        setPage('generating');
+        startPolling(videoId);
+      } else {
+        setPage('setup');
       }
     } catch (e) { console.error(e); }
   };
+
+  // When on setup page and raw video is still extracting metadata, poll until ready
+  useEffect(() => {
+    if (page === 'setup' && video?.status === 'processing') {
+      const interval = setInterval(async () => {
+        try {
+          const allVideos = await api.getVideos();
+          const current = allVideos.find(v => v.id === parseInt(videoId));
+          if (current) {
+            setVideo(current);
+            if (current.status !== 'processing') {
+              clearInterval(interval);
+            }
+          }
+        } catch (e) {
+          console.error(e);
+        }
+      }, 2000);
+      return () => clearInterval(interval);
+    }
+  }, [page, video?.status, videoId]);
 
   useEffect(() => { loadVideoDetails(); }, [videoId]);
 
   useEffect(() => {
     if (page === 'generating') {
-      startTimeRef.current = Date.now();
-      timerRef.current = setInterval(() => setElapsedSecs(Math.floor((Date.now() - startTimeRef.current) / 1000)), 1000);
+      const activeTask = activeTasks.find(t => t.videoId === parseInt(videoId));
+      const baseStart = activeTask?.startedAt || startTimeRef.current || Date.now();
+      startTimeRef.current = baseStart;
+      setElapsedSecs(Math.max(0, Math.floor((Date.now() - baseStart) / 1000)));
+
+      timerRef.current = setInterval(() => {
+        setElapsedSecs(Math.max(0, Math.floor((Date.now() - startTimeRef.current) / 1000)));
+      }, 1000);
     } else {
       clearInterval(timerRef.current);
       setElapsedSecs(0);
+      setIsGenerating(false);
     }
     return () => clearInterval(timerRef.current);
-  }, [page]);
+  }, [page, videoId, activeTasks]);
 
   const formatElapsed = s => `${Math.floor(s / 60)}m ${(s % 60).toString().padStart(2, '0')}s`;
 
-  const stopPolling = useCallback(() => { clearInterval(intervalRef.current); intervalRef.current = null; }, []);
+  const stopPolling = useCallback(() => {
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+  }, []);
 
-  const startPolling = useCallback((vidId) => {
+  const startPolling = useCallback((targetVideoId) => {
     stopPolling();
-    let attempts = 0;
-    intervalRef.current = setInterval(async () => {
-      if (++attempts >= MAX_POLLS) { stopPolling(); setPage('setup'); alert('Generation timed out (60 min).'); return; }
+    let pollCount = 0;
+
+    const doPoll = async () => {
+      pollCount++;
+      if (pollCount > MAX_POLLS) { stopPolling(); return; }
       try {
-        const statusRes = await fetch(`${API_BASE}/videos/${vidId}/status`);
-        if (statusRes.ok) {
-          const status = await statusRes.json();
-          setPipelineStatus(status);
-          if (status.is_done) {
-            const varRes = await fetch(`${API_BASE}/videos/${vidId}/variations`);
+        const res = await fetch(`${API_BASE}/videos/${targetVideoId}/status`);
+        if (res.ok) {
+          const data = await res.json();
+          setPipelineStatus(data);
+          if (data.is_done || data.is_complete || data.stage === 'done' || data.stage === 'completed' || (data.variations_ready >= 5 && data.variations_ready === data.variations_total)) {
+            stopPolling();
+            stopTracking(targetVideoId);
+            const varRes = await fetch(`${API_BASE}/videos/${targetVideoId}/variations`);
             if (varRes.ok) {
-              setVariations(await varRes.json());
+              const vd = await varRes.json();
+              if (vd?.length) setVariations(vd);
               setCacheBust(Date.now());
+              setPage('results');
+            }
+            return;
+          }
+        }
+        const varRes = await fetch(`${API_BASE}/videos/${targetVideoId}/variations`);
+        if (varRes.ok) {
+          const vd = await varRes.json();
+          if (vd?.length) {
+            setVariations(vd);
+            setCacheBust(Date.now());
+            if (vd.length >= 5) {
               stopPolling();
+              stopTracking(targetVideoId);
               setPage('results');
               return;
             }
           }
         }
-        const varRes = await fetch(`${API_BASE}/videos/${vidId}/variations`);
-        if (varRes.ok) {
-          const vd = await varRes.json();
-          if (vd?.length) { setVariations(vd); setCacheBust(Date.now()); }
-        }
-      } catch (e) { console.error(e); }
-    }, 5000);
-  }, [stopPolling]);
+      } catch (e) {
+        console.error('Poll error', e);
+      }
+    };
+
+    doPoll();
+    intervalRef.current = setInterval(doPoll, 2500);
+  }, [stopPolling, stopTracking]);
 
   const generate = async () => {
-    if (!video) return;
+    if (!video || isGenerating) return;
+    setIsGenerating(true);
     setVariations([]); setPipelineStatus(null); setPage('generating');
     try {
+      // Register with global background tracking context so it continues even if user changes page
+      startTracking(video.id, video.original_filename);
+
       const res = await fetch(`${API_BASE}/videos/${video.id}/master-generate`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ length: Number(length), platform: 'youtube', optional_prompt: prompt, translate_language: translateLanguage, dub_voice: dubVoice, speaker_gender: speakerGender, caption_language: captionLanguage, dub_mix_mode: dubMixMode }),
+        body: JSON.stringify({
+          length: Number(length),
+          platform: 'youtube',
+          optional_prompt: prompt,
+          audio_theme: audioTheme,
+          translate_language: translateLanguage,
+          dub_voice: Boolean(dubVoice && translateLanguage !== 'none'),
+          speaker_gender: speakerGender,
+          caption_language: translateLanguage === 'none' ? 'original' : captionLanguage,
+          dub_mix_mode: dubMixMode,
+          framing_mode: framingMode
+        }),
       });
       if (!res.ok) {
         throw new Error('Generation failed');
       }
       startPolling(video.id);
-    } catch (e) { console.error(e); alert('Failed to trigger generation'); setPage('setup'); }
+    } catch (e) {
+      console.error(e);
+      alert('Failed to trigger generation');
+      stopTracking(video.id);
+      setPage('setup');
+      setIsGenerating(false);
+    }
+  };
+
+  const handleCancelGeneration = async () => {
+    setIsCancelling(true);
+    stopPolling();
+    setPipelineStatus(null);
+    setIsGenerating(false);
+    setPage('setup');
+    try {
+      await cancelGenContext(video.id);
+    } catch (e) {
+      console.error('Error cancelling generation:', e);
+    } finally {
+      setIsCancelling(false);
+    }
   };
 
   useEffect(() => () => stopPolling(), [stopPolling]);
@@ -360,7 +396,7 @@ export default function MasterGeneratorPage() {
           Project
         </button>
         <span style={{ color: 'var(--border-strong)' }}>/</span>
-        <strong>AI Generator</strong>
+        <strong>AI Shorts Generator</strong>
       </div>
       {extra && <div className="app-nav-actions">{extra}</div>}
     </nav>
@@ -375,7 +411,7 @@ export default function MasterGeneratorPage() {
         <AppNav />
         <motion.div
           className="page-content"
-          style={{ maxWidth: 620 }}
+          style={{ maxWidth: 640 }}
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
@@ -386,19 +422,72 @@ export default function MasterGeneratorPage() {
             </button>
             <div>
               <h1 className="page-title">Master AI Generator</h1>
-              <p className="page-subtitle">Configure and generate short-form variations from <em>{video.original_filename}</em></p>
+              <p className="page-subtitle">Generate 5 distinct animated caption short-form variations from <em>{video.original_filename}</em></p>
             </div>
           </div>
 
           <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
             {/* Source file info */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.85rem', padding: '0.9rem 1.1rem', background: 'var(--status-done-bg)', border: '1px solid var(--status-done-border)', borderRadius: 'var(--radius-md)' }}>
-              <div style={{ width: 40, height: 40, borderRadius: 'var(--radius-md)', background: 'var(--bg-elevated)', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid var(--status-done-border)' }}>
-                <Film size={20} color="var(--status-done-text)" />
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.85rem', padding: '0.9rem 1.1rem', background: video.status === 'processing' ? 'var(--indigo-50)' : 'var(--status-done-bg)', border: `1px solid ${video.status === 'processing' ? 'var(--indigo-100)' : 'var(--status-done-border)'}`, borderRadius: 'var(--radius-md)' }}>
+              <div style={{ width: 40, height: 40, borderRadius: 'var(--radius-md)', background: 'var(--bg-elevated)', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid var(--border-subtle)' }}>
+                <Film size={20} color={video.status === 'processing' ? 'var(--indigo-600)' : 'var(--status-done-text)'} />
               </div>
-              <div>
+              <div style={{ flex: 1 }}>
                 <div style={{ fontWeight: 700, fontSize: '0.9rem', color: 'var(--text-heading)' }}>{video.original_filename}</div>
-                <div style={{ fontSize: '0.75rem', color: 'var(--status-done-text)', fontWeight: 600 }}>Ready for generation</div>
+                <div style={{ fontSize: '0.75rem', color: video.status === 'processing' ? 'var(--indigo-600)' : 'var(--status-done-text)', fontWeight: 600 }}>
+                  {video.status === 'processing'
+                    ? 'Extracting video metadata… Ready in moments'
+                    : `Ready to generate 5 animated caption variations with live Music API ${video.duration ? `(${Math.round(video.duration)}s)` : ''}`}
+                </div>
+              </div>
+            </div>
+
+            {/* Feature Highlights Grid */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.6rem' }}>
+              <div style={{ padding: '0.6rem 0.8rem', background: 'var(--bg-surface)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                <strong style={{ color: 'var(--indigo-600)', display: 'flex', alignItems: 'center', gap: '0.3rem', marginBottom: '0.2rem' }}>
+                  <Sparkles size={13} /> 5 Animated Caption Styles
+                </strong>
+                Viral Pop, Karaoke Flow, Cinematic Fade, Boxed Pill & Neon Pulse.
+              </div>
+              <div style={{ padding: '0.6rem 0.8rem', background: 'var(--bg-surface)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                <strong style={{ color: 'var(--indigo-600)', display: 'flex', alignItems: 'center', gap: '0.3rem', marginBottom: '0.2rem' }}>
+                  <Music size={13} /> Live Music API
+                </strong>
+                Streams songs matching your chosen theme from open Music API.
+              </div>
+            </div>
+
+            {/* Audio & Music Theme Selection */}
+            <div>
+              <label htmlFor="audio-theme-select" style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-heading)' }}>
+                <Music size={15} color="var(--indigo-600)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '0.35rem' }} />
+                Audio & Music Theme
+              </label>
+              <select
+                id="audio-theme-select"
+                className="input-field"
+                value={audioTheme}
+                onChange={e => setAudioTheme(e.target.value)}
+                style={{ fontWeight: 600 }}
+              >
+                <option value="auto">✨ Auto (AI Matches Video Content)</option>
+                <option value="upbeat">🔥 Upbeat & Energetic (Dance / Pop / Party)</option>
+                <option value="cinematic">🎬 Cinematic & Epic (Orchestral / Film / Drama)</option>
+                <option value="lofi">☕ Lofi & Chill (Study / Relax / Cozy)</option>
+                <option value="gaming">🎮 Gaming & Electronic (Future Bass / Synth / Action)</option>
+                <option value="hiphop">🎤 Hip-Hop Beats (Groove / Trap / Urban)</option>
+                <option value="suspenseful">⚡ Suspense & Dramatic (Dark / Mystery / Thriller)</option>
+                <option value="ambient">🌿 Ambient & Peaceful (Atmospheric / Nature)</option>
+                <option value="rock">🎸 Rock & High Energy (Guitar / Driving)</option>
+                <option value="none">❌ None (No Music / Clean Original Audio)</option>
+              </select>
+              <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '0.35rem' }}>
+                {audioTheme === 'auto'
+                  ? 'AI will automatically detect the video topic and select matching songs from the Music API.'
+                  : audioTheme === 'none'
+                  ? 'No music will be added. Original audio is preserved cleanly.'
+                  : `Music API will search and download ${audioTheme} songs for all variations.`}
               </div>
             </div>
 
@@ -429,63 +518,362 @@ export default function MasterGeneratorPage() {
               )}
             </div>
 
+            {/* Video Framing & Aspect Ratio Mode */}
+            <div>
+              <label style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-heading)' }}>
+                <Maximize2 size={15} color="var(--indigo-600)" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '0.35rem' }} />
+                Framing & Aspect Ratio (16:9 to 9:16 Shorts)
+              </label>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.5rem', marginBottom: '0.5rem' }}>
+                <button
+                  type="button"
+                  onClick={() => setFramingMode('fit_blur')}
+                  style={{
+                    padding: '0.75rem 0.5rem', borderRadius: 'var(--radius-md)',
+                    border: `1.5px solid ${framingMode === 'fit_blur' ? 'var(--indigo-600)' : 'var(--border-medium)'}`,
+                    background: framingMode === 'fit_blur' ? 'var(--indigo-50)' : 'var(--bg-elevated)',
+                    color: framingMode === 'fit_blur' ? 'var(--indigo-600)' : 'var(--text-heading)',
+                    display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.3rem',
+                    cursor: 'pointer', transition: 'all 0.2s', textAlign: 'center'
+                  }}
+                >
+                  <div style={{ fontWeight: 800, fontSize: '0.82rem' }}>🖼️ Fit Full Video</div>
+                  <div style={{ fontSize: '0.68rem', color: framingMode === 'fit_blur' ? 'var(--indigo-600)' : 'var(--text-muted)' }}>Blurred Canvas (No Crop)</div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setFramingMode('fit_black')}
+                  style={{
+                    padding: '0.75rem 0.5rem', borderRadius: 'var(--radius-md)',
+                    border: `1.5px solid ${framingMode === 'fit_black' ? 'var(--indigo-600)' : 'var(--border-medium)'}`,
+                    background: framingMode === 'fit_black' ? 'var(--indigo-50)' : 'var(--bg-elevated)',
+                    color: framingMode === 'fit_black' ? 'var(--indigo-600)' : 'var(--text-heading)',
+                    display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.3rem',
+                    cursor: 'pointer', transition: 'all 0.2s', textAlign: 'center'
+                  }}
+                >
+                  <div style={{ fontWeight: 800, fontSize: '0.82rem' }}>⬛ Black Letterbox</div>
+                  <div style={{ fontSize: '0.68rem', color: framingMode === 'fit_black' ? 'var(--indigo-600)' : 'var(--text-muted)' }}>Fit Full (Black Bars)</div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setFramingMode('smart_crop')}
+                  style={{
+                    padding: '0.75rem 0.5rem', borderRadius: 'var(--radius-md)',
+                    border: `1.5px solid ${framingMode === 'smart_crop' ? 'var(--indigo-600)' : 'var(--border-medium)'}`,
+                    background: framingMode === 'smart_crop' ? 'var(--indigo-50)' : 'var(--bg-elevated)',
+                    color: framingMode === 'smart_crop' ? 'var(--indigo-600)' : 'var(--text-heading)',
+                    display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.3rem',
+                    cursor: 'pointer', transition: 'all 0.2s', textAlign: 'center'
+                  }}
+                >
+                  <div style={{ fontWeight: 800, fontSize: '0.82rem' }}>🔍 Smart Crop</div>
+                  <div style={{ fontSize: '0.68rem', color: framingMode === 'smart_crop' ? 'var(--indigo-600)' : 'var(--text-muted)' }}>AI Subject Tracking</div>
+                </button>
+              </div>
+              <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                {framingMode === 'fit_blur'
+                  ? '✨ Complete 16:9 frame is scaled and centered inside 9:16 portrait with a stylish frosted blurred background. Zero visual cropping.'
+                  : framingMode === 'fit_black'
+                  ? '⬛ Complete 16:9 frame is centered on a clean black canvas without cropping.'
+                  : '🔍 9:16 crop window dynamically follows the primary subject/speaker across the 16:9 frame.'}
+              </div>
+            </div>
+
             {/* Prompt */}
             <div>
               <label htmlFor="prompt-input" style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-muted)' }}>
                 Optional AI Prompt
               </label>
-              <input id="prompt-input" className="input-field" type="text" placeholder='e.g. "Make it extra energetic with dramatic music"' value={prompt} onChange={e => setPrompt(e.target.value)} />
+              <input id="prompt-input" className="input-field" type="text" placeholder='e.g. "Focus on the funniest moment with bold captions"' value={prompt} onChange={e => setPrompt(e.target.value)} />
             </div>
 
-            {/* Translation & Dubbing */}
+            {/* Translation & AI Neural Voice Dubbing Studio */}
             <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: '1.25rem' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
-                <Globe size={16} color="var(--indigo-600)" />
-                <span style={{ fontWeight: 700, fontSize: '0.9rem', color: 'var(--text-heading)' }}>Translation & AI Voice Dubbing</span>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <div style={{ width: 28, height: 28, borderRadius: 'var(--radius-sm)', background: 'var(--indigo-50)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <Mic size={16} color="var(--indigo-600)" />
+                  </div>
+                  <div>
+                    <span style={{ fontWeight: 800, fontSize: '0.92rem', color: 'var(--text-heading)' }}>AI Voice Dubbing & Translation</span>
+                    <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Studio-grade Neural AI voices across 40+ languages</div>
+                  </div>
+                </div>
+                <span style={{ fontSize: '0.68rem', fontWeight: 800, color: 'var(--indigo-600)', background: 'var(--indigo-50)', border: '1px solid var(--indigo-100)', padding: '3px 8px', borderRadius: 'var(--radius-full)' }}>
+                  Edge-TTS Neural
+                </span>
               </div>
 
-              <div style={{ marginBottom: '0.85rem' }}>
-                <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.3rem' }}>Target Language</label>
-                <select className="input-field" value={translateLanguage} onChange={e => { const val = e.target.value; setTranslateLang(val); setCaptionLang(val === 'none' ? 'original' : 'translated'); }}>
-                  <option value="none">None</option>
+              {/* Target Language Selection */}
+              <div style={{ marginBottom: '0.9rem' }}>
+                <label style={{ display: 'block', fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-heading)', marginBottom: '0.4rem' }}>
+                  Target Language
+                </label>
+                
+                {/* Quick select language pills */}
+                <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap', marginBottom: '0.5rem' }}>
+                  {[
+                    { code: 'none', label: 'Original' },
+                    { code: 'en', label: '🇬🇧 English' },
+                    { code: 'ta', label: '🇮🇳 Tamil' },
+                    { code: 'hi', label: '🇮🇳 Hindi' },
+                    { code: 'te', label: '🇮🇳 Telugu' },
+                    { code: 'es', label: '🇪🇸 Spanish' },
+                    { code: 'fr', label: '🇫🇷 French' },
+                    { code: 'ja', label: '🇯🇵 Japanese' },
+                  ].map(item => (
+                    <button
+                      key={item.code}
+                      type="button"
+                      onClick={() => {
+                        if (item.code === 'none') {
+                          setTranslateLang('none');
+                          setCaptionLang('original');
+                          setDubVoice(false);
+                        } else {
+                          setTranslateLang(item.code);
+                          setCaptionLang('translated');
+                          setDubVoice(true);
+                        }
+                      }}
+                      style={{
+                        padding: '4px 9px',
+                        borderRadius: 'var(--radius-sm)',
+                        fontSize: '0.72rem',
+                        fontWeight: translateLanguage === item.code ? 700 : 500,
+                        border: `1px solid ${translateLanguage === item.code ? 'var(--indigo-600)' : 'var(--border-medium)'}`,
+                        background: translateLanguage === item.code ? 'var(--indigo-50)' : 'var(--bg-surface)',
+                        color: translateLanguage === item.code ? 'var(--indigo-600)' : 'var(--text-heading)',
+                        cursor: 'pointer',
+                        transition: 'all 0.15s'
+                      }}
+                    >
+                      {item.label}
+                    </button>
+                  ))}
+                </div>
+
+                <select
+                  className="input-field"
+                  value={translateLanguage}
+                  onChange={e => {
+                    const val = e.target.value;
+                    if (val === 'none') {
+                      setTranslateLang('none');
+                      setCaptionLang('original');
+                      setDubVoice(false);
+                    } else {
+                      setTranslateLang(val);
+                      setCaptionLang('translated');
+                      setDubVoice(true);
+                    }
+                  }}
+                  style={{ fontWeight: 600 }}
+                >
+                  <option value="none">🌐 None (Keep Original Language & Voice)</option>
                   {LANGUAGES.map(l => <option key={l.code} value={l.code}>{l.name}</option>)}
                 </select>
               </div>
 
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.75rem 0.9rem', background: 'var(--bg-surface)', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-subtle)', marginBottom: dubVoice ? '0.75rem' : 0 }}>
-                <div>
-                  <div style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--text-heading)', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                    <Mic size={14} color="var(--indigo-600)" />
-                    Dub Voice with AI Cloning
+              {/* Dubbing Activation Toggle */}
+              <div style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                padding: '0.85rem 1rem',
+                background: (dubVoice && translateLanguage !== 'none') ? 'var(--indigo-50)' : 'var(--bg-surface)',
+                borderRadius: 'var(--radius-md)',
+                border: `1.5px solid ${(dubVoice && translateLanguage !== 'none') ? 'var(--indigo-600)' : 'var(--border-subtle)'}`,
+                marginBottom: '0.9rem',
+                transition: 'all 0.25s'
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                  <div style={{
+                    width: 32, height: 32, borderRadius: '50%',
+                    background: (dubVoice && translateLanguage !== 'none') ? 'var(--indigo-600)' : 'var(--bg-inset)',
+                    color: (dubVoice && translateLanguage !== 'none') ? '#fff' : 'var(--text-muted)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center'
+                  }}>
+                    <Mic size={16} />
                   </div>
-                  <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Clone original voice to speak translated language.</div>
+                  <div>
+                    <div style={{ fontSize: '0.86rem', fontWeight: 800, color: (dubVoice && translateLanguage !== 'none') ? 'var(--indigo-900)' : 'var(--text-heading)' }}>
+                      Dub Audio with Neural Voice
+                    </div>
+                    <div style={{ fontSize: '0.72rem', color: (dubVoice && translateLanguage !== 'none') ? 'var(--indigo-600)' : 'var(--text-muted)' }}>
+                      {(dubVoice && translateLanguage !== 'none') ? 'Replaces or blends speaker audio with human-like AI dubbing' : 'Keep original voice or select a language to dub'}
+                    </div>
+                  </div>
                 </div>
-                <input type="checkbox" checked={dubVoice} onChange={e => setDubVoice(e.target.checked)} disabled={translateLanguage === 'none'} style={{ width: 18, height: 18, accentColor: 'var(--indigo-600)', cursor: translateLanguage === 'none' ? 'not-allowed' : 'pointer' }} />
+
+                <label style={{ position: 'relative', display: 'inline-block', width: 44, height: 24, cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={dubVoice && translateLanguage !== 'none'}
+                    onChange={e => {
+                      const enabled = e.target.checked;
+                      setDubVoice(enabled);
+                      if (enabled && translateLanguage === 'none') {
+                        setTranslateLang('en');
+                        setCaptionLang('translated');
+                      } else if (!enabled) {
+                        setTranslateLang('none');
+                        setCaptionLang('original');
+                      }
+                    }}
+                    style={{ opacity: 0, width: 0, height: 0 }}
+                  />
+                  <span style={{
+                    position: 'absolute', cursor: 'pointer', top: 0, left: 0, right: 0, bottom: 0,
+                    background: (dubVoice && translateLanguage !== 'none') ? 'var(--indigo-600)' : 'var(--border-medium)',
+                    borderRadius: 24, transition: '0.2s',
+                    boxShadow: (dubVoice && translateLanguage !== 'none') ? '0 0 8px rgba(79,70,229,0.35)' : 'none'
+                  }}>
+                    <span style={{
+                      position: 'absolute', height: 18, width: 18, left: (dubVoice && translateLanguage !== 'none') ? 23 : 3, bottom: 3,
+                      background: '#fff', borderRadius: '50%', transition: '0.2s'
+                    }} />
+                  </span>
+                </label>
               </div>
 
-              {dubVoice && (
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginTop: '0.75rem' }}>
+              {/* Extended Dubbing Controls */}
+              {dubVoice && translateLanguage !== 'none' && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem', padding: '1rem', background: 'var(--bg-inset)', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-subtle)', marginBottom: '1rem' }}>
+                  {/* Voice Actor Selection */}
                   <div>
-                    <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.3rem' }}>Speaker Gender</label>
-                    <select className="input-field" value={speakerGender} onChange={e => setSpeakerGender(e.target.value)}>
-                      <option value="female">Female (Standard)</option>
-                      <option value="male">Male</option>
-                    </select>
+                    <label style={{ display: 'block', fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-heading)', marginBottom: '0.35rem' }}>
+                      🎙️ Neural Voice Actor Selection (Generates 5 Unique Voices)
+                    </label>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.5rem' }}>
+                      <button
+                        type="button"
+                        onClick={() => setSpeakerGender('male')}
+                        style={{
+                          padding: '0.65rem 0.5rem', borderRadius: 'var(--radius-sm)',
+                          border: `1.5px solid ${speakerGender === 'male' ? 'var(--indigo-600)' : 'var(--border-medium)'}`,
+                          background: speakerGender === 'male' ? 'var(--indigo-50)' : 'var(--bg-surface)',
+                          color: speakerGender === 'male' ? 'var(--indigo-600)' : 'var(--text-heading)',
+                          display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.2rem',
+                          cursor: 'pointer', transition: 'all 0.15s', textAlign: 'center'
+                        }}
+                      >
+                        <div style={{ fontWeight: 800, fontSize: '0.82rem' }}>👨 5 Distinct Male Voices</div>
+                        <div style={{ fontSize: '0.66rem', color: speakerGender === 'male' ? 'var(--indigo-600)' : 'var(--text-muted)' }}>
+                          5 Unique Men Voices
+                        </div>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setSpeakerGender('female')}
+                        style={{
+                          padding: '0.65rem 0.5rem', borderRadius: 'var(--radius-sm)',
+                          border: `1.5px solid ${speakerGender === 'female' ? 'var(--indigo-600)' : 'var(--border-medium)'}`,
+                          background: speakerGender === 'female' ? 'var(--indigo-50)' : 'var(--bg-surface)',
+                          color: speakerGender === 'female' ? 'var(--indigo-600)' : 'var(--text-heading)',
+                          display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.2rem',
+                          cursor: 'pointer', transition: 'all 0.15s', textAlign: 'center'
+                        }}
+                      >
+                        <div style={{ fontWeight: 800, fontSize: '0.82rem' }}>👩 5 Distinct Female Voices</div>
+                        <div style={{ fontSize: '0.66rem', color: speakerGender === 'female' ? 'var(--indigo-600)' : 'var(--text-muted)' }}>
+                          5 Unique Women Voices
+                        </div>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setSpeakerGender('mixed')}
+                        style={{
+                          padding: '0.65rem 0.5rem', borderRadius: 'var(--radius-sm)',
+                          border: `1.5px solid ${speakerGender === 'mixed' ? 'var(--indigo-600)' : 'var(--border-medium)'}`,
+                          background: speakerGender === 'mixed' ? 'var(--indigo-50)' : 'var(--bg-surface)',
+                          color: speakerGender === 'mixed' ? 'var(--indigo-600)' : 'var(--text-heading)',
+                          display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.2rem',
+                          cursor: 'pointer', transition: 'all 0.15s', textAlign: 'center'
+                        }}
+                      >
+                        <div style={{ fontWeight: 800, fontSize: '0.82rem' }}>🎭 Diverse Blend</div>
+                        <div style={{ fontSize: '0.66rem', color: speakerGender === 'mixed' ? 'var(--indigo-600)' : 'var(--text-muted)' }}>
+                          Male & Female Mix
+                        </div>
+                      </button>
+                    </div>
                   </div>
+
+                  {/* Audio Replacement Mode */}
                   <div>
-                    <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.3rem' }}>Dub Mix Mode</label>
-                    <select className="input-field" value={dubMixMode} onChange={e => setDubMixMode(e.target.value)}>
-                      <option value="replace">Replace Original Voice</option>
-                      <option value="mix">Mix & Duck Original</option>
-                    </select>
+                    <label style={{ display: 'block', fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-heading)', marginBottom: '0.35rem' }}>
+                      🔊 Audio Output Mode
+                    </label>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
+                      <button
+                        type="button"
+                        onClick={() => setDubMixMode('replace')}
+                        style={{
+                          padding: '0.65rem 0.8rem', borderRadius: 'var(--radius-sm)',
+                          border: `1.5px solid ${dubMixMode === 'replace' ? 'var(--indigo-600)' : 'var(--border-medium)'}`,
+                          background: dubMixMode === 'replace' ? 'var(--indigo-50)' : 'var(--bg-surface)',
+                          color: dubMixMode === 'replace' ? 'var(--indigo-600)' : 'var(--text-heading)',
+                          display: 'flex', flexDirection: 'column', alignItems: 'flex-start',
+                          cursor: 'pointer', transition: 'all 0.15s'
+                        }}
+                      >
+                        <div style={{ fontWeight: 800, fontSize: '0.82rem' }}>🔇 Clean Dubbed Audio</div>
+                        <div style={{ fontSize: '0.68rem', color: dubMixMode === 'replace' ? 'var(--indigo-600)' : 'var(--text-muted)', marginTop: '0.15rem' }}>
+                          Completely removes original voice
+                        </div>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setDubMixMode('mix')}
+                        style={{
+                          padding: '0.65rem 0.8rem', borderRadius: 'var(--radius-sm)',
+                          border: `1.5px solid ${dubMixMode === 'mix' ? 'var(--indigo-600)' : 'var(--border-medium)'}`,
+                          background: dubMixMode === 'mix' ? 'var(--indigo-50)' : 'var(--bg-surface)',
+                          color: dubMixMode === 'mix' ? 'var(--indigo-600)' : 'var(--text-heading)',
+                          display: 'flex', flexDirection: 'column', alignItems: 'flex-start',
+                          cursor: 'pointer', transition: 'all 0.15s'
+                        }}
+                      >
+                        <div style={{ fontWeight: 800, fontSize: '0.82rem' }}>🎚️ Voiceover Ducking</div>
+                        <div style={{ fontSize: '0.68rem', color: dubMixMode === 'mix' ? 'var(--indigo-600)' : 'var(--text-muted)', marginTop: '0.15rem' }}>
+                          Blends over original audio
+                        </div>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Summary Callout */}
+                  <div style={{ padding: '0.6rem 0.8rem', background: '#ecfdf5', border: '1px solid #a7f3d0', borderRadius: 'var(--radius-sm)', fontSize: '0.74rem', color: '#065f46', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                    <CheckCircle size={14} color="#059669" />
+                    <span>
+                      <strong>Dubbed Output:</strong> {dubMixMode === 'replace' ? 'Clean Neural Voiceover (Original voice removed)' : 'Blended Voiceover (Ducked original audio)'} in <strong>{LANGUAGES.find(l => l.code === translateLanguage)?.name || translateLanguage}</strong> with <strong>{speakerGender === 'male' ? '5 Distinct Male Voices (1 per variation)' : speakerGender === 'female' ? '5 Distinct Female Voices (1 per variation)' : 'Diverse Blend of Voices'}</strong>.
+                    </span>
                   </div>
                 </div>
               )}
             </div>
 
-            <button className="btn-primary" onClick={generate} style={{ width: '100%', justifyContent: 'center', padding: '0.9rem', fontSize: '1rem', gap: '0.5rem' }}>
+            <button
+              className="btn-primary"
+              onClick={generate}
+              disabled={isGenerating}
+              style={{
+                width: '100%',
+                justifyContent: 'center',
+                padding: '0.9rem',
+                fontSize: '1rem',
+                gap: '0.5rem',
+                opacity: isGenerating ? 0.7 : 1,
+                cursor: isGenerating ? 'not-allowed' : 'pointer'
+              }}
+            >
               <Zap size={18} />
-              Generate AI Variations
+              {isGenerating ? 'Starting Generation…' : 'Generate 5 Variations'}
             </button>
           </div>
         </motion.div>
@@ -513,7 +901,7 @@ export default function MasterGeneratorPage() {
             </button>
             <div>
               <h1 className="page-title">Processing Pipeline</h1>
-              <p className="page-subtitle">Running master agent edits — please keep this tab open</p>
+              <p className="page-subtitle">Rendering 5 animated caption variations with live Music API — please keep this tab open</p>
             </div>
           </div>
 
@@ -543,393 +931,33 @@ export default function MasterGeneratorPage() {
 
             {/* Stage breakdown */}
             <div className="glass-panel-sm" style={{ marginBottom: '1.5rem', padding: '0.85rem 1rem' }}>
-              {statusRow('Video Processing', pipelineStatus?.video_status)}
-              {statusRow('Transcription', pipelineStatus?.transcription_status)}
-              {statusRow('AI Analysis', pipelineStatus?.analysis_status)}
+              {statusRow('Video Probe & Assets', 'completed')}
+              {statusRow('Audio Transcription', (pipelineStatus?.variations_ready > 0 || variations.length > 0) ? 'completed' : pipelineStatus?.transcription_status)}
+              {statusRow('AI Content Analysis', (pipelineStatus?.variations_ready > 0 || variations.length > 0) ? 'completed' : pipelineStatus?.analysis_status)}
+              {statusRow('Highlight Detection & 9:16 Framing', (pipelineStatus?.variations_ready > 0 || variations.length > 0) ? 'completed' : (pipelineStatus?.highlight_status || pipelineStatus?.crop_status))}
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.6rem 0' }}>
-                <span style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>Variations rendered</span>
-                <span style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--indigo-600)' }}>{pipelineStatus?.variations_ready || 0} / 1</span>
+                <span style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>Variations Rendered</span>
+                <span style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--indigo-600)' }}>{pipelineStatus?.variations_ready || variations.length || 0} / {pipelineStatus?.variations_total || 5}</span>
               </div>
             </div>
 
-            {/* Warning */}
-            <div style={{ padding: '0.75rem 1rem', background: 'var(--gold-50)', border: '1px solid #fde68a', borderRadius: 'var(--radius-md)', fontSize: '0.8rem', color: 'var(--gold-600)', marginBottom: '1.5rem', lineHeight: 1.6 }}>
-              This pipeline can take <strong>a few minutes</strong> depending on video length.<br /><strong>Do not close this tab.</strong>
+            {/* Background generation status info */}
+            <div style={{ padding: '0.85rem 1rem', background: '#f8fafc', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '1.5rem', lineHeight: 1.6, display: 'flex', alignItems: 'flex-start', gap: '0.5rem' }}>
+              <Sparkles size={16} color="var(--indigo-600)" style={{ flexShrink: 0, marginTop: '2px' }} />
+              <div>
+                <strong style={{ color: 'var(--text-heading)' }}>Background Processing Active:</strong> You can safely navigate to other pages or projects. A floating progress widget in the bottom-right corner will continue tracking and notify you the moment your 5 Shorts are ready!
+              </div>
             </div>
 
             <button
-              onClick={() => { stopPolling(); setPage('setup'); }}
-              style={{ width: '100%', padding: '0.75rem', background: 'var(--status-fail-bg)', border: '1px solid var(--status-fail-border)', borderRadius: 'var(--radius-md)', color: 'var(--status-fail-text)', cursor: 'pointer', fontWeight: 700, fontSize: '0.9rem', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.4rem' }}
+              onClick={handleCancelGeneration}
+              disabled={isCancelling}
+              style={{ width: '100%', padding: '0.75rem', background: 'var(--status-fail-bg)', border: '1px solid var(--status-fail-border)', borderRadius: 'var(--radius-md)', color: 'var(--status-fail-text)', cursor: isCancelling ? 'not-allowed' : 'pointer', fontWeight: 700, fontSize: '0.9rem', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.4rem', transition: 'all 0.2s' }}
             >
-              <X size={15} /> Cancel Generation
+              <X size={15} /> {isCancelling ? 'Cancelling Generation…' : 'Cancel Generation'}
             </button>
           </div>
         </motion.div>
-      </div>
-    );
-  }
-
-  /* ══════════════════════════════════════════════════════
-     EDITOR PAGE
-     ══════════════════════════════════════════════════════ */
-  if (page === 'edit' && editingClip) {
-    const storagePath = (editingClip.storage_path || '').replace(/\\/g, '/');
-    const relPath = storagePath.includes('uploads/') ? storagePath.substring(storagePath.indexOf('uploads/')) : storagePath;
-    const editedUrl = `${SERVER_URL}/${relPath}?t=${cacheBust}`;
-    const origStoragePath = (video.storage_path || '').replace(/\\/g, '/');
-    const origRelPath = origStoragePath.includes('uploads/') ? origStoragePath.substring(origStoragePath.indexOf('uploads/')) : origStoragePath;
-    const originalUrl = video.storage_path ? `${SERVER_URL}/${origRelPath}` : '';
-
-    return (
-      <div className="page-shell" style={{ display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden' }}>
-        <nav className="app-nav">
-          <button className="app-nav-brand" onClick={() => { setPage('results'); setEditingClip(null); }}>
-            <ArrowLeft size={16} style={{ marginRight: '0.4rem' }} />
-            Back to Variations
-          </button>
-          <div className="app-nav-sep" />
-          <div className="app-nav-breadcrumb" style={{ flex: 1 }}>
-            Editing: <strong>{editingClip.title || 'Clip Variation'}</strong>
-          </div>
-          <button className="btn-primary" onClick={handleSaveEdit} style={{ gap: '0.4rem' }}>
-            <Zap size={14} /> Save & Re-render
-          </button>
-        </nav>
-
-        <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
-          {/* LEFT PANEL: Dual video players & Timeline track */}
-          <div style={{ flex: '0 0 60%', overflowY: 'auto', padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1.25rem', borderRight: '1px solid var(--border-subtle)' }}>
-
-            {/* Side-by-side Players */}
-            <div className="glass-panel" style={{ padding: '1rem' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.75rem' }}>
-                <span style={{ fontSize: '0.78rem', fontWeight: 800, color: 'var(--indigo-600)' }}>🎬 EDITED CLIP PREVIEW (LEFT)</span>
-                <span style={{ fontSize: '0.78rem', fontWeight: 800, color: 'var(--text-muted)' }}>📹 ORIGINAL SOURCE VIDEO (RIGHT)</span>
-              </div>
-              <div style={{ display: 'flex', gap: '1rem', alignItems: 'center', justifyContent: 'center' }}>
-                {/* Left: Rendered clip */}
-                <div style={{ width: '40%', aspectRatio: '9/16', borderRadius: 'var(--radius-md)', overflow: 'hidden', background: '#000', border: '2px solid var(--indigo-100)', position: 'relative' }}>
-                  <video
-                    ref={editedVideoRef}
-                    src={editedUrl}
-                    controls
-                    style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                  />
-                </div>
-                {/* Right: Original video */}
-                <div style={{ width: '55%', aspectRatio: '16/9', borderRadius: 'var(--radius-md)', overflow: 'hidden', background: '#000', border: '1px solid var(--border-subtle)' }}>
-                  <video
-                    ref={originalVideoRef}
-                    src={originalUrl}
-                    controls
-                    style={{ width: '100%', height: '100%', objectFit: 'contain' }}
-                  />
-                </div>
-              </div>
-            </div>
-
-            {/* Video Segment Mode Selection */}
-            <div className="glass-panel" style={{ padding: '1.25rem' }}>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.8rem' }}>
-                <div>
-                  <div style={{ fontSize: '0.88rem', fontWeight: 800, color: 'var(--text-heading)', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                    ⚙️ Video Segment Settings
-                  </div>
-                  <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', marginTop: '0.15rem' }}>
-                    Decide whether to keep the same video clip or change the trimmed segment completely.
-                  </div>
-                </div>
-                <div style={{ display: 'flex', gap: '0.5rem', background: 'var(--bg-elevated)', padding: '0.3rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-subtle)' }}>
-                  <button
-                    type="button"
-                    onClick={() => setKeepSameVideo(true)}
-                    style={{
-                      flex: 1,
-                      padding: '0.5rem',
-                      borderRadius: 'var(--radius-sm)',
-                      border: 'none',
-                      fontSize: '0.82rem',
-                      fontWeight: 700,
-                      cursor: 'pointer',
-                      transition: 'all 0.2s',
-                      background: keepSameVideo ? 'var(--indigo-600)' : 'transparent',
-                      color: keepSameVideo ? '#fff' : 'var(--text-muted)'
-                    }}
-                  >
-                    Keep Same Video Clip
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setKeepSameVideo(false)}
-                    style={{
-                      flex: 1,
-                      padding: '0.5rem',
-                      borderRadius: 'var(--radius-sm)',
-                      border: 'none',
-                      fontSize: '0.82rem',
-                      fontWeight: 700,
-                      cursor: 'pointer',
-                      transition: 'all 0.2s',
-                      background: !keepSameVideo ? 'var(--indigo-600)' : 'transparent',
-                      color: !keepSameVideo ? '#fff' : 'var(--text-muted)'
-                    }}
-                  >
-                    Change Video Completely
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            {/* Trim Timeline Track */}
-            {!keepSameVideo ? (
-              <div className="glass-panel" style={{ padding: '1.25rem' }}>
-                <div className="section-heading" style={{ marginBottom: '1rem', fontSize: '0.85rem' }}>
-                  Clip Boundaries & Timeline
-                </div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1rem' }}>
-                  <div>
-                    <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-muted)', marginBottom: '0.3rem' }}>Start Time (seconds)</label>
-                    <div style={{ display: 'flex', gap: '0.4rem' }}>
-                      <input
-                        type="number"
-                        step="0.1"
-                        min="0"
-                        max={editEnd}
-                        className="input-field"
-                        value={editStart}
-                        onChange={e => setEditStart(Math.max(0, Number(e.target.value)))}
-                      />
-                      <button
-                        className="btn-secondary"
-                        style={{ padding: '0.4rem 0.6rem', fontSize: '0.72rem', whiteSpace: 'nowrap' }}
-                        onClick={() => { if (originalVideoRef.current) setEditStart(Number(originalVideoRef.current.currentTime.toFixed(1))); }}
-                      >
-                        Use Current
-                      </button>
-                    </div>
-                  </div>
-                  <div>
-                    <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-muted)', marginBottom: '0.3rem' }}>End Time (seconds)</label>
-                    <div style={{ display: 'flex', gap: '0.4rem' }}>
-                      <input
-                        type="number"
-                        step="0.1"
-                        min={editStart}
-                        max={video.duration || 300}
-                        className="input-field"
-                        value={editEnd}
-                        onChange={e => setEditEnd(Math.max(editStart, Number(e.target.value)))}
-                      />
-                      <button
-                        className="btn-secondary"
-                        style={{ padding: '0.4rem 0.6rem', fontSize: '0.72rem', whiteSpace: 'nowrap' }}
-                        onClick={() => { if (originalVideoRef.current) setEditEnd(Number(originalVideoRef.current.currentTime.toFixed(1))); }}
-                      >
-                        Use Current
-                      </button>
-                    </div>
-                  </div>
-                </div>
-                <div style={{ display: 'flex', gap: '0.5rem', fontSize: '0.78rem', color: 'var(--text-muted)' }}>
-                  <span>Clip Duration: <strong>{(editEnd - editStart).toFixed(1)}s</strong></span>
-                  <span>Original Duration: <strong>{video.duration ? `${video.duration.toFixed(1)}s` : 'N/A'}</strong></span>
-                </div>
-              </div>
-            ) : (
-              <div className="glass-panel" style={{ padding: '1rem', background: 'var(--status-done-bg)', border: '1px solid var(--status-done-border)' }}>
-                <div style={{ fontSize: '0.8rem', color: 'var(--status-done-text)', display: 'flex', alignItems: 'center', gap: '0.4rem', fontWeight: 600 }}>
-                  ℹ️ Using Locked Video Segment: {(editingClip.start_time || 0).toFixed(1)}s to {(editingClip.end_time || 0).toFixed(1)}s ({(editingClip.end_time - editingClip.start_time).toFixed(1)}s).
-                </div>
-              </div>
-            )}
-
-            {/* Separated Audio Mix Track Controls */}
-            <div className="glass-panel" style={{ padding: '1.25rem' }}>
-              <div className="section-heading" style={{ marginBottom: '1rem', fontSize: '0.85rem' }}>
-                🎛️ Separated Audio Mix Channels
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-                {/* Voice channel */}
-                <div style={{ background: 'var(--bg-surface)', padding: '0.85rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-subtle)' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
-                    <div style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--text-heading)' }}>🗣️ Voice Dubbing Channel</div>
-                    <input
-                      type="checkbox"
-                      checked={editDubVoice}
-                      onChange={e => setEditDubVoice(e.target.checked)}
-                      style={{ width: 16, height: 16, accentColor: 'var(--indigo-600)', cursor: 'pointer' }}
-                    />
-                  </div>
-                  {editDubVoice && (
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginTop: '0.5rem' }}>
-                      <div>
-                        <label style={{ display: 'block', fontSize: '0.72rem', fontWeight: 600, color: 'var(--text-muted)' }}>Speaker Gender</label>
-                        <select className="input-field" value={editSpeakerGender} onChange={e => setEditSpeakerGender(e.target.value)} style={{ padding: '0.3rem' }}>
-                          <option value="female">Female</option>
-                          <option value="male">Male</option>
-                        </select>
-                      </div>
-                      <div>
-                        <label style={{ display: 'block', fontSize: '0.72rem', fontWeight: 600, color: 'var(--text-muted)' }}>Voice Dub Mix Mode</label>
-                        <select className="input-field" value={editDubMixMode} onChange={e => setEditDubMixMode(e.target.value)} style={{ padding: '0.3rem' }}>
-                          <option value="replace">Replace Original Voice</option>
-                          <option value="mix">Mix & Duck Original</option>
-                        </select>
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                {/* Background music channel */}
-                <div style={{ background: 'var(--bg-surface)', padding: '0.85rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-subtle)' }}>
-                  <div style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--text-heading)', marginBottom: '0.6rem' }}>🎵 Background Music Preset Channel</div>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
-                    <div>
-                      <label style={{ display: 'block', fontSize: '0.72rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.25rem' }}>Music Style</label>
-                      <select className="input-field" value={editMusicPreset} onChange={e => setEditMusicPreset(e.target.value)} style={{ padding: '0.3rem' }}>
-                        <option value="none">None (No music)</option>
-                        <option value="upbeat">Upbeat / Energetic</option>
-                        <option value="dramatic">Dramatic / Epic</option>
-                        <option value="standard">Standard / Chill</option>
-                      </select>
-                    </div>
-                    <div>
-                      <label style={{ display: 'block', fontSize: '0.72rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.25rem' }}>Music Volume ({Math.round(editMusicVolume * 100)}%)</label>
-                      <input
-                        type="range"
-                        min="0"
-                        max="1"
-                        step="0.05"
-                        value={editMusicVolume}
-                        onChange={e => setEditMusicVolume(Number(e.target.value))}
-                        style={{ width: '100%', accentColor: 'var(--indigo-600)', marginTop: '0.4rem' }}
-                      />
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* RIGHT PANEL: Caption styling & Typography */}
-          <div style={{ flex: '0 0 40%', overflowY: 'auto', padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1.25rem', background: 'var(--bg-surface)' }}>
-            <div className="glass-panel" style={{ padding: '1.25rem' }}>
-              <div className="section-heading" style={{ marginBottom: '1rem', fontSize: '0.85rem' }}>
-                ✏️ Caption Typography & Styling
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-
-                {/* Preset style */}
-                <div>
-                  <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-muted)', marginBottom: '0.35rem' }}>Caption Style Preset</label>
-                  <select className="input-field" value={editCaptionStyle} onChange={e => {
-                    const preset = e.target.value;
-                    setEditCaptionStyle(preset);
-                    if (preset === 'energetic') {
-                      setEditFontName('Impact');
-                      setEditFontSize(84);
-                      setEditHighlightColor('#FFD700');
-                    } else if (preset === 'minimalist') {
-                      setEditFontName('Arial');
-                      setEditFontSize(48);
-                      setEditHighlightColor('#FFFFFF');
-                    } else if (preset === 'standard') {
-                      setEditFontName('Arial Black');
-                      setEditFontSize(72);
-                      setEditHighlightColor('#00FF00');
-                    }
-                  }}>
-                    <option value="standard">Standard (Bold + Highlight)</option>
-                    <option value="energetic">Energetic (Impact + Yellow)</option>
-                    <option value="minimalist">Minimalist (Arial Clean)</option>
-                    <option value="none">No Captions</option>
-                  </select>
-                </div>
-
-                {editCaptionStyle !== 'none' && (
-                  <>
-                    {/* Font Family & Size */}
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
-                      <div>
-                        <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-muted)', marginBottom: '0.35rem' }}>Font Family</label>
-                        <select className="input-field" value={editFontName} onChange={e => setEditFontName(e.target.value)}>
-                          <option value="Arial Black">Arial Black</option>
-                          <option value="Impact">Impact</option>
-                          <option value="Outfit">Outfit</option>
-                          <option value="Syne">Syne</option>
-                          <option value="Arial">Arial</option>
-                          <option value="Courier New">Courier</option>
-                        </select>
-                      </div>
-                      <div>
-                        <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-muted)', marginBottom: '0.35rem' }}>Font Size (pt)</label>
-                        <input
-                          type="number"
-                          className="input-field"
-                          min="12"
-                          max="140"
-                          value={editFontSize}
-                          onChange={e => setEditFontSize(Number(e.target.value))}
-                        />
-                      </div>
-                    </div>
-
-                    {/* Color Pickers */}
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
-                      <div>
-                        <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-muted)', marginBottom: '0.35rem' }}>Primary Color</label>
-                        <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
-                          <input
-                            type="color"
-                            value={editPrimaryColor}
-                            onChange={e => setEditPrimaryColor(e.target.value)}
-                            style={{ width: 32, height: 32, padding: 0, border: 'none', borderRadius: 'var(--radius-sm)', cursor: 'pointer' }}
-                          />
-                          <span style={{ fontSize: '0.75rem', fontFamily: 'monospace' }}>{editPrimaryColor}</span>
-                        </div>
-                      </div>
-                      <div>
-                        <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-muted)', marginBottom: '0.35rem' }}>Highlight Color</label>
-                        <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
-                          <input
-                            type="color"
-                            value={editHighlightColor}
-                            onChange={e => setEditHighlightColor(e.target.value)}
-                            style={{ width: 32, height: 32, padding: 0, border: 'none', borderRadius: 'var(--radius-sm)', cursor: 'pointer' }}
-                          />
-                          <span style={{ fontSize: '0.75rem', fontFamily: 'monospace' }}>{editHighlightColor}</span>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Alignment & Margin */}
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
-                      <div>
-                        <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-muted)', marginBottom: '0.35rem' }}>Vertical Align</label>
-                        <select className="input-field" value={editAlignment} onChange={e => setEditAlignment(Number(e.target.value))}>
-                          <option value={2}>Bottom</option>
-                          <option value={10}>Center</option>
-                          <option value={6}>Top</option>
-                        </select>
-                      </div>
-                      <div>
-                        <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-muted)', marginBottom: '0.35rem' }}>Vertical Margin (px)</label>
-                        <input
-                          type="number"
-                          className="input-field"
-                          min="10"
-                          max="800"
-                          value={editMarginV}
-                          onChange={e => setEditMarginV(Number(e.target.value))}
-                        />
-                      </div>
-                    </div>
-                  </>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
       </div>
     );
   }

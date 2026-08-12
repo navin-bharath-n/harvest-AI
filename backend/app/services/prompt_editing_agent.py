@@ -44,8 +44,8 @@ You MUST output exactly and ONLY valid JSON matching this schema:
 {
   "cuts": "fast|slow|skip_intro|standard",
   "zooms": "frequent|subtle|none",
-  "caption_style": "energetic|minimalist|standard",
-  "music_style": "upbeat|lofi|none",
+  "caption_style": "pop|karaoke|minimalist|boxed|neon|standard|none",
+  "music_style": "upbeat|lofi|cinematic|suspenseful|standard|none",
   "content_type": "speech|music_only|auto",
   "language": "en|ta|es|fr|hi|etc",
   "transition": "fade|zoom|none",
@@ -57,6 +57,7 @@ You MUST output exactly and ONLY valid JSON matching this schema:
 
 Instructions:
 - Analyze the user's prompt carefully to determine the intent.
+- caption_style: Map to pop (viral bounce), karaoke (word wipe), minimalist (cinematic fade), boxed (pill box), neon (glowing pulse), standard, or none.
 - content_type: Set to "speech" if the user mentions a person speaking, talking, narration, commentary, interview, podcast, lecture, or any spoken content. Set to "music_only" ONLY if the user explicitly asks for a music video, instrumental, or says there is no speech. Default to "auto" if not mentioned.
 - If a parameter isn't mentioned in the prompt, use a reasonable default based on the rest of the prompt (or default to standard/none/en).
 - language and translate_language should be the ISO language code (e.g., 'ta' for Tamil, 'en' for English).
@@ -87,11 +88,11 @@ Instructions:
             return {
                 "cuts": "standard",
                 "zooms": "none",
-                "caption_style": "standard",
-                "music_style": "none",
+                "caption_style": "pop",
+                "music_style": "standard",
                 "content_type": "auto",
                 "language": "en",
-                "transition": "fade",
+                "transition": "none",
                 "translate_language": "none",
                 "dub_voice": False,
                 "caption_language": "translated",
