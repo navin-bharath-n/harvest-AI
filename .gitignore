@@ -1,4 +1,4 @@
-﻿# Virtual environments
+# Virtual environments
 .venv/
 venv/
 ENV/
@@ -6,6 +6,7 @@ env/
 
 # Dependency directories
 node_modules/
+**/node_modules/
 jspm_packages/
 
 # Python cache and distribution files
@@ -16,6 +17,8 @@ jspm_packages/
 .pytest_cache/
 .coverage
 htmlcov/
+coverage/
+**/coverage/
 dist/
 build/
 *.egg-info/
@@ -29,22 +32,30 @@ build/
 *.log
 error.log
 
-# Uploads and temporary render assets
+# Uploads, models and temporary render assets
 uploads/
-backend/uploads/
+**/uploads/
 backend/assets/
-backend/yolo11n.pt
+*.pt
+*.pth
+*.onnx
 
 # SSL certificate files
 *.pem
 cert.pem
 key.pem
 
-# OS metadata
+# OS metadata & secrets
 .DS_Store
 Thumbs.db
 backend/gcp-key.json
+*.key
 
+# Environment variables
+.env
+.env.*
+!.env.example
 *.env
+
 
 
