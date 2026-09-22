@@ -112,15 +112,20 @@ def seed_default_user_and_project(engine):
                 default_user = email_user
             else:
                 logger.info("Seeding default user...")
+                from app.core.security import get_password_hash
                 default_user = User(
                     id=1,
                     email="user1@harvest.ai",
                     full_name="Default User",
-                    hashed_password="fakehashedpassword", # not used since oauth/auth is removed
+                    hashed_password=get_password_hash("admin123"),
                     is_active=True
                 )
                 db.add(default_user)
                 db.flush() # get the id if generated or assigned
+        elif default_user.hashed_password == "fakehashedpassword":
+            from app.core.security import get_password_hash
+            default_user.hashed_password = get_password_hash("admin123")
+            db.commit()
         
         # Check if default project exists
         default_project = db.query(Project).filter(Project.id == 1).first()
@@ -281,10 +286,15 @@ async def lifespan(app: FastAPI):
         pass
     logger.info("=" * 50)
     logger.info("Harvest AI Server Starting...")
-    logger.info("=" * 50)
-    _start_ollama()
-    _start_celery()
-    logger.info("=" * 50)
+    if getattr(settings, "AUTO_START_OLLAMA", True):
+        _start_ollama()
+    else:
+        logger.info("Auto-start Ollama disabled via configuration.")
+
+    if getattr(settings, "AUTO_START_CELERY", True):
+        _start_celery()
+    else:
+        logger.info("Auto-start Celery disabled via configuration (relying on external worker).")
     logger.info("All services started. API is ready!")
     logger.info("=" * 50)
     yield
@@ -308,19 +318,37 @@ app = FastAPI(
 # 500 errors. If registered after other middleware, error responses
 # lose their CORS headers and the browser blocks them.
 # ---------------------------------------------------------------
-app.add_middleware(
-    CORSMiddleware,
-    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-    expose_headers=["*"],
-)
+# In production set FRONTEND_ORIGIN to your real domain, e.g. https://app.yourdomain.com
+# In development it defaults to allow all localhost origins for convenience.
+_FRONTEND_ORIGIN = getattr(settings, "FRONTEND_ORIGIN", None)
+if _FRONTEND_ORIGIN and _FRONTEND_ORIGIN not in ("*", ""):
+    _cors_kwargs = dict(
+        allow_origins=[_FRONTEND_ORIGIN],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+        expose_headers=["*"],
+    )
+else:
+    # Development fallback — allow all localhost ports
+    _cors_kwargs = dict(
+        allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+        expose_headers=["*"],
+    )
+
+app.add_middleware(CORSMiddleware, **_cors_kwargs)
 
 # Absolute uploads directory (backend/uploads/ - parent of app/)
 _UPLOADS_DIR = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "uploads"))
 os.makedirs(_UPLOADS_DIR, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=_UPLOADS_DIR), name="uploads")
+
+# Absolute path for the error log — never relative to CWD
+_BACKEND_DIR_MAIN = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+_ERROR_LOG_PATH = os.path.join(_BACKEND_DIR_MAIN, "error.log")
 
 @app.middleware("http")
 async def disable_cache_control_middleware(request: Request, call_next):
@@ -335,13 +363,17 @@ async def disable_cache_control_middleware(request: Request, call_next):
 async def catch_exceptions_middleware(request: Request, call_next):
     try:
         return await call_next(request)
-    except Exception as e:
-        with open("error.log", "a") as f:
-            f.write(traceback.format_exc())
-            f.write("\n\n")
+    except Exception:
+        # Log full details server-side only — never leak internals to the client
+        try:
+            with open(_ERROR_LOG_PATH, "a") as f:
+                f.write(traceback.format_exc())
+                f.write("\n\n")
+        except Exception:
+            logger.error("Unhandled exception (could not write to error.log):\n" + traceback.format_exc())
         return JSONResponse(
             status_code=500,
-            content={"detail": str(e)},
+            content={"detail": "An internal server error occurred. Please try again later."},
         )
 
 app.include_router(api_router, prefix=settings.API_V1_STR)
@@ -367,4 +399,7 @@ if __name__ == "__main__":
     else:
         print("[HTTP] Running FastAPI in plain HTTP mode")
 
-    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True, **ssl_kwargs)
+    # NOTE: reload=True is for development only. In production, omit it or use
+    # a process manager (gunicorn, supervisor) to manage workers.
+    _dev_reload = os.environ.get("DEV_RELOAD", "false").lower() == "true"
+    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=_dev_reload, **ssl_kwargs)

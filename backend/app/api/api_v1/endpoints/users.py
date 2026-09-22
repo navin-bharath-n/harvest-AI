@@ -2,10 +2,75 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
 from typing import List, Optional
+import json as _json
+import logging
 from app.core.database import get_db
 from app import models, schemas
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
+
+from app.core import security
+from app.api.deps import get_current_user
+
+def _get_frontend_origin() -> str:
+    """Returns the configured frontend origin for postMessage targeting."""
+    try:
+        from app.core.config import settings
+        origin = getattr(settings, "FRONTEND_ORIGIN", None)
+        if origin and origin not in ("*", ""):
+            return origin
+    except Exception:
+        pass
+    return "*"  # fallback for local dev only
+
+
+@router.post("/register", response_model=schemas.Token)
+def register_user(
+    user_in: schemas.UserCreate,
+    db: Session = Depends(get_db)
+):
+    existing_user = db.query(models.User).filter(models.User.email == user_in.email).first()
+    if existing_user:
+        raise HTTPException(status_code=400, detail="A user with this email already exists.")
+    
+    hashed_password = security.get_password_hash(user_in.password)
+    db_user = models.User(
+        email=user_in.email,
+        full_name=user_in.full_name,
+        hashed_password=hashed_password,
+        is_active=True
+    )
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+
+    access_token = security.create_access_token(subject=db_user.id)
+    return schemas.Token(access_token=access_token, token_type="bearer", user=db_user)
+
+
+@router.post("/login", response_model=schemas.Token)
+def login_user(
+    login_in: schemas.LoginRequest,
+    db: Session = Depends(get_db)
+):
+    user = db.query(models.User).filter(models.User.email == login_in.email).first()
+    if not user or not security.verify_password(login_in.password, user.hashed_password):
+        raise HTTPException(status_code=400, detail="Incorrect email or password.")
+    if not user.is_active:
+        raise HTTPException(status_code=400, detail="Inactive user account.")
+
+    access_token = security.create_access_token(subject=user.id)
+    return schemas.Token(access_token=access_token, token_type="bearer", user=user)
+
+
+@router.get("/me", response_model=schemas.User)
+def get_user_me(
+    current_user: models.User = Depends(get_current_user)
+):
+    return current_user
+
 
 @router.get("/{user_id}/connections", response_model=List[schemas.SocialConnection])
 def read_user_connections(
@@ -204,14 +269,17 @@ def platform_callback(
 ):
     if error or error_message or error_description:
         err_msg = error_message or error_description or error or "Unknown OAuth error"
+        _origin = _get_frontend_origin()
+        # JSON-encode the error so it is safe to embed in a JS string literal
+        err_json = _json.dumps(str(err_msg))
         return f"""
         <html>
           <body>
             <script>
               window.opener.postMessage({{
                 type: 'HARVEST_AUTH_FAILURE',
-                error: '{err_msg}'
-              }}, '*');
+                error: {err_json}
+              }}, {_json.dumps(_origin)});
               window.close();
             </script>
           </body>
@@ -389,29 +457,31 @@ def platform_callback(
                 save_connection("instagram", instagram_details)
 
     except Exception as e:
-        error_msg = str(e).replace("'", "\\'")
+        _origin = _get_frontend_origin()
+        error_json = _json.dumps(str(e))
         return f"""
         <html>
           <body>
             <script>
               window.opener.postMessage({{
                 type: 'HARVEST_AUTH_FAILURE',
-                error: '{error_msg}'
-              }}, '*');
+                error: {error_json}
+              }}, {_json.dumps(_origin)});
               window.close();
             </script>
           </body>
         </html>
         """
 
+    _origin = _get_frontend_origin()
     return f"""
     <html>
       <body>
         <script>
           window.opener.postMessage({{
             type: 'HARVEST_AUTH_SUCCESS',
-            platform: '{platform}'
-          }}, '*');
+            platform: {_json.dumps(platform)}
+          }}, {_json.dumps(_origin)});
           window.close();
         </script>
       </body>

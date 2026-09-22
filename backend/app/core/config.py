@@ -15,14 +15,19 @@ class Settings(BaseSettings):
     CELERY_BROKER_URL: str = "redis://localhost:6379/0"
     CELERY_RESULT_BACKEND: str = "redis://localhost:6379/0"
     
+    SECRET_KEY: Optional[str] = None
+    FRONTEND_ORIGIN: Optional[str] = None
+    AUTO_START_CELERY: bool = True
+    AUTO_START_OLLAMA: bool = True
+
     QWEN_API_KEY: Optional[str] = None
 
-    DATABASE_URI: str = _DEFAULT_DB_PATH
+    DATABASE_URI: Optional[str] = None
 
     # Music & Audio APIs
     AUDIUS_API_BASE: str = "https://api.audius.co"
     AUDIUS_APP_NAME: str = "HARVEST_AI"
-    JAMENDO_CLIENT_ID: str = "56d30c95"
+    JAMENDO_CLIENT_ID: Optional[str] = None
     FREESOUND_API_KEY: Optional[str] = None
     PIXABAY_API_KEY: Optional[str] = None
 
@@ -43,7 +48,9 @@ class Settings(BaseSettings):
 
     @property
     def SQLALCHEMY_DATABASE_URI(self) -> str:
-        return self.DATABASE_URI
+        if self.DATABASE_URI and self.DATABASE_URI.strip():
+            return self.DATABASE_URI.strip()
+        return _DEFAULT_DB_PATH
     
     model_config = SettingsConfigDict(
         env_file=_os.path.join(_os.path.dirname(__file__), "..", "..", ".env"), 

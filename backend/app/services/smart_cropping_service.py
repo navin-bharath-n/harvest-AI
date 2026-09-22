@@ -7,6 +7,9 @@ import mediapipe as mp
 from ultralytics import YOLO
 from deep_sort_realtime.deepsort_tracker import DeepSort
 
+import warnings
+warnings.filterwarnings("ignore", message=".*weights_only.*", category=FutureWarning)
+
 logger = logging.getLogger(__name__)
 
 # ── MediaPipe Solutions Configuration ──────────────────
@@ -201,10 +204,22 @@ class SmartCroppingService:
                             target_box = ltrb
 
                 if target_box is not None:
-                    cx = (target_box[0] + target_box[2]) / 2
-                    cy = (target_box[1] + target_box[3]) / 2
-                    smooth_cx = alpha * cx + (1 - alpha) * smooth_cx
-                    smooth_cy = alpha * cy + (1 - alpha) * smooth_cy
+                    total_frame_area = max(1, width * height)
+                    box_area = (target_box[2] - target_box[0]) * (target_box[3] - target_box[1])
+                    # Only track if subject occupies meaningful frame area (> 2.5% of frame)
+                    # Prevents jittery tracking of tiny corner webcams, icons, or slide avatars
+                    if box_area >= 0.025 * total_frame_area:
+                        cx = (target_box[0] + target_box[2]) / 2
+                        cy = (target_box[1] + target_box[3]) / 2
+                        smooth_cx = alpha * cx + (1 - alpha) * smooth_cx
+                        smooth_cy = alpha * cy + (1 - alpha) * smooth_cy
+                    else:
+                        smooth_cx = alpha * (width / 2) + (1 - alpha) * smooth_cx
+                        smooth_cy = alpha * (height / 2) + (1 - alpha) * smooth_cy
+                else:
+                    # Drift smoothly to center for presentations / screen recordings
+                    smooth_cx = alpha * (width / 2) + (1 - alpha) * smooth_cx
+                    smooth_cy = alpha * (height / 2) + (1 - alpha) * smooth_cy
 
                 # Constrain crop window to frame bounds
                 crop_x1 = max(0, int(smooth_cx - crop_width  / 2))

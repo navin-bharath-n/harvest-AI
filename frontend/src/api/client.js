@@ -9,7 +9,53 @@ const client = axios.create({
   },
 });
 
+// Automatically attach Bearer token if present in localStorage
+client.interceptors.request.use((config) => {
+  const token = localStorage.getItem('harvest_token');
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+}, (error) => Promise.reject(error));
+
 export const api = {
+  // Auth methods
+  login: async (email, password) => {
+    const response = await client.post('/users/login', { email, password });
+    if (response.data?.access_token) {
+      localStorage.setItem('harvest_token', response.data.access_token);
+      if (response.data.user) {
+        localStorage.setItem('harvest_user', JSON.stringify(response.data.user));
+      }
+    }
+    return response.data;
+  },
+
+  register: async (email, password, fullName) => {
+    const response = await client.post('/users/register', {
+      email,
+      password,
+      full_name: fullName
+    });
+    if (response.data?.access_token) {
+      localStorage.setItem('harvest_token', response.data.access_token);
+      if (response.data.user) {
+        localStorage.setItem('harvest_user', JSON.stringify(response.data.user));
+      }
+    }
+    return response.data;
+  },
+
+  logout: () => {
+    localStorage.removeItem('harvest_token');
+    localStorage.removeItem('harvest_user');
+  },
+
+  getCurrentUser: async () => {
+    const response = await client.get('/users/me');
+    return response.data;
+  },
+
   // Get all projects
   getProjects: async () => {
     const response = await client.get('/projects/');
@@ -18,10 +64,20 @@ export const api = {
 
   // Create a new project
   createProject: async (title, description) => {
+    let ownerId = 1;
+    try {
+      const storedUser = JSON.parse(localStorage.getItem('harvest_user') || '{}');
+      if (storedUser?.id) {
+        ownerId = storedUser.id;
+      }
+    } catch {
+      // fallback to 1
+    }
+
     const response = await client.post('/projects/', {
       title,
       description,
-      owner_id: 1 // Default hardcoded owner until auth is implemented
+      owner_id: ownerId
     });
     return response.data;
   },
@@ -79,8 +135,17 @@ export const api = {
   },
 
   // Get social connections for a user
-  getUserConnections: async (userId = 1) => {
-    const response = await client.get(`/users/${userId}/connections`);
+  getUserConnections: async (userId = null) => {
+    let targetUserId = userId;
+    if (!targetUserId) {
+      try {
+        const storedUser = JSON.parse(localStorage.getItem('harvest_user') || '{}');
+        targetUserId = storedUser?.id || 1;
+      } catch {
+        targetUserId = 1;
+      }
+    }
+    const response = await client.get(`/users/${targetUserId}/connections`);
     return response.data;
   },
 
@@ -91,14 +156,32 @@ export const api = {
   },
 
   // Create or update a social connection
-  saveUserConnection: async (userId = 1, connectionData) => {
-    const response = await client.post(`/users/${userId}/connections`, connectionData);
+  saveUserConnection: async (userId = null, connectionData) => {
+    let targetUserId = userId;
+    if (!targetUserId) {
+      try {
+        const storedUser = JSON.parse(localStorage.getItem('harvest_user') || '{}');
+        targetUserId = storedUser?.id || 1;
+      } catch {
+        targetUserId = 1;
+      }
+    }
+    const response = await client.post(`/users/${targetUserId}/connections`, connectionData);
     return response.data;
   },
 
   // Delete/disconnect a social connection
-  deleteUserConnection: async (userId = 1, platform) => {
-    const response = await client.delete(`/users/${userId}/connections/${platform}`);
+  deleteUserConnection: async (userId = null, platform) => {
+    let targetUserId = userId;
+    if (!targetUserId) {
+      try {
+        const storedUser = JSON.parse(localStorage.getItem('harvest_user') || '{}');
+        targetUserId = storedUser?.id || 1;
+      } catch {
+        targetUserId = 1;
+      }
+    }
+    const response = await client.delete(`/users/${targetUserId}/connections/${platform}`);
     return response.data;
   },
 

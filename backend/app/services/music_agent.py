@@ -170,35 +170,45 @@ Output ONLY valid JSON:
                     if not tracks:
                         continue
 
-                    track = tracks[0]
-                    track_id = track.get("id")
-                    track_title = track.get("title", "Unknown")
-                    logger.info(f"Discovered Music API track from Audius: '{track_title}' (ID: {track_id})")
+                    # Try up to the top 5 tracks in case of dead nodes or 404s
+                    for track in tracks[:5]:
+                        track_id = track.get("id")
+                        if not track_id:
+                            continue
+                        track_title = track.get("title", "Unknown")
+                        logger.info(f"Discovered Music API track from Audius: '{track_title}' (ID: {track_id})")
 
-                    stream_url = f"{base_url}/v1/tracks/{track_id}/stream?app_name=HARVEST_AI"
-                    stream_req = urllib.request.Request(stream_url, headers={"User-Agent": USER_AGENT})
+                        stream_url = f"{base_url}/v1/tracks/{track_id}/stream?app_name=HARVEST_AI"
+                        temp_cache = f"{cached_path}.tmp"
+                        try:
+                            stream_req = urllib.request.Request(stream_url, headers={"User-Agent": USER_AGENT})
+                            max_bytes = 15 * 1024 * 1024
+                            downloaded = 0
+                            with urllib.request.urlopen(stream_req, timeout=12) as stream_resp, open(temp_cache, "wb") as out_f:
+                                while downloaded < max_bytes:
+                                    chunk = stream_resp.read(64 * 1024)
+                                    if not chunk:
+                                        break
+                                    out_f.write(chunk)
+                                    downloaded += len(chunk)
 
-                    # Download track up to 15MB
-                    temp_cache = f"{cached_path}.tmp"
-                    max_bytes = 15 * 1024 * 1024
-                    downloaded = 0
-                    with urllib.request.urlopen(stream_req, timeout=12) as stream_resp, open(temp_cache, "wb") as out_f:
-                        while downloaded < max_bytes:
-                            chunk = stream_resp.read(64 * 1024)
-                            if not chunk:
-                                break
-                            out_f.write(chunk)
-                            downloaded += len(chunk)
-
-                    if os.path.exists(temp_cache) and os.path.getsize(temp_cache) > 50 * 1024:
-                        if os.path.exists(cached_path):
-                            os.remove(cached_path)
-                        os.rename(temp_cache, cached_path)
-                        logger.info(f"Cached Music API track: {cached_path} ({os.path.getsize(cached_path)} bytes)")
-                        return cached_path
-                    else:
-                        if os.path.exists(temp_cache):
-                            os.remove(temp_cache)
+                            if os.path.exists(temp_cache) and os.path.getsize(temp_cache) > 50 * 1024:
+                                if os.path.exists(cached_path):
+                                    os.remove(cached_path)
+                                os.rename(temp_cache, cached_path)
+                                logger.info(f"Cached Music API track: {cached_path} ({os.path.getsize(cached_path)} bytes)")
+                                return cached_path
+                            else:
+                                if os.path.exists(temp_cache):
+                                    os.remove(temp_cache)
+                        except Exception as se:
+                            logger.warning(f"Audius stream error for track '{track_title}' (ID: {track_id}): {se}")
+                            if os.path.exists(temp_cache):
+                                try:
+                                    os.remove(temp_cache)
+                                except Exception:
+                                    pass
+                            continue
             except Exception as e:
                 logger.warning(f"Audius query error ({base_url}): {e}")
                 continue
@@ -208,6 +218,7 @@ Output ONLY valid JSON:
     def recommend_music(self, analysis: Dict) -> Optional[str]:
         """
         Fetches a real song/BGM from Music APIs matching the style/topic/query.
+        Falls back to style keywords and local cache if online stream fails.
         """
         style = (analysis.get("style") or "upbeat").lower()
         search_query = analysis.get("search_query") or f"{style} beat"
@@ -227,15 +238,31 @@ Output ONLY valid JSON:
 
         query_to_use = style_keywords.get(style, search_query)
 
-        # Query Music API
+        # 1. Query Music API with specific keywords
         track_path = self._fetch_from_audius_api(query_to_use)
         if track_path:
             return track_path
 
-        # Fallback with simple keyword
+        # 2. Fallback with simple keyword
         track_path = self._fetch_from_audius_api(style)
         if track_path:
             return track_path
+
+        # 3. Fallback to existing valid cached tracks
+        try:
+            if os.path.exists(_MUSIC_CACHE_DIR):
+                cached_files = [
+                    os.path.join(_MUSIC_CACHE_DIR, f)
+                    for f in os.listdir(_MUSIC_CACHE_DIR)
+                    if f.endswith(".mp3") and os.path.getsize(os.path.join(_MUSIC_CACHE_DIR, f)) > 50 * 1024
+                ]
+                if cached_files:
+                    import random
+                    fallback_track = random.choice(cached_files)
+                    logger.info(f"Using cached music track as offline fallback: {fallback_track}")
+                    return fallback_track
+        except Exception as ce:
+            logger.warning(f"Error checking local music cache fallback: {ce}")
 
         logger.warning(f"Could not retrieve music track from Music APIs for: {query_to_use}")
         return None

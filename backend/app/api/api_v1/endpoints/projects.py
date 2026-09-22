@@ -28,6 +28,9 @@ def read_project(project_id: int, db: Session = Depends(get_db)):
 
 import os
 import shutil
+import logging
+
+logger = logging.getLogger(__name__)
 
 @router.delete("/{project_id}")
 def delete_project(project_id: int, db: Session = Depends(get_db)):
@@ -40,23 +43,23 @@ def delete_project(project_id: int, db: Session = Depends(get_db)):
             try:
                 os.remove(video.storage_path)
             except Exception as e:
-                print(f"Error removing storage_path {video.storage_path}: {e}")
+                logger.warning(f"Error removing storage_path {video.storage_path}: {e}")
         if video.audio_path and os.path.exists(video.audio_path):
             try:
                 os.remove(video.audio_path)
             except Exception as e:
-                print(f"Error removing audio_path {video.audio_path}: {e}")
+                logger.warning(f"Error removing audio_path {video.audio_path}: {e}")
         if video.frame_directory and os.path.exists(video.frame_directory):
             try:
                 shutil.rmtree(video.frame_directory, ignore_errors=True)
             except Exception as e:
-                print(f"Error removing frame_directory {video.frame_directory}: {e}")
+                logger.warning(f"Error removing frame_directory {video.frame_directory}: {e}")
         for clip in video.clips:
             if clip.storage_path and os.path.exists(clip.storage_path):
                 try:
                     os.remove(clip.storage_path)
                 except Exception as e:
-                    print(f"Error removing clip storage_path {clip.storage_path}: {e}")
+                    logger.warning(f"Error removing clip storage_path {clip.storage_path}: {e}")
                     
     db.delete(db_project)
     db.commit()

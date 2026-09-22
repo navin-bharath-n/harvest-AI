@@ -3,6 +3,9 @@ from sqlalchemy.orm import sessionmaker, declarative_base
 from app.core.config import settings
 
 DATABASE_URL = settings.SQLALCHEMY_DATABASE_URI
+if not DATABASE_URL or not DATABASE_URL.strip():
+    from app.core.config import _DEFAULT_DB_PATH
+    DATABASE_URL = _DEFAULT_DB_PATH
 
 if DATABASE_URL.startswith("sqlite"):
     engine = create_engine(

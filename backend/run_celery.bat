@@ -1,9 +1,13 @@
 @echo off
 REM ── Run Celery worker standalone ──
-REM Use this ONLY if you disabled auto-start in main.py lifespan.
-REM Normally Celery is launched automatically by FastAPI on startup.
+REM Use this if AUTO_START_CELERY=false or when running dedicated workers.
 cd /d "%~dp0"
-..\.venv\Scripts\python.exe -m celery -A app.core.celery_app worker ^
+if exist "..\.venv\Scripts\python.exe" (
+    set "PY=..\.venv\Scripts\python.exe"
+) else (
+    set "PY=python"
+)
+%PY% -m celery -A app.core.celery_app worker ^
     --loglevel=info ^
     -Q aishorts-queue ^
     --pool=threads ^

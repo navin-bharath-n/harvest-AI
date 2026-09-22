@@ -239,13 +239,86 @@ class MasterAIAgent:
         if video_duration > 0 and target_dur > video_duration:
             target_dur = video_duration
 
+        def _snap_to_speech_boundaries(st_val: float, desired_dur: float) -> tuple:
+            """
+            Snaps clip start and end timestamps to natural sentence beginnings and endings.
+            Prevents cutting off the speaker mid-sentence or starting mid-word.
+            """
+            if not full_transcript or len(full_transcript) < 2:
+                st = max(0.0, float(st_val))
+                en = st + desired_dur
+                if video_duration > 0 and en > video_duration:
+                    en = video_duration
+                    st = max(0.0, en - desired_dur)
+                return round(st, 2), round(en, 2)
+
+            sorted_words = sorted(full_transcript, key=lambda w: float(w.get("start", 0.0)))
+
+            # 1. Snap start time to nearest natural sentence or phrase beginning
+            sentence_start_candidates = []
+            for i, word in enumerate(sorted_words):
+                w_start = float(word.get("start", 0.0))
+                w_text = word.get("text", "").strip()
+
+                is_sentence_start = False
+                if i == 0:
+                    is_sentence_start = True
+                else:
+                    prev_word = sorted_words[i - 1]
+                    prev_text = prev_word.get("text", "").strip()
+                    prev_end = float(prev_word.get("end", 0.0))
+                    if any(prev_text.endswith(p) for p in [".", "!", "?", ":", ";"]):
+                        is_sentence_start = True
+                    elif w_start - prev_end >= 0.35:
+                        is_sentence_start = True
+                    elif w_text and w_text[0].isupper() and len(w_text) > 1:
+                        is_sentence_start = True
+
+                if is_sentence_start and abs(w_start - st_val) <= 4.5:
+                    sentence_start_candidates.append((w_start, abs(w_start - st_val)))
+
+            if sentence_start_candidates:
+                sentence_start_candidates.sort(key=lambda x: x[1])
+                best_start = max(0.0, sentence_start_candidates[0][0] - 0.1)
+            else:
+                closest_word = min(sorted_words, key=lambda w: abs(float(w.get("start", 0.0)) - st_val))
+                best_start = max(0.0, float(closest_word.get("start", 0.0)) - 0.05)
+
+            # 2. Snap end time to natural sentence ending near best_start + desired_dur
+            target_en = best_start + desired_dur
+            if video_duration > 0 and target_en > video_duration:
+                target_en = video_duration
+
+            sentence_end_candidates = []
+            for i, word in enumerate(sorted_words):
+                w_end = float(word.get("end", 0.0))
+                w_text = word.get("text", "").strip()
+                if w_end < best_start + 10.0:
+                    continue
+
+                is_sentence_end = False
+                if any(w_text.endswith(p) for p in [".", "!", "?", ","]):
+                    is_sentence_end = True
+                elif i < len(sorted_words) - 1:
+                    next_start = float(sorted_words[i + 1].get("start", 0.0))
+                    if next_start - w_end >= 0.4:
+                        is_sentence_end = True
+
+                if is_sentence_end and abs(w_end - target_en) <= 4.5:
+                    sentence_end_candidates.append((w_end, abs(w_end - target_en)))
+
+            if sentence_end_candidates:
+                sentence_end_candidates.sort(key=lambda x: x[1])
+                best_end = min(video_duration or 99999.0, sentence_end_candidates[0][0] + 0.2)
+            else:
+                valid_ends = [w for w in sorted_words if float(w.get("end", 0.0)) >= best_start + 10.0] or sorted_words
+                closest_end_word = min(valid_ends, key=lambda w: abs(float(w.get("end", 0.0)) - target_en))
+                best_end = min(video_duration or 99999.0, float(closest_end_word.get("end", 0.0)) + 0.15)
+
+            return round(best_start, 2), round(best_end, 2)
+
         def _calc_window(st_val: float):
-            st_val = max(0.0, float(st_val))
-            calc_en = st_val + target_dur
-            if video_duration > 0 and calc_en > video_duration:
-                calc_en = video_duration
-                st_val = max(0.0, calc_en - target_dur)
-            return round(st_val, 2), round(calc_en, 2)
+            return _snap_to_speech_boundaries(st_val, target_dur)
 
         # Build candidate highlight windows for the 5 variations
         candidate_windows = []
@@ -421,15 +494,20 @@ class MasterAIAgent:
                 if not part_trajectory:
                     part_trajectory = [{"timestamp": part_start, "x": 0, "y": 0, "width": 1080, "height": 1920}]
 
-                # Filter and shift words for this part
+                # Filter and shift words for this part (include all overlapping words)
                 caption_preset = instructions.get("caption_style", "pop")
-                part_words = [w for w in full_transcript if w["start"] >= part_start and w["end"] <= part_end]
+                part_words = [
+                    w for w in full_transcript
+                    if float(w.get("end", 0.0)) > part_start + 0.05 and float(w.get("start", 0.0)) < part_end - 0.05
+                ]
                 shifted_words = []
                 for w in part_words:
+                    w_st = max(0.0, float(w.get("start", 0.0)) - part_start)
+                    w_en = max(w_st + 0.05, min(part_end - part_start, float(w.get("end", 0.0)) - part_start))
                     shifted_words.append({
-                        "start": w["start"] - part_start,
-                        "end": w["end"] - part_start,
-                        "text": w["text"]
+                        "start": round(w_st, 2),
+                        "end": round(w_en, 2),
+                        "text": w.get("text", "")
                     })
                 orig_shifted_words = shifted_words.copy()
 

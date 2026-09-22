@@ -4,11 +4,14 @@ from typing import List
 import shutil
 import os
 import uuid
+import logging
 from app.core.database import get_db
 from app import models, schemas
 from app.tasks.video_tasks import process_video_task
 
 import pathlib as _pathlib
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -16,8 +19,11 @@ router = APIRouter()
 _BACKEND_DIR = _pathlib.Path(__file__).resolve().parent.parent.parent.parent.parent  # backend/
 UPLOAD_DIR = str(_BACKEND_DIR / "uploads")
 
+# Maximum allowed video upload size: 2 GB
+MAX_UPLOAD_SIZE_BYTES = 2 * 1024 * 1024 * 1024  # 2 GB
+
 @router.post("/", response_model=schemas.Video)
-def upload_video(
+async def upload_video(
     project_id: int = Form(...),
     file: UploadFile = File(...),
     db: Session = Depends(get_db)
@@ -39,12 +45,36 @@ def upload_video(
             detail=f"Invalid file type. Please upload a valid video file. Supported formats: {', '.join(sorted(ALLOWED_EXTENSIONS))}"
         )
 
-    # Save file
     unique_filename = f"{uuid.uuid4()}{file_ext}"
     file_path = os.path.join(UPLOAD_DIR, unique_filename)
+    resolved_path = os.path.abspath(file_path)
+    if not resolved_path.startswith(os.path.abspath(UPLOAD_DIR)):
+        raise HTTPException(status_code=400, detail="Invalid file destination")
 
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    # Stream file to disk in 1MB chunks to avoid high memory usage
+    bytes_written = 0
+    try:
+        with open(resolved_path, "wb") as buffer:
+            while chunk := await file.read(1024 * 1024):
+                bytes_written += len(chunk)
+                if bytes_written > MAX_UPLOAD_SIZE_BYTES:
+                    buffer.close()
+                    if os.path.exists(resolved_path):
+                        os.remove(resolved_path)
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"File too large. Maximum allowed size is {MAX_UPLOAD_SIZE_BYTES // (1024 ** 3)} GB."
+                    )
+                buffer.write(chunk)
+    except HTTPException:
+        raise
+    except Exception as e:
+        if os.path.exists(resolved_path):
+            os.remove(resolved_path)
+        logger.error(f"Failed to save uploaded video: {e}")
+        raise HTTPException(status_code=500, detail="Failed to save video upload")
+
+    file_path = resolved_path
 
     # Quick metadata probe with ffprobe in 0.05s
     duration = None

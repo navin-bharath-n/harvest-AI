@@ -166,6 +166,8 @@ class ClipRenderingService:
             fade_duration = 0.5
             fade_frames = max(1, int(fade_duration * fps))
             total_clip_frames = int(duration * fps)
+            crop_idx = 0
+            num_crops = len(crop_trajectory)
 
             while True:
                 ret, frame = cap.read()
@@ -175,13 +177,10 @@ class ClipRenderingService:
                 timestamp = start_time + (current_frame / fps)
                 clip_frame_idx = current_frame
                 
-                # Find corresponding crop coordinate
-                current_crop = crop_trajectory[0]
-                for crop in crop_trajectory:
-                    if crop["timestamp"] <= timestamp:
-                        current_crop = crop
-                    else:
-                        break
+                # Efficient O(1) pointer advance instead of re-iterating entire trajectory
+                while crop_idx + 1 < num_crops and crop_trajectory[crop_idx + 1]["timestamp"] <= timestamp:
+                    crop_idx += 1
+                current_crop = crop_trajectory[crop_idx]
                         
                 crop_x = int(current_crop["x"])
                 crop_y = int(current_crop["y"])
