@@ -318,21 +318,31 @@ app = FastAPI(
 # 500 errors. If registered after other middleware, error responses
 # lose their CORS headers and the browser blocks them.
 # ---------------------------------------------------------------
-# In production set FRONTEND_ORIGIN to your real domain, e.g. https://app.yourdomain.com
-# In development it defaults to allow all localhost origins for convenience.
+# In production set FRONTEND_ORIGIN to your real domain (e.g. https://app.yourdomain.com)
+# By default, localhost and ALL *.vercel.app domains are permitted.
 _FRONTEND_ORIGIN = getattr(settings, "FRONTEND_ORIGIN", None)
-if _FRONTEND_ORIGIN and _FRONTEND_ORIGIN not in ("*", ""):
+if _FRONTEND_ORIGIN == "*":
     _cors_kwargs = dict(
-        allow_origins=[_FRONTEND_ORIGIN],
+        allow_origin_regex=r".*",
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+        expose_headers=["*"],
+    )
+elif _FRONTEND_ORIGIN and _FRONTEND_ORIGIN.strip():
+    origins = [o.strip().rstrip("/") for o in _FRONTEND_ORIGIN.split(",") if o.strip()]
+    _cors_kwargs = dict(
+        allow_origins=origins,
+        allow_origin_regex=r"https?://(localhost|127\.0\.0\.1|.*\.vercel\.app)(:\d+)?",
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
         expose_headers=["*"],
     )
 else:
-    # Development fallback — allow all localhost ports
+    # Default fallback: allow localhost and ANY vercel deployment
     _cors_kwargs = dict(
-        allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
+        allow_origin_regex=r"https?://(localhost|127\.0\.0\.1|.*\.vercel\.app)(:\d+)?",
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
