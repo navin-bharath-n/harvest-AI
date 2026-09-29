@@ -5,15 +5,23 @@ ENV PYTHONUNBUFFERED 1
 
 WORKDIR /app
 
-# Install system dependencies (including FFmpeg for video processing)
+# Install system dependencies (including FFmpeg and graphics libraries for MediaPipe / OpenCV)
 RUN apt-get update \
-    && apt-get install -y gcc postgresql-client ffmpeg \
+    && apt-get install -y --no-install-recommends \
+        build-essential \
+        gcc \
+        g++ \
+        git \
+        ffmpeg \
+        libgl1 \
+        libglib2.0-0 \
+        postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
 # Install python dependencies from backend
 COPY backend/requirements.txt .
-RUN pip install --upgrade pip \
-    && pip install -r requirements.txt
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -r requirements.txt
 
 # Copy backend application source
 COPY backend/ .
