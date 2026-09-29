@@ -210,6 +210,12 @@ def _start_ollama():
 
 def _start_celery():
     """Start the Celery worker in the background."""
+    is_localhost_redis = "localhost" in settings.CELERY_BROKER_URL or "127.0.0.1" in settings.CELERY_BROKER_URL
+    is_cloud_env = bool(os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("PORT"))
+    if is_cloud_env and is_localhost_redis:
+        logger.info("Redis is not configured in cloud environment. Skipping Celery worker process (tasks will run via resilient background threads).")
+        return
+
     backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
     logger.info("Starting Celery worker...")
     

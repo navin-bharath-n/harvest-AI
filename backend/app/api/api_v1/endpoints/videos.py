@@ -23,6 +23,19 @@ def dispatch_task(celery_task, *args, **kwargs):
     gracefully executes the task in a background daemon thread so processing succeeds.
     """
     queue = kwargs.pop("queue", "aishorts-queue")
+    from app.core.config import settings
+    is_localhost_redis = "localhost" in settings.CELERY_BROKER_URL or "127.0.0.1" in settings.CELERY_BROKER_URL
+    is_cloud_env = bool(os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("PORT"))
+
+    if is_cloud_env and is_localhost_redis:
+        logger.info(
+            f"Redis broker is not set on cloud host. Executing {getattr(celery_task, '__name__', str(celery_task))} in background daemon thread."
+        )
+        task_fn = getattr(celery_task, "run", celery_task)
+        t = threading.Thread(target=task_fn, args=args, kwargs=kwargs, daemon=True)
+        t.start()
+        return
+
     try:
         celery_task.apply_async(args=list(args), queue=queue, **kwargs)
         logger.info(f"Dispatched task {getattr(celery_task, '__name__', str(celery_task))} to Celery queue '{queue}'")
