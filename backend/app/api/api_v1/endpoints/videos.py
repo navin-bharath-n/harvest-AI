@@ -281,23 +281,32 @@ def generate_master_shorts(
     db.commit()
     db.refresh(db_video)
 
-    from app.tasks.video_tasks import generate_master_shorts_task
-    generate_master_shorts_task.apply_async(
-        args=[
-            db_video.id,
-            request.length,
-            request.platform,
-            request.optional_prompt,
-            request.translate_language,
-            request.dub_voice,
-            request.caption_language,
-            request.dub_mix_mode,
-            request.speaker_gender,
-            request.audio_theme,
-            request.framing_mode or "fit_blur"
-        ],
-        queue='aishorts-queue'
-    )
+    try:
+        from app.tasks.video_tasks import generate_master_shorts_task
+        generate_master_shorts_task.apply_async(
+            args=[
+                db_video.id,
+                request.length,
+                request.platform,
+                request.optional_prompt,
+                request.translate_language,
+                request.dub_voice,
+                request.caption_language,
+                request.dub_mix_mode,
+                request.speaker_gender,
+                request.audio_theme,
+                request.framing_mode or "fit_blur"
+            ],
+            queue='aishorts-queue'
+        )
+    except Exception as e:
+        logger.error(f"Failed to queue master generation task: {e}", exc_info=True)
+        db_video.status = models.VideoStatus.FAILED
+        db.commit()
+        raise HTTPException(
+            status_code=503,
+            detail=f"Background worker queue error: {str(e)}. Please check that REDIS_URL and CELERY_BROKER_URL are configured on Railway."
+        )
 
     return db_video
 

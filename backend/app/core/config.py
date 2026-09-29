@@ -49,7 +49,10 @@ class Settings(BaseSettings):
     @property
     def SQLALCHEMY_DATABASE_URI(self) -> str:
         if self.DATABASE_URI and self.DATABASE_URI.strip():
-            return self.DATABASE_URI.strip()
+            uri = self.DATABASE_URI.strip()
+            if uri.startswith("postgres://"):
+                uri = uri.replace("postgres://", "postgresql://", 1)
+            return uri
         return _DEFAULT_DB_PATH
     
     model_config = SettingsConfigDict(
