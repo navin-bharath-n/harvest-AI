@@ -22,5 +22,5 @@ COPY . .
 # Create uploads directory
 RUN mkdir -p uploads
 
-# Command to run the application (overridden in docker-compose for workers)
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Command to run the application (supports dynamic $PORT from cloud hosts like Railway)
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
