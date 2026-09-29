@@ -373,17 +373,18 @@ async def disable_cache_control_middleware(request: Request, call_next):
 async def catch_exceptions_middleware(request: Request, call_next):
     try:
         return await call_next(request)
-    except Exception:
-        # Log full details server-side only — never leak internals to the client
+    except Exception as exc:
+        traceback.print_exc()
+        logger.error(f"Unhandled exception on {request.method} {request.url.path}: {exc}\n{traceback.format_exc()}")
         try:
             with open(_ERROR_LOG_PATH, "a") as f:
                 f.write(traceback.format_exc())
                 f.write("\n\n")
         except Exception:
-            logger.error("Unhandled exception (could not write to error.log):\n" + traceback.format_exc())
+            pass
         return JSONResponse(
             status_code=500,
-            content={"detail": "An internal server error occurred. Please try again later."},
+            content={"detail": f"Internal server error: {str(exc)}"},
         )
 
 app.include_router(api_router, prefix=settings.API_V1_STR)

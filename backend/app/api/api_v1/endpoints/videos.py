@@ -10,10 +10,29 @@ from app import models, schemas
 from app.tasks.video_tasks import process_video_task
 
 import pathlib as _pathlib
+import threading
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+def dispatch_task(celery_task, *args, **kwargs):
+    """
+    Dispatches a task to Celery via Redis broker.
+    If Redis/Celery is unavailable or throws a connection error,
+    gracefully executes the task in a background daemon thread so processing succeeds.
+    """
+    queue = kwargs.pop("queue", "aishorts-queue")
+    try:
+        celery_task.apply_async(args=list(args), queue=queue, **kwargs)
+        logger.info(f"Dispatched task {getattr(celery_task, '__name__', str(celery_task))} to Celery queue '{queue}'")
+    except Exception as e:
+        logger.warning(
+            f"Celery/Redis broker unavailable ({e}). Gracefully falling back to background daemon thread for {getattr(celery_task, '__name__', str(celery_task))}."
+        )
+        task_fn = getattr(celery_task, "run", celery_task)
+        t = threading.Thread(target=task_fn, args=args, kwargs=kwargs, daemon=True)
+        t.start()
 
 # Absolute path so uploads always land in backend/uploads/ regardless of launch CWD
 _BACKEND_DIR = _pathlib.Path(__file__).resolve().parent.parent.parent.parent.parent  # backend/
@@ -130,7 +149,7 @@ def transcribe_video(video_id: int, db: Session = Depends(get_db)):
     db.refresh(db_video)
 
     from app.tasks.video_tasks import transcribe_video_task
-    transcribe_video_task.apply_async(args=[db_video.id], queue='aishorts-queue')
+    dispatch_task(transcribe_video_task, db_video.id)
 
     return db_video
 
@@ -152,7 +171,7 @@ def analyze_video(video_id: int, db: Session = Depends(get_db)):
     db.refresh(db_video)
 
     from app.tasks.video_tasks import analyze_content_task
-    analyze_content_task.apply_async(args=[db_video.id], queue='aishorts-queue')
+    dispatch_task(analyze_content_task, db_video.id)
 
     return db_video
 
@@ -174,7 +193,7 @@ def detect_highlights(video_id: int, db: Session = Depends(get_db)):
     db.refresh(db_video)
 
     from app.tasks.video_tasks import detect_highlights_task
-    detect_highlights_task.apply_async(args=[db_video.id], queue='aishorts-queue')
+    dispatch_task(detect_highlights_task, db_video.id)
 
     return db_video
 
@@ -200,7 +219,7 @@ def generate_smart_crop(
     db.refresh(db_video)
 
     from app.tasks.video_tasks import generate_smart_crop_task
-    generate_smart_crop_task.apply_async(args=[db_video.id, request.target_fps], queue='aishorts-queue')
+    dispatch_task(generate_smart_crop_task, db_video.id, request.target_fps)
 
     return db_video
 
@@ -231,7 +250,7 @@ def render_clip(
     db.refresh(db_clip)
 
     from app.tasks.video_tasks import render_clip_task
-    render_clip_task.apply_async(args=[db_clip.id], queue='aishorts-queue')
+    dispatch_task(render_clip_task, db_clip.id)
 
     return db_clip
 
@@ -281,32 +300,22 @@ def generate_master_shorts(
     db.commit()
     db.refresh(db_video)
 
-    try:
-        from app.tasks.video_tasks import generate_master_shorts_task
-        generate_master_shorts_task.apply_async(
-            args=[
-                db_video.id,
-                request.length,
-                request.platform,
-                request.optional_prompt,
-                request.translate_language,
-                request.dub_voice,
-                request.caption_language,
-                request.dub_mix_mode,
-                request.speaker_gender,
-                request.audio_theme,
-                request.framing_mode or "fit_blur"
-            ],
-            queue='aishorts-queue'
-        )
-    except Exception as e:
-        logger.error(f"Failed to queue master generation task: {e}", exc_info=True)
-        db_video.status = models.VideoStatus.FAILED
-        db.commit()
-        raise HTTPException(
-            status_code=503,
-            detail=f"Background worker queue error: {str(e)}. Please check that REDIS_URL and CELERY_BROKER_URL are configured on Railway."
-        )
+    from app.tasks.video_tasks import generate_master_shorts_task
+    dispatch_task(
+        generate_master_shorts_task,
+        db_video.id,
+        request.length,
+        request.platform,
+        request.optional_prompt,
+        request.translate_language,
+        request.dub_voice,
+        request.caption_language,
+        request.dub_mix_mode,
+        request.speaker_gender,
+        request.audio_theme,
+        request.framing_mode or "fit_blur",
+        queue='aishorts-queue'
+    )
 
     return db_video
 
@@ -522,7 +531,7 @@ def update_clip(
     db.refresh(db_clip)
 
     from app.tasks.video_tasks import render_clip_task
-    render_clip_task.apply_async(args=[db_clip.id], queue='aishorts-queue')
+    dispatch_task(render_clip_task, db_clip.id)
 
     return db_clip
 
@@ -612,8 +621,5 @@ def publish_clip(
     db.refresh(db_clip)
 
     from app.tasks.video_tasks import publish_video_task
-    publish_video_task.apply_async(
-        args=[db_clip.id, request.dict()],
-        queue='aishorts-queue'
-    )
+    dispatch_task(publish_video_task, db_clip.id, request.dict())
     return {"message": "Publishing task triggered", "task_id": db_clip.id}
