@@ -12,12 +12,13 @@ class HighlightDetectionService:
         qwen_key = (settings.QWEN_API_KEY or os.environ.get("QWEN_API_KEY", "")).strip()
 
         if groq_key:
-            logger.info("Initializing HighlightDetectionService with Groq Cloud (llama-3.3-70b-versatile)...")
+            from app.services.llm_client import get_groq_chat_model
             self.client = OpenAI(
                 base_url="https://api.groq.com/openai/v1",
                 api_key=groq_key,
             )
-            self.model = "llama-3.3-70b-versatile"
+            self.model = get_groq_chat_model(self.client)
+            logger.info(f"Initializing HighlightDetectionService with Groq Cloud ({self.model})...")
             self.provider = "groq"
         elif qwen_key and qwen_key != "your_openrouter_api_key_here":
             logger.info("Initializing HighlightDetectionService with OpenRouter...")

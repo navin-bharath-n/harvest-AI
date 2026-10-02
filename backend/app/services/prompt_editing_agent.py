@@ -8,15 +8,26 @@ logger = logging.getLogger(__name__)
 
 class PromptEditingAgent:
     def __init__(self):
-        self.api_key = settings.QWEN_API_KEY
+        import os
+        groq_key = (settings.GROQ_API_KEY or os.environ.get("GROQ_API_KEY", "")).strip()
+        qwen_key = (settings.QWEN_API_KEY or os.environ.get("QWEN_API_KEY", "")).strip()
         self.client = None
         try:
             from openai import OpenAI
-            if self.api_key and self.api_key != "your_openrouter_api_key_here":
+            if groq_key:
+                from app.services.llm_client import get_groq_chat_model
+                self.client = OpenAI(
+                    base_url="https://api.groq.com/openai/v1",
+                    api_key=groq_key,
+                )
+                self.model = get_groq_chat_model(self.client)
+                logger.info(f"Initializing PromptEditingAgent with Groq Cloud ({self.model})...")
+                self.is_openrouter = False
+            elif qwen_key and qwen_key != "your_openrouter_api_key_here":
                 logger.info("Initializing PromptEditingAgent with OpenRouter...")
                 self.client = OpenAI(
                     base_url="https://openrouter.ai/api/v1",
-                    api_key=self.api_key,
+                    api_key=qwen_key,
                 )
                 self.model = "qwen/qwen-2.5-72b-instruct"
                 self.is_openrouter = True

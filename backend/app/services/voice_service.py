@@ -424,6 +424,11 @@ class VoiceService:
         # 2. Group words into lines
         lines = subtitle_service.group_words_into_lines(transcript_words)
         
+        # Batch-translate all lines upfront in a single call to eliminate rate limits
+        line_texts = [" ".join([w["text"].strip() for w in line["words"]]).strip() for line in lines]
+        from app.services.translation_service import batch_translate_texts
+        translated_line_texts = batch_translate_texts(line_texts, target_lang)
+        
         processed_segments = []
         original_slice = None
         voiceover_wav = None
@@ -433,16 +438,13 @@ class VoiceService:
                 line_end = line["end"]
                 line_duration = max(0.4, line_end - line_start)
                 
-                orig_text = " ".join([w["text"].strip() for w in line["words"]])
-                if not orig_text.strip():
+                orig_text = line_texts[idx] if idx < len(line_texts) else ""
+                if not orig_text:
                     continue
                 
-                # Translate line text
-                if target_lang.lower() in ["ta", "ta-tanglish", "ta-colloquial"]:
-                    from app.services.translation_service import translate_text_llm
-                    translated_text = translate_text_llm(orig_text, "ta")
-                else:
-                    translated_text = translate_text_google(orig_text, target_lang)
+                translated_text = translated_line_texts[idx] if idx < len(translated_line_texts) else orig_text
+                if not translated_text:
+                    translated_text = orig_text
                 
                 raw_seg = os.path.join(temp_dir, f"raw_seg_{idx}_{unique_id}.wav")
                 stretched_seg = os.path.join(temp_dir, f"stretched_seg_{idx}_{unique_id}.wav")

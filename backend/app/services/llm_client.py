@@ -9,7 +9,7 @@ def parse_json_robust(text: str) -> Dict[str, Any]:
     Parses a JSON object robustly by handling markdown code fences
     and extracting content between the first '{' and last '}'.
     """
-    cleaned = text.strip()
+    cleaned = (text or "").strip()
     
     # Strip markdown code blocks if present
     if cleaned.startswith("```"):
@@ -23,10 +23,73 @@ def parse_json_robust(text: str) -> Dict[str, Any]:
     # Extract only the JSON portion from text
     start_idx = cleaned.find("{")
     end_idx = cleaned.rfind("}")
-    if start_idx != -1 and end_idx != -1:
+    if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
         cleaned = cleaned[start_idx:end_idx + 1]
     
     return json.loads(cleaned)
+
+def parse_json_list_robust(text: str) -> List[Any]:
+    """
+    Parses a JSON array/list robustly by handling markdown code fences
+    and extracting content between the first '[' and last ']'.
+    """
+    cleaned = (text or "").strip()
+    
+    # Strip markdown code blocks if present
+    if cleaned.startswith("```"):
+        lines = cleaned.splitlines()
+        if lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        cleaned = "\n".join(lines).strip()
+    
+    start_idx = cleaned.find("[")
+    end_idx = cleaned.rfind("]")
+    if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+        cleaned = cleaned[start_idx:end_idx + 1]
+    
+    return json.loads(cleaned)
+
+_CACHED_GROQ_MODEL = None
+
+def get_groq_chat_model(client=None) -> str:
+    """
+    Dynamically identifies the best available chat model on the Groq endpoint.
+    Falls back gracefully through prioritized candidates.
+    """
+    global _CACHED_GROQ_MODEL
+    if _CACHED_GROQ_MODEL:
+        return _CACHED_GROQ_MODEL
+
+    candidates = [
+        "openai/gpt-oss-120b",
+        "openai/gpt-oss-20b",
+        "qwen/qwen3.8-27b",
+        "llama-3.3-70b-versatile",
+        "llama-3.1-8b-instant",
+        "llama-3.1-70b-versatile",
+        "mixtral-8x7b-32768",
+    ]
+
+    if client:
+        try:
+            available_models = [m.id for m in client.models.list().data]
+            for cand in candidates:
+                if cand in available_models:
+                    _CACHED_GROQ_MODEL = cand
+                    logger.info(f"Resolved Groq chat model: {cand}")
+                    return cand
+            for m_id in available_models:
+                if "whisper" not in m_id and "guard" not in m_id:
+                    _CACHED_GROQ_MODEL = m_id
+                    logger.info(f"Selected fallback Groq model: {m_id}")
+                    return m_id
+        except Exception as e:
+            logger.warning(f"Could not list Groq models: {e}. Defaulting to openai/gpt-oss-120b.")
+
+    _CACHED_GROQ_MODEL = "openai/gpt-oss-120b"
+    return _CACHED_GROQ_MODEL
 
 def safe_chat_completion(
     client, 
@@ -83,7 +146,32 @@ def safe_chat_completion(
             )
             
     except Exception as e:
-        logger.warning(f"Initial chat completion failed: {e}.")
+        logger.warning(f"Initial chat completion failed for model '{model}': {e}.")
+
+        # Check if error is 404 / model not found on non-openrouter client (e.g. Groq)
+        err_msg = str(e).lower()
+        if not is_openrouter and ("model_not_found" in err_msg or "does not exist" in err_msg or "404" in err_msg):
+            groq_fallbacks = ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b", "llama-3.1-8b-instant"]
+            for fb_model in groq_fallbacks:
+                if fb_model != model:
+                    logger.info(f"Retrying with alternative model '{fb_model}'...")
+                    try:
+                        if response_format:
+                            return client.chat.completions.create(
+                                model=fb_model,
+                                messages=messages,
+                                response_format=response_format,
+                                **kwargs
+                            )
+                        else:
+                            return client.chat.completions.create(
+                                model=fb_model,
+                                messages=messages,
+                                **kwargs
+                            )
+                    except Exception as fb_err:
+                        logger.warning(f"Alternative model '{fb_model}' failed: {fb_err}")
+                        continue
         
         # If JSON mode failed, try retrying without response_format and parse robustly in caller
         if response_format and response_format.get("type") == "json_object":

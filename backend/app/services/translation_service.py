@@ -1,16 +1,63 @@
-import urllib.request
-import urllib.parse
+import os
 import json
 import re
 import logging
 import html
 import unicodedata
+import time
+import threading
 from functools import lru_cache
-from typing import List, Dict
+from typing import List, Dict, Optional
 from deep_translator import GoogleTranslator
-from app.services.llm_client import safe_chat_completion
+from app.core.config import settings
+from app.services.llm_client import safe_chat_completion, parse_json_list_robust, get_groq_chat_model
 
 logger = logging.getLogger(__name__)
+
+# Thread-safe rate limiter for Google Translate to strictly avoid 429 Too Many Requests
+# Google allows up to 5 requests per second; 0.40s interval guarantees max 2.5 req/sec.
+_GOOGLE_RATE_LOCK = threading.Lock()
+_LAST_GOOGLE_CALL_TIME = 0.0
+_MIN_GOOGLE_INTERVAL_SEC = 0.40
+
+def _pace_google_request():
+    """Enforces a minimum pacing delay between Google Translate requests across threads."""
+    global _LAST_GOOGLE_CALL_TIME
+    with _GOOGLE_RATE_LOCK:
+        now = time.time()
+        elapsed = now - _LAST_GOOGLE_CALL_TIME
+        if elapsed < _MIN_GOOGLE_INTERVAL_SEC:
+            time.sleep(_MIN_GOOGLE_INTERVAL_SEC - elapsed)
+        _LAST_GOOGLE_CALL_TIME = time.time()
+
+# Language code to human readable name mapping
+LANGUAGE_NAMES = {
+    "en": "English",
+    "ta": "Tamil",
+    "ta-tanglish": "Tanglish (spoken Tamil written strictly in Latin/English alphabet)",
+    "ta-colloquial": "Spoken Colloquial Tamil",
+    "hi": "Hindi",
+    "te": "Telugu",
+    "kn": "Kannada",
+    "ml": "Malayalam",
+    "es": "Spanish",
+    "fr": "French",
+    "de": "German",
+    "it": "Italian",
+    "pt": "Portuguese",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "zh": "Chinese",
+    "zh-cn": "Chinese (Simplified)",
+    "ar": "Arabic",
+    "ru": "Russian",
+    "bn": "Bengali",
+    "mr": "Marathi",
+    "gu": "Gujarati",
+}
+
+# In-memory session cache for batch translations to avoid redundant network calls
+_TRANSLATION_MEM_CACHE: Dict[str, str] = {}
 
 def _normalize_caption_text(text: str) -> str:
     text = html.unescape(text or "")
@@ -18,145 +65,291 @@ def _normalize_caption_text(text: str) -> str:
     text = re.sub(r"\s+", " ", text).strip()
     return text
 
-@lru_cache(maxsize=2048)
-def _translate_cached(text: str, target_lang: str) -> str:
-    """
-    Translates text to target_lang using Google Translate via deep-translator.
-    """
-    if not text.strip() or target_lang.lower() == "none":
-        return text
+_CLOUD_CLIENT = None
+_CLOUD_PROVIDER = None
 
-    # Map languages if necessary
+def _get_cloud_client():
+    """
+    Returns a configured cloud OpenAI client (Groq or OpenRouter).
+    Groq runs 100% in the cloud (0 MB local RAM, 0% CPU, lightning fast).
+    """
+    global _CLOUD_CLIENT, _CLOUD_PROVIDER
+    if _CLOUD_CLIENT is not None:
+        return _CLOUD_CLIENT, _CLOUD_PROVIDER
+
+    groq_key = (settings.GROQ_API_KEY or os.environ.get("GROQ_API_KEY", "")).strip()
+    if groq_key:
+        try:
+            from openai import OpenAI
+            _CLOUD_CLIENT = OpenAI(
+                base_url="https://api.groq.com/openai/v1",
+                api_key=groq_key
+            )
+            _CLOUD_PROVIDER = "groq"
+            logger.info("TranslationService initialized with Groq Cloud client.")
+            return _CLOUD_CLIENT, _CLOUD_PROVIDER
+        except Exception as e:
+            logger.warning(f"Failed to create Groq client for translation: {e}")
+
+    qwen_key = (settings.QWEN_API_KEY or os.environ.get("QWEN_API_KEY", "")).strip()
+    if qwen_key and qwen_key != "your_openrouter_api_key_here":
+        try:
+            from openai import OpenAI
+            _CLOUD_CLIENT = OpenAI(
+                base_url="https://openrouter.ai/api/v1",
+                api_key=qwen_key
+            )
+            _CLOUD_PROVIDER = "openrouter"
+            logger.info("TranslationService initialized with OpenRouter client.")
+            return _CLOUD_CLIENT, _CLOUD_PROVIDER
+        except Exception as e:
+            logger.warning(f"Failed to create OpenRouter client for translation: {e}")
+
+    return None, None
+
+def _translate_batch_llm(texts: List[str], target_lang: str) -> Optional[List[str]]:
+    """
+    Translates a batch of texts using Groq Cloud LLM in a single request.
+    Ultra-low latency, 0MB server RAM, and zero Google rate limiting.
+    """
+    client, provider = _get_cloud_client()
+    if not client or not texts:
+        return None
+
+    tl_clean = target_lang.lower().strip()
+    target_name = LANGUAGE_NAMES.get(tl_clean, target_lang)
+
+    rules = [
+        f"Translate each sentence into {target_name}.",
+        f"Output must be a strictly valid JSON array of strings containing EXACTLY {len(texts)} items.",
+        "Keep each translation natural, punchy, conversational, and appropriate for vertical video captions (Reels/Shorts).",
+        "Maintain the exact order corresponding to each input sentence.",
+        "Do not include explanations, notes, or markdown formatting outside the JSON array."
+    ]
+
+    if tl_clean in ["ta", "tamil"]:
+        rules.append("Write strictly in Tamil characters (script). Do NOT use English alphabet letters.")
+    elif tl_clean in ["ta-tanglish", "tanglish"]:
+        rules.append("Write spoken colloquial Tamil strictly using Latin/English characters (standard Tanglish).")
+
+    system_msg = "You are a professional video subtitle translator.\n" + "\n".join(f"- {r}" for r in rules)
+    user_payload = json.dumps(texts, ensure_ascii=False)
+
+    if provider == "groq":
+        model_name = get_groq_chat_model(client)
+        is_openrouter = False
+    else:
+        model_name = "qwen/qwen-2.5-72b-instruct"
+        is_openrouter = True
+
+    try:
+        response = safe_chat_completion(
+            client=client,
+            model=model_name,
+            messages=[
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": user_payload}
+            ],
+            is_openrouter=is_openrouter,
+            temperature=0.2
+        )
+        content = response.choices[0].message.content.strip()
+        parsed = parse_json_list_robust(content)
+
+        if isinstance(parsed, list) and len(parsed) == len(texts):
+            return [str(item).strip() for item in parsed]
+        else:
+            logger.warning(f"LLM translation array length mismatch: got {len(parsed) if isinstance(parsed, list) else 0}, expected {len(texts)}")
+    except Exception as e:
+        logger.warning(f"Cloud LLM batch translation failed ({e}). Falling back to Google Translate...")
+
+    return None
+
+def _translate_batch_google(texts: List[str], target_lang: str) -> List[str]:
+    """
+    Translates a list of texts using Google Translate with delimited batching and rate pacing.
+    Groups texts into delimited chunks to reduce HTTP requests by 15x.
+    """
+    if not texts:
+        return []
+
     lang_mapping = {
         "zh-cn": "zh-CN",
-        "zh": "zh-CN"
+        "zh": "zh-CN",
+        "ta-tanglish": "ta",
+        "ta-colloquial": "ta"
     }
     tl = lang_mapping.get(target_lang.lower(), target_lang)
 
-    try:
-        translated_text = GoogleTranslator(source='auto', target=tl).translate(text)
-        if translated_text:
-            translated_text = _normalize_caption_text(translated_text)
-            if translated_text.strip():
-                return translated_text
-    except Exception as e:
-        logger.error(f"Google Translation via deep-translator failed for text '{text[:30]}...': {e}")
+    results = []
+    chunk_size = 15
+    delimiter = "\n---BRK---\n"
 
-    return text
+    for i in range(0, len(texts), chunk_size):
+        chunk = texts[i:i + chunk_size]
+        payload = delimiter.join(chunk)
+
+        # Enforce minimum rate delay before contacting Google
+        _pace_google_request()
+
+        translated_chunk_items = None
+        for attempt in range(2):
+            try:
+                translated_payload = GoogleTranslator(source="auto", target=tl).translate(payload)
+                if translated_payload:
+                    parts = [p.strip() for p in translated_payload.split("---BRK---")]
+                    if len(parts) == len(chunk):
+                        translated_chunk_items = parts
+                        break
+                    elif len(parts) > 0:
+                        # Close enough: pad or slice to match chunk length
+                        while len(parts) < len(chunk):
+                            parts.append(chunk[len(parts)])
+                        translated_chunk_items = parts[:len(chunk)]
+                        break
+            except Exception as e:
+                err_str = str(e)
+                if "too many requests" in err_str.lower() or "429" in err_str:
+                    logger.warning(f"Google Translate rate limited on attempt {attempt + 1}. Backing off 1.5s...")
+                    time.sleep(1.5)
+                else:
+                    logger.warning(f"Google Translate error on chunk: {e}")
+                    break
+
+        if translated_chunk_items:
+            results.extend(translated_chunk_items)
+        else:
+            # Fall back to original texts for this chunk rather than failing the job
+            results.extend(chunk)
+
+    return results
+
+def batch_translate_texts(texts: List[str], target_lang: str) -> List[str]:
+    """
+    Translates a list of texts into target_lang efficiently.
+    Uses:
+    1. In-memory LRU cache
+    2. Cloud LLM (Groq / OpenRouter) in 1 single fast call (0MB RAM, 0% CPU)
+    3. Google Translate with delimited batching and rate pacing as fallback
+    4. Returns original texts if all services are unreachable
+    """
+    if not texts:
+        return []
+
+    norm_target = (target_lang or "none").strip().lower()
+    if norm_target in ["none", "original", ""]:
+        return texts
+
+    # Check cache for any already-translated lines
+    to_translate_indices = []
+    to_translate_texts = []
+    final_results = [None] * len(texts)
+
+    for idx, txt in enumerate(texts):
+        cleaned = _normalize_caption_text(txt)
+        if not cleaned:
+            final_results[idx] = ""
+            continue
+
+        cache_key = f"{norm_target}:{cleaned}"
+        if cache_key in _TRANSLATION_MEM_CACHE:
+            final_results[idx] = _TRANSLATION_MEM_CACHE[cache_key]
+        else:
+            to_translate_indices.append(idx)
+            to_translate_texts.append(cleaned)
+
+    if not to_translate_texts:
+        return [res if res is not None else "" for res in final_results]
+
+    # 1. Try Cloud LLM batch translation (0MB RAM, fastest, no Google rate-limit)
+    translated_texts = None
+    try:
+        translated_texts = _translate_batch_llm(to_translate_texts, norm_target)
+    except Exception as e:
+        logger.warning(f"LLM batch translation error: {e}")
+
+    # 2. Fallback to Google Translate with paced batching if LLM failed or not available
+    if not translated_texts or len(translated_texts) != len(to_translate_texts):
+        logger.info(f"Using paced Google Translate batch for {len(to_translate_texts)} texts to '{norm_target}'...")
+        try:
+            translated_texts = _translate_batch_google(to_translate_texts, norm_target)
+        except Exception as ge:
+            logger.warning(f"Paced Google Translate batch failed: {ge}")
+            translated_texts = to_translate_texts
+
+    # Store into cache and assemble final results
+    for orig_idx, (orig_text, trans_text) in enumerate(zip(to_translate_texts, translated_texts)):
+        norm_trans = _normalize_caption_text(trans_text or orig_text)
+        cache_key = f"{norm_target}:{orig_text}"
+        _TRANSLATION_MEM_CACHE[cache_key] = norm_trans
+        slot = to_translate_indices[orig_idx]
+        final_results[slot] = norm_trans
+
+    return [res if res is not None else texts[i] for i, res in enumerate(final_results)]
+
+@lru_cache(maxsize=2048)
+def _translate_cached(text: str, target_lang: str) -> str:
+    """Translates a single text string using the batch translation pipeline."""
+    if not text.strip() or target_lang.lower() in ["none", "original", ""]:
+        return text
+
+    results = batch_translate_texts([text], target_lang)
+    return results[0] if results else text
 
 def translate_text_google(text: str, target_lang: str) -> str:
+    """Single text translation entry point (preserves legacy interface)."""
     normalized_text = _normalize_caption_text(text)
     normalized_lang = (target_lang or "none").strip()
     return _translate_cached(normalized_text, normalized_lang)
 
 def translate_text_llm(text: str, target_lang: str) -> str:
-    """
-    Translates text to target_lang using Qwen via OpenRouter if target_lang is 'ta' or 'ta-tanglish'.
-    Optimizes the text to be short, colloquial, and easily readable.
-    """
+    """LLM text translation entry point (preserves legacy interface)."""
     normalized_text = _normalize_caption_text(text)
     normalized_lang = (target_lang or "none").strip().lower()
-
-    if not normalized_text:
-        return ""
-
-    from app.services.prompt_editing_agent import prompt_editing_agent
-
-    # Fallback to Google Translate if client isn't available or configured
-    if not hasattr(prompt_editing_agent, "client") or not prompt_editing_agent.client:
-        logger.warning("LLM client not available, falling back to Google Translate.")
-        return translate_text_google(normalized_text, "ta" if normalized_lang == "ta-tanglish" else normalized_lang)
-
-    system_msg = (
-        "You are an expert video subtitler and translator. Translate the given English text to Tamil.\n"
-        "The translation must be short, punchy, conversational, and extremely easy to read quickly (suitable for vertical video captions like Reels/Shorts).\n"
-        "Avoid long formal/literary Tamil words. Use common English loanwords transliterated strictly into Tamil script where appropriate "
-        "(e.g., 'வீடியோ' for video, 'போன்' for phone, 'லிங்க்' for link, 'ஆப்ஸ்' for apps, 'டிப்ஸ்' for tips, 'சூப்பர்' for super, 'பிரேம்' for frame, 'எபெக்ட்' for effect).\n"
-        "CRITICAL RULES:\n"
-        "1. Write the entire output strictly in Tamil characters (Tamil script). Do not output any English/Latin letters (A-Z, a-z) or mixed-script hybrid words (such as 'பறெம்ffect' or 'frameஎபெக்ட்') under any circumstances.\n"
-        "2. All words must be written entirely in Tamil script. If you use an English loanword, write its transliterated phonetic version entirely in Tamil characters.\n"
-        "3. Output ONLY the raw translation. Do not include any notes, explanations, quotes, or conversational filler."
-    )
-
-    if normalized_lang == "ta-tanglish":
-        system_msg = (
-            "You are an expert video subtitler and translator. Translate the given English text to Tanglish "
-            "(Tamil spoken language written in English/Latin characters, commonly used in chat and social media).\n"
-            "The translation must be short, punchy, colloquial, and extremely easy to read quickly.\n"
-            "Use standard colloquial spelling (e.g., 'irunga' instead of 'porungal', 'solren' instead of 'vilakkugiren', "
-            "'work aagudhu' instead of 'velai seigiradhu').\n"
-            "CRITICAL RULES:\n"
-            "1. Write the entire output strictly in English/Latin letters. Do not output any Tamil script characters under any circumstances.\n"
-            "2. Avoid mixing Tamil characters and English characters in the output. Keep it strictly to Latin characters.\n"
-            "3. Output ONLY the raw translation. Do not include any notes, explanations, quotes, or conversational filler."
-        )
-
-    try:
-        response = safe_chat_completion(
-            client=prompt_editing_agent.client,
-            model=prompt_editing_agent.model,
-            messages=[
-                {"role": "system", "content": system_msg},
-                {"role": "user", "content": normalized_text}
-            ],
-            is_openrouter=prompt_editing_agent.is_openrouter,
-            temperature=0.3,
-            max_tokens=150
-        )
-        result = response.choices[0].message.content.strip()
-        result = result.strip('"').strip("'").strip()
-        if result:
-            return result
-    except Exception as e:
-        logger.error(f"LLM translation failed for text '{normalized_text[:30]}...': {e}")
-
-    # Fallback to Google Translate if LLM fails
-    fallback_lang = "ta" if normalized_lang == "ta-tanglish" else normalized_lang
-    return translate_text_google(normalized_text, fallback_lang)
+    return _translate_cached(normalized_text, normalized_lang)
 
 def translate_and_distribute_words(shifted_words: List[Dict], target_lang: str) -> List[Dict]:
     """
-    Groups word-level timestamps into sentence lines, translates them as whole phrases,
-    and returns entries with proper timing. Each translated phrase is kept as a single
-    entry (not split into individual words) to produce clean, readable captions.
+    Groups word-level timestamps into sentence lines, translates ALL lines in a single batch,
+    and returns entries with proper timing. Produces clean, readable vertical video subtitles.
     """
-    if not shifted_words or target_lang.lower() == "none":
+    if not shifted_words or target_lang.lower() in ["none", "original", ""]:
         return shifted_words
 
     from app.services.subtitle_service import subtitle_service
 
     # 1. Group words into short semantic lines
     lines = subtitle_service.group_words_into_lines(shifted_words)
+    if not lines:
+        return shifted_words
 
-    translated_words = []
-
-    # 2. For each line, translate the entire line text and keep it as one entry
+    # 2. Extract line texts for batch translation
+    orig_line_texts = []
+    valid_lines = []
     for line in lines:
-        line_start = line["start"]
-        line_end = line["end"]
+        text = " ".join([w["text"].strip() for w in line["words"]]).strip()
+        if text:
+            orig_line_texts.append(text)
+            valid_lines.append(line)
 
-        orig_line_text = " ".join([w["text"].strip() for w in line["words"]])
-        if not orig_line_text:
-            continue
+    if not orig_line_texts:
+        return shifted_words
 
-        # Translate the full line
-        if target_lang.lower() in ["ta", "ta-tanglish", "ta-colloquial"]:
-            translated_line_text = translate_text_llm(orig_line_text, target_lang)
-        else:
-            translated_line_text = translate_text_google(orig_line_text, target_lang)
-            
-        translated_line_text = _normalize_caption_text(translated_line_text)
+    # 3. Translate all lines in ONE single batch call (no per-line HTTP hammering)
+    translated_texts = batch_translate_texts(orig_line_texts, target_lang)
 
-        if not translated_line_text.strip():
-            continue
+    # 4. Map back to line entries with original timing
+    translated_words = []
+    for idx, line in enumerate(valid_lines):
+        t_text = translated_texts[idx] if idx < len(translated_texts) else orig_line_texts[idx]
+        t_text = _normalize_caption_text(t_text)
+        if not t_text:
+            t_text = orig_line_texts[idx]
 
-        # Keep the entire translated phrase as one entry with the original line timing.
-        # This produces clean whole-phrase subtitles instead of fragmented word-by-word text.
         translated_words.append({
-            "start": line_start,
-            "end": line_end,
-            "text": translated_line_text
+            "start": line["start"],
+            "end": line["end"],
+            "text": t_text
         })
 
     return translated_words
-
