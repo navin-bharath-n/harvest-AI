@@ -60,6 +60,16 @@ class Settings(BaseSettings):
             if "neon.tech" in uri and "sslmode" not in uri:
                 delimiter = "&" if "?" in uri else "?"
                 uri = f"{uri}{delimiter}sslmode=require"
+            # Auto driver detection: if psycopg is unavailable, fallback to psycopg2 driver
+            if uri.startswith("postgresql://") and not uri.startswith("postgresql+"):
+                try:
+                    import psycopg  # noqa: F401
+                except ImportError:
+                    try:
+                        import psycopg2  # noqa: F401
+                        uri = uri.replace("postgresql://", "postgresql+psycopg2://", 1)
+                    except ImportError:
+                        pass
             return uri
         return _DEFAULT_DB_PATH
     
