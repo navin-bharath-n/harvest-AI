@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 
 # Absolute path to the uploads dir — always same regardless of CWD
 _BACKEND_DIR = Path(__file__).resolve().parent.parent.parent  # backend/
-_DEFAULT_UPLOAD_DIR = _BACKEND_DIR / "app" / "uploads"
+_DEFAULT_UPLOAD_DIR = _BACKEND_DIR / "uploads"
 
 class VideoProcessor:
     def __init__(self, upload_dir: str = None):
@@ -31,17 +31,22 @@ class VideoProcessor:
         video_assets_dir.mkdir(exist_ok=True)
         
         # 2. Extract Audio
-        audio_path = video_assets_dir / f"{base_name}_audio.wav"
-        self._extract_audio(video_path, audio_path)
+        audio_path = video_assets_dir / f"{base_name}_audio_16k_mono.wav"
+        # Cache the deterministic intermediate so retries and later pipeline steps
+        # do not decode the full source again.
+        if not audio_path.exists() or audio_path.stat().st_size == 0:
+            self._extract_audio(video_path, audio_path)
         
         # 3. Extract Frames
         frames_dir = video_assets_dir / "frames"
+        # The old per-second frame dump was not consumed by any pipeline step and
+        # could create thousands of files for a single long video.
         frames_dir.mkdir(exist_ok=True)
-        self._extract_frames(video_path, frames_dir)
         
         # 4. Generate 15-second Short
         short_path = video_assets_dir / f"{base_name}_short.mp4"
-        self._generate_short(video_path, short_path)
+        if not short_path.exists() or short_path.stat().st_size == 0:
+            self._generate_short(video_path, short_path)
         
         return {
             "duration": metadata.get("duration"),
@@ -101,7 +106,7 @@ class VideoProcessor:
             "ffmpeg",
             "-y",  # overwrite output
             "-i", str(video_path),
-            "-q:a", "0",
+            "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le",
             "-map", "a",
             str(output_path)
         ]
@@ -125,7 +130,7 @@ class VideoProcessor:
             # Generate silent wav of the same duration
             silence_cmd = [
                 "ffmpeg", "-y", "-loglevel", "error",
-                "-f", "lavfi", "-i", "anullsrc=r=22050:cl=mono",
+                "-f", "lavfi", "-i", "anullsrc=r=16000:cl=mono",
                 "-t", str(duration),
                 "-acodec", "pcm_s16le",
                 str(output_path)
@@ -157,6 +162,7 @@ class VideoProcessor:
             "-i", str(video_path),
             "-t", "15",
             "-c:v", "libx264",
+            "-threads", "1",
             "-preset", "veryfast",
             "-c:a", "aac",
             "-movflags", "+faststart",

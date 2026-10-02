@@ -34,3 +34,9 @@ celery_app.conf.task_serializer = "json"
 celery_app.conf.result_serializer = "json"
 celery_app.conf.accept_content = ["json"]
 celery_app.conf.result_expires = 3600  # expire results after 1 hour
+# Keep one CPU-heavy video job active at a time and reserve only one queued task.
+# Additional users remain queued in Redis instead of spawning memory-heavy workers.
+celery_app.conf.worker_prefetch_multiplier = 1
+celery_app.conf.task_acks_late = True
+celery_app.conf.task_reject_on_worker_lost = True
+celery_app.conf.worker_concurrency = max(1, settings.CELERY_CONCURRENCY)

@@ -165,8 +165,8 @@ def _is_ollama_running() -> bool:
 
 def _start_ollama():
     """Start the Ollama server if it is not already running."""
-    if settings.QWEN_API_KEY and settings.QWEN_API_KEY != "your_openrouter_api_key_here":
-        logger.info("QWEN_API_KEY is configured. Skipping local Ollama startup.")
+    if (settings.GROQ_API_KEY and settings.GROQ_API_KEY.strip()) or (settings.QWEN_API_KEY and settings.QWEN_API_KEY != "your_openrouter_api_key_here"):
+        logger.info("Cloud AI key (GROQ_API_KEY or QWEN_API_KEY) is configured. Skipping local Ollama startup.")
         return
 
     if _is_ollama_running():
@@ -211,7 +211,7 @@ def _start_ollama():
 def _start_celery():
     """Start the Celery worker in the background."""
     is_localhost_redis = "localhost" in settings.CELERY_BROKER_URL or "127.0.0.1" in settings.CELERY_BROKER_URL
-    is_cloud_env = bool(os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("PORT"))
+    is_cloud_env = bool(os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RENDER") or os.environ.get("PORT"))
     if is_cloud_env and is_localhost_redis:
         logger.info("Redis is not configured in cloud environment. Skipping Celery worker process (tasks will run via resilient background threads).")
         return
@@ -241,7 +241,7 @@ def _start_celery():
             "-Q", "aishorts-queue",
             "--loglevel=info",
             "--pool=threads",
-            "--concurrency=4",
+            f"--concurrency={max(1, settings.CELERY_CONCURRENCY)}",
         ],
         cwd=backend_dir,
         env={**os.environ, "PYTHONPATH": backend_dir},
@@ -339,16 +339,16 @@ elif _FRONTEND_ORIGIN and _FRONTEND_ORIGIN.strip():
     origins = [o.strip().rstrip("/") for o in _FRONTEND_ORIGIN.split(",") if o.strip()]
     _cors_kwargs = dict(
         allow_origins=origins,
-        allow_origin_regex=r"https?://(localhost|127\.0\.0\.1|.*\.vercel\.app)(:\d+)?",
+        allow_origin_regex=r"https?://(localhost|127\.0\.0\.1|.*\.vercel\.app|.*\.onrender\.com|.*\.netlify\.app)(:\d+)?",
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
         expose_headers=["*"],
     )
 else:
-    # Default fallback: allow localhost and ANY vercel deployment
+    # Default fallback: allow localhost and any Vercel, Render, or Netlify deployment
     _cors_kwargs = dict(
-        allow_origin_regex=r"https?://(localhost|127\.0\.0\.1|.*\.vercel\.app)(:\d+)?",
+        allow_origin_regex=r"https?://(localhost|127\.0\.0\.1|.*\.vercel\.app|.*\.onrender\.com|.*\.netlify\.app)(:\d+)?",
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

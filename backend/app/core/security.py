@@ -22,14 +22,24 @@ def get_secret_key() -> str:
         return "harvest-ai-dev-insecure-secret-key-change-in-production-32b"
     return key
 
+import bcrypt
+
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     try:
+        if hashed_password and (hashed_password.startswith("$2b$") or hashed_password.startswith("$2a$")):
+            pwd_bytes = plain_password.encode("utf-8")[:72]
+            return bcrypt.checkpw(pwd_bytes, hashed_password.encode("utf-8"))
         return pwd_context.verify(plain_password, hashed_password)
     except Exception:
         return False
 
 def get_password_hash(password: str) -> str:
-    return pwd_context.hash(password)
+    try:
+        pwd_bytes = password.encode("utf-8")[:72]
+        salt = bcrypt.gensalt()
+        return bcrypt.hashpw(pwd_bytes, salt).decode("utf-8")
+    except Exception:
+        return pwd_context.hash(password[:72])
 
 def create_access_token(subject: Union[str, Any], expires_delta: Optional[timedelta] = None) -> str:
     if expires_delta:

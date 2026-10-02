@@ -1,7 +1,13 @@
+# Keep native numerical libraries from creating their own large thread pools on
+# low-core hosts; Celery provides job-level concurrency instead.
+import os
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+
 import cv2
 import numpy as np
 import logging
-import os
 from collections import deque
 import mediapipe as mp
 from ultralytics import YOLO
@@ -11,6 +17,7 @@ import warnings
 warnings.filterwarnings("ignore", message=".*weights_only.*", category=FutureWarning)
 
 logger = logging.getLogger(__name__)
+cv2.setNumThreads(1)
 
 # ── MediaPipe Solutions Configuration ──────────────────
 _MP_AVAILABLE = hasattr(mp, "solutions") and hasattr(mp.solutions, "face_mesh")
@@ -73,7 +80,7 @@ class SmartCroppingService:
         lower_lip = face_landmarks.landmark[14]
         return abs((lower_lip.y - upper_lip.y) * frame_height)
 
-    def generate_crop_metadata(self, video_path: str, target_fps: int = 5) -> dict:
+    def generate_crop_metadata(self, video_path: str, target_fps: int = 1) -> dict:
         """
         Processes video to generate 9:16 smooth crop coordinates.
 
@@ -129,7 +136,7 @@ class SmartCroppingService:
                 # ── 1. YOLO Detection ────────────────────────────────────────
                 if self.yolo is not None:
                     try:
-                        results = self.yolo(frame, device=self.device, classes=[0], verbose=False)
+                        results = self.yolo(frame, device=self.device, classes=[0], imgsz=320, verbose=False)
                         for r in results:
                             for box in r.boxes:
                                 x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()

@@ -248,7 +248,7 @@ def detect_highlights_task(video_id: int):
         db.close()
 
 @celery_app.task(ignore_result=True)
-def generate_smart_crop_task(video_id: int, target_fps: int = 5):
+def generate_smart_crop_task(video_id: int, target_fps: int = 1):
     logger.info(f"Starting smart cropping for video {video_id} at {target_fps} FPS")
 
     db = SessionLocal()

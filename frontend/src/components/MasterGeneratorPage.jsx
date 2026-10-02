@@ -161,7 +161,7 @@ export default function MasterGeneratorPage() {
   const [variations, setVariations] = useState([]);
   const [cacheBust, setCacheBust] = useState(Date.now());
   const [prompt, setPrompt] = useState('');
-  const [length, setLength] = useState(60);
+  const [length, setLength] = useState(180);
   const [audioTheme, setAudioTheme] = useState('auto');
   const [translateLanguage, setTranslateLang] = useState('none');
   const [dubVoice, setDubVoice] = useState(false);
@@ -497,24 +497,24 @@ export default function MasterGeneratorPage() {
                 Target Video Duration
               </label>
               <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.6rem' }}>
-                {[15, 30, 60].map(preset => (
+                {[120, 180, 300].map(preset => (
                   <button
                     key={preset}
                     onClick={() => setLength(preset)}
                     style={{ flex: 1, padding: '0.6rem', borderRadius: 'var(--radius-md)', border: `1.5px solid ${length === preset ? 'var(--indigo-600)' : 'var(--border-medium)'}`, background: length === preset ? 'var(--indigo-50)' : 'var(--bg-elevated)', color: length === preset ? 'var(--indigo-600)' : 'var(--text-heading)', fontWeight: length === preset ? 800 : 500, fontSize: '0.85rem', cursor: 'pointer', transition: 'all 0.2s' }}
                   >
-                    {preset}s {preset === 60 ? '★' : ''}
+                    {preset / 60} min {preset === 180 ? '★' : ''}
                   </button>
                 ))}
                 <button
-                  onClick={() => setLength(45)}
-                  style={{ flex: 1, padding: '0.6rem', borderRadius: 'var(--radius-md)', border: `1.5px solid ${![15, 30, 60].includes(length) ? 'var(--indigo-600)' : 'var(--border-medium)'}`, background: ![15, 30, 60].includes(length) ? 'var(--indigo-50)' : 'var(--bg-elevated)', color: ![15, 30, 60].includes(length) ? 'var(--indigo-600)' : 'var(--text-heading)', fontWeight: ![15, 30, 60].includes(length) ? 800 : 500, fontSize: '0.85rem', cursor: 'pointer', transition: 'all 0.2s' }}
+                  onClick={() => setLength(180)}
+                  style={{ flex: 1, padding: '0.6rem', borderRadius: 'var(--radius-md)', border: `1.5px solid ${![120, 180, 300].includes(length) ? 'var(--indigo-600)' : 'var(--border-medium)'}`, background: ![120, 180, 300].includes(length) ? 'var(--indigo-50)' : 'var(--bg-elevated)', color: ![120, 180, 300].includes(length) ? 'var(--indigo-600)' : 'var(--text-heading)', fontWeight: ![120, 180, 300].includes(length) ? 800 : 500, fontSize: '0.85rem', cursor: 'pointer', transition: 'all 0.2s' }}
                 >
                   Custom
                 </button>
               </div>
-              {![15, 30, 60].includes(length) && (
-                <input type="number" className="input-field" min="5" max="300" value={length} onChange={e => setLength(Math.max(5, Number(e.target.value)))} placeholder="Duration in seconds" />
+              {![120, 180, 300].includes(length) && (
+                <input type="number" className="input-field" min="120" max="300" value={length} onChange={e => setLength(Math.min(300, Math.max(120, Number(e.target.value))))} placeholder="Duration in seconds" />
               )}
             </div>
 

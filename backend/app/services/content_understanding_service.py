@@ -8,13 +8,22 @@ logger = logging.getLogger(__name__)
 class ContentUnderstandingService:
     def __init__(self):
         from app.core.config import settings
-        self.api_key = settings.QWEN_API_KEY
-        
-        if self.api_key and self.api_key != "your_openrouter_api_key_here":
+        groq_key = (settings.GROQ_API_KEY or os.environ.get("GROQ_API_KEY", "")).strip()
+        qwen_key = (settings.QWEN_API_KEY or os.environ.get("QWEN_API_KEY", "")).strip()
+
+        if groq_key:
+            logger.info("Initializing ContentUnderstandingService with Groq Cloud (llama-3.3-70b-versatile)...")
+            self.client = OpenAI(
+                base_url="https://api.groq.com/openai/v1",
+                api_key=groq_key,
+            )
+            self.model = "llama-3.3-70b-versatile"
+            self.is_openrouter = False
+        elif qwen_key and qwen_key != "your_openrouter_api_key_here":
             logger.info("Initializing ContentUnderstandingService with OpenRouter...")
             self.client = OpenAI(
                 base_url="https://openrouter.ai/api/v1",
-                api_key=self.api_key,
+                api_key=qwen_key,
             )
             self.model = "qwen/qwen-2.5-72b-instruct"
             self.is_openrouter = True

@@ -8,26 +8,38 @@ logger = logging.getLogger(__name__)
 
 class HighlightDetectionService:
     def __init__(self):
-        self.api_key = settings.QWEN_API_KEY
-        if not self.api_key or self.api_key == "your_openrouter_api_key_here":
-            logger.warning("QWEN_API_KEY is not properly configured. Highlight detection will fail.")
-            
-        # Initialize OpenAI client to point to OpenRouter
-        self.client = OpenAI(
-            base_url="https://openrouter.ai/api/v1",
-            api_key=self.api_key,
-        )
-        
-        # We will use qwen-2.5-72b-instruct as the Qwen3 model via OpenRouter
-        self.model = "qwen/qwen-2.5-72b-instruct"
+        groq_key = (settings.GROQ_API_KEY or os.environ.get("GROQ_API_KEY", "")).strip()
+        qwen_key = (settings.QWEN_API_KEY or os.environ.get("QWEN_API_KEY", "")).strip()
+
+        if groq_key:
+            logger.info("Initializing HighlightDetectionService with Groq Cloud (llama-3.3-70b-versatile)...")
+            self.client = OpenAI(
+                base_url="https://api.groq.com/openai/v1",
+                api_key=groq_key,
+            )
+            self.model = "llama-3.3-70b-versatile"
+            self.provider = "groq"
+        elif qwen_key and qwen_key != "your_openrouter_api_key_here":
+            logger.info("Initializing HighlightDetectionService with OpenRouter...")
+            self.client = OpenAI(
+                base_url="https://openrouter.ai/api/v1",
+                api_key=qwen_key,
+            )
+            self.model = "qwen/qwen-2.5-72b-instruct"
+            self.provider = "openrouter"
+        else:
+            logger.warning("Neither GROQ_API_KEY nor QWEN_API_KEY is configured. Highlight detection may fail.")
+            self.client = None
+            self.model = "llama-3.3-70b-versatile"
+            self.provider = "none"
 
     def detect(self, transcript: list, content_analysis: dict) -> dict:
         """
         Analyzes a video transcript and content insights to generate Top 5 highlight clips.
         Transcript is expected to be a list of dicts: [{'start': float, 'end': float, 'text': str}]
         """
-        if not self.api_key or self.api_key == "your_openrouter_api_key_here":
-            raise ValueError("QWEN_API_KEY is not set. Please add it to your .env file.")
+        if not self.client:
+            raise ValueError("Neither GROQ_API_KEY nor QWEN_API_KEY is configured. Please provide one in your .env.")
 
         # Convert transcript into a readable format for the LLM
         formatted_transcript = ""
@@ -75,7 +87,7 @@ You MUST output exactly and ONLY valid JSON matching this schema, with no markdo
 }}
 """
 
-        logger.info(f"Sending highlight detection prompt to {self.model} via OpenRouter...")
+        logger.info(f"Sending highlight detection prompt to {self.model} via {self.provider}...")
         
         try:
             response = safe_chat_completion(
@@ -85,7 +97,7 @@ You MUST output exactly and ONLY valid JSON matching this schema, with no markdo
                     {"role": "system", "content": "You are a helpful assistant that strictly outputs raw JSON."},
                     {"role": "user", "content": prompt}
                 ],
-                is_openrouter=True,
+                is_openrouter=(self.provider == "openrouter"),
                 response_format={"type": "json_object"}
             )
             

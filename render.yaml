@@ -1,0 +1,25 @@
+services:
+  # Harvest AI FastAPI Backend Service
+  - type: web
+    name: harvest-ai-backend
+    env: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter # Starter plan recommended for FFmpeg; can be switched to 'free'
+    region: oregon
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: DATABASE_URL
+        sync: false # Paste your Neon Serverless PostgreSQL connection string here
+      - key: SECRET_KEY
+        generateValue: true
+      - key: AUTO_START_CELERY
+        value: "false"
+      - key: AUTO_START_OLLAMA
+        value: "false"
+      - key: FRONTEND_ORIGIN
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: QWEN_API_KEY
+        sync: false

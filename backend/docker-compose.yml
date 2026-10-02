@@ -53,7 +53,7 @@ services:
 
   worker:
     build: .
-    command: celery -A app.core.celery_app worker -Q aishorts-queue --loglevel=info
+    command: celery -A app.core.celery_app worker -Q aishorts-queue --loglevel=info --pool=threads --concurrency=1 --prefetch-multiplier=1
     volumes:
       - .:/app
       - uploads_data:/app/uploads

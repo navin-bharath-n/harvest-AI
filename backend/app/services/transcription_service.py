@@ -90,16 +90,107 @@ class TranscriptionService:
                 logger.error(f"Failed to load WhisperModel: {e}")
                 raise
 
+    def _transcribe_groq(self, audio_path: str):
+        """
+        Transcribes audio using Groq Cloud Whisper API (whisper-large-v3).
+        Takes ~2-4 seconds with 0% local CPU usage on 1-vCPU servers.
+        """
+        from openai import OpenAI
+        from app.core.config import settings
+
+        groq_key = (settings.GROQ_API_KEY or os.environ.get("GROQ_API_KEY", "")).strip()
+        if not groq_key:
+            raise ValueError("GROQ_API_KEY is not configured")
+
+        logger.info(f"Transcribing audio with Groq Cloud Whisper ({audio_path})...")
+
+        # Ensure file size is below Groq's 25MB limit (compress if needed)
+        target_path = audio_path
+        cleanup_temp = False
+        try:
+            if os.path.getsize(audio_path) > 23 * 1024 * 1024:
+                compressed_path = audio_path.replace(".wav", "_compressed.mp3")
+                comp_cmd = ["ffmpeg", "-y", "-i", audio_path, "-ac", "1", "-ar", "16000", "-b:a", "64k", compressed_path]
+                subprocess.run(comp_cmd, capture_output=True, check=True)
+                target_path = compressed_path
+                cleanup_temp = True
+
+            client = OpenAI(
+                base_url="https://api.groq.com/openai/v1",
+                api_key=groq_key
+            )
+
+            with open(target_path, "rb") as audio_file:
+                resp = client.audio.transcriptions.create(
+                    model="whisper-large-v3",
+                    file=audio_file,
+                    response_format="verbose_json",
+                    timestamp_granularities=["word"]
+                )
+
+            transcript = []
+            words = getattr(resp, "words", None)
+            if words:
+                for w in words:
+                    if isinstance(w, dict):
+                        text = w.get("word", "")
+                        st = float(w.get("start", 0.0))
+                        en = float(w.get("end", 0.0))
+                    else:
+                        text = getattr(w, "word", "") or ""
+                        st = float(getattr(w, "start", 0.0))
+                        en = float(getattr(w, "end", 0.0))
+                    if text.strip():
+                        transcript.append({"start": round(st, 2), "end": round(en, 2), "text": text.strip()})
+            else:
+                segments = getattr(resp, "segments", None) or []
+                for seg in segments:
+                    seg_words = seg.get("words", []) if isinstance(seg, dict) else getattr(seg, "words", [])
+                    if seg_words:
+                        for w in seg_words:
+                            text = w.get("word", "") if isinstance(w, dict) else getattr(w, "word", "")
+                            st = float(w.get("start", 0.0) if isinstance(w, dict) else getattr(w, "start", 0.0))
+                            en = float(w.get("end", 0.0) if isinstance(w, dict) else getattr(w, "end", 0.0))
+                            if text.strip():
+                                transcript.append({"start": round(st, 2), "end": round(en, 2), "text": text.strip()})
+                    else:
+                        text = seg.get("text", "") if isinstance(seg, dict) else getattr(seg, "text", "")
+                        st = float(seg.get("start", 0.0) if isinstance(seg, dict) else getattr(seg, "start", 0.0))
+                        en = float(seg.get("end", 0.0) if isinstance(seg, dict) else getattr(seg, "end", 0.0))
+                        if text.strip():
+                            transcript.append({"start": round(st, 2), "end": round(en, 2), "text": text.strip()})
+
+            logger.info(f"Groq Cloud transcription complete. Extracted {len(transcript)} words.")
+            return transcript
+        finally:
+            if cleanup_temp and os.path.exists(target_path):
+                try:
+                    os.remove(target_path)
+                except Exception:
+                    pass
+
     def transcribe(self, audio_path: str):
         """
         Transcribe an audio file and return word-level timestamps.
-        Uses Google Cloud STT as primary (if configured), with automatic
-        permanent fallback to local Whisper when quota is exhausted.
+        Priority:
+          1. Groq Cloud Whisper (fastest ~2s, free tier, 0% CPU)
+          2. Google Cloud STT (if configured)
+          3. Local Faster-Whisper CPU (resilient local fallback)
         Output format: list of dictionaries {"start": float, "end": float, "text": str}
         """
         if not os.path.exists(audio_path):
             raise FileNotFoundError(f"Audio file not found at {audio_path}")
-            
+
+        # 1. Try Groq Cloud Whisper first if GROQ_API_KEY is available
+        from app.core.config import settings
+        groq_key = (settings.GROQ_API_KEY or os.environ.get("GROQ_API_KEY", "")).strip()
+        if groq_key:
+            try:
+                return self._transcribe_groq(audio_path)
+            except Exception as ge:
+                logger.warning(f"Groq Cloud transcription failed ({ge}). Falling back to secondary provider...")
+
+        # 2. Try Google Cloud STT if configured
         if self.use_google and not self._google_quota_exhausted:
             try:
                 return self._transcribe_google(audio_path)
@@ -117,6 +208,7 @@ class TranscriptionService:
                 logger.info("Using local Whisper (Google STT quota/credentials issue).")
             self._ensure_whisper_loaded()
             return self._transcribe_whisper(audio_path)
+
     def _transcribe_whisper(self, audio_path: str):
         logger.info(f"Starting Whisper transcription for {audio_path}")
 

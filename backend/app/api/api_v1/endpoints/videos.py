@@ -10,9 +10,14 @@ from app import models, schemas
 from app.tasks.video_tasks import process_video_task
 
 import pathlib as _pathlib
-import threading
+from concurrent.futures import ThreadPoolExecutor
 
 logger = logging.getLogger(__name__)
+
+# Redis is required for distributed production workers. If it is unavailable,
+# keep the development fallback bounded so concurrent requests cannot start an
+# unbounded number of model/FFmpeg jobs inside the API process.
+_fallback_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="video-fallback")
 
 router = APIRouter()
 
@@ -25,15 +30,14 @@ def dispatch_task(celery_task, *args, **kwargs):
     queue = kwargs.pop("queue", "aishorts-queue")
     from app.core.config import settings
     is_localhost_redis = "localhost" in settings.CELERY_BROKER_URL or "127.0.0.1" in settings.CELERY_BROKER_URL
-    is_cloud_env = bool(os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("PORT"))
+    is_cloud_env = bool(os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RENDER") or os.environ.get("PORT"))
 
     if is_cloud_env and is_localhost_redis:
         logger.info(
             f"Redis broker is not set on cloud host. Executing {getattr(celery_task, '__name__', str(celery_task))} in background daemon thread."
         )
         task_fn = getattr(celery_task, "run", celery_task)
-        t = threading.Thread(target=task_fn, args=args, kwargs=kwargs, daemon=True)
-        t.start()
+        _fallback_executor.submit(task_fn, *args, **kwargs)
         return
 
     try:
@@ -44,8 +48,7 @@ def dispatch_task(celery_task, *args, **kwargs):
             f"Celery/Redis broker unavailable ({e}). Gracefully falling back to background daemon thread for {getattr(celery_task, '__name__', str(celery_task))}."
         )
         task_fn = getattr(celery_task, "run", celery_task)
-        t = threading.Thread(target=task_fn, args=args, kwargs=kwargs, daemon=True)
-        t.start()
+        _fallback_executor.submit(task_fn, *args, **kwargs)
 
 # Absolute path so uploads always land in backend/uploads/ regardless of launch CWD
 _BACKEND_DIR = _pathlib.Path(__file__).resolve().parent.parent.parent.parent.parent  # backend/

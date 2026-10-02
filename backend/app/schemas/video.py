@@ -1,5 +1,5 @@
 from typing import Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from datetime import datetime
 from app.models.video import VideoStatus, TranscriptionStatus, ContentAnalysisStatus, HighlightDetectionStatus, CropStatus
 
@@ -14,10 +14,10 @@ class VideoUpdate(BaseModel):
     status: Optional[VideoStatus] = None
 
 class SmartCropRequest(BaseModel):
-    target_fps: int = 5
+    target_fps: int = 1
 
 class MasterGenerateRequest(BaseModel):
-    length: float = 60.0
+    length: float = Field(default=180.0, ge=120.0, le=300.0)
     platform: str = "youtube"
     optional_prompt: str = ""
     audio_theme: Optional[str] = "auto"

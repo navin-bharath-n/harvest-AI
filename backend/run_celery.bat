@@ -11,5 +11,6 @@ if exist "..\.venv\Scripts\python.exe" (
     --loglevel=info ^
     -Q aishorts-queue ^
     --pool=threads ^
-    --concurrency=4 ^
+    --concurrency=1 ^
+    --prefetch-multiplier=1 ^
     -n harvest_worker@%%h

@@ -19,10 +19,13 @@ class Settings(BaseSettings):
     FRONTEND_ORIGIN: Optional[str] = None
     AUTO_START_CELERY: bool = True
     AUTO_START_OLLAMA: bool = True
+    CELERY_CONCURRENCY: int = 1
 
+    GROQ_API_KEY: Optional[str] = None
     QWEN_API_KEY: Optional[str] = None
 
     DATABASE_URI: Optional[str] = None
+    DATABASE_URL: Optional[str] = None
 
     # Music & Audio APIs
     AUDIUS_API_BASE: str = "https://api.audius.co"
@@ -48,10 +51,15 @@ class Settings(BaseSettings):
 
     @property
     def SQLALCHEMY_DATABASE_URI(self) -> str:
-        if self.DATABASE_URI and self.DATABASE_URI.strip():
-            uri = self.DATABASE_URI.strip()
+        db_conn = self.DATABASE_URI or self.DATABASE_URL
+        if db_conn and db_conn.strip():
+            uri = db_conn.strip()
             if uri.startswith("postgres://"):
                 uri = uri.replace("postgres://", "postgresql://", 1)
+            # Ensure Neon Serverless PostgreSQL has sslmode=require
+            if "neon.tech" in uri and "sslmode" not in uri:
+                delimiter = "&" if "?" in uri else "?"
+                uri = f"{uri}{delimiter}sslmode=require"
             return uri
         return _DEFAULT_DB_PATH
     
