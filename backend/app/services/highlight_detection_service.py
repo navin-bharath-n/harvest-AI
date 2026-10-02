@@ -42,13 +42,28 @@ class HighlightDetectionService:
         if not self.client:
             raise ValueError("Neither GROQ_API_KEY nor QWEN_API_KEY is configured. Please provide one in your .env.")
 
-        # Convert transcript into a readable format for the LLM
-        formatted_transcript = ""
-        for idx, segment in enumerate(transcript):
-            start = f"{segment.get('start', 0):.2f}s"
-            end = f"{segment.get('end', 0):.2f}s"
+        # Group words into sentence / phrase chunks so prompt is token-efficient and compact
+        grouped_lines = []
+        cur_words = []
+        cur_start = None
+        cur_end = None
+        for segment in transcript:
             text = segment.get('text', '').strip()
-            formatted_transcript += f"[{start} - {end}] {text}\n"
+            if not text:
+                continue
+            st = segment.get('start', 0.0)
+            en = segment.get('end', 0.0)
+            if cur_start is None:
+                cur_start = st
+            cur_end = en
+            cur_words.append(text)
+            if len(cur_words) >= 20 or (text.endswith(('.', '!', '?')) and len(cur_words) >= 6):
+                grouped_lines.append(f"[{cur_start:.2f}s - {cur_end:.2f}s] {' '.join(cur_words)}")
+                cur_words = []
+                cur_start = None
+        if cur_words:
+            grouped_lines.append(f"[{cur_start:.2f}s - {cur_end:.2f}s] {' '.join(cur_words)}")
+        formatted_transcript = "\n".join(grouped_lines) if grouped_lines else "No transcript available."
 
         prompt = f"""
 You are an expert short-form video editor and content strategist. 

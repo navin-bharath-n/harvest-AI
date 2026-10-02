@@ -60,7 +60,18 @@ class TranscriptionService:
                 else:
                     gcp_creds = None
 
-        if gcp_creds and os.path.exists(gcp_creds):
+        groq_key = (os.environ.get("GROQ_API_KEY", "")).strip()
+        if not groq_key:
+            try:
+                from app.core.config import settings
+                groq_key = (settings.GROQ_API_KEY or "").strip()
+            except Exception:
+                pass
+
+        if groq_key:
+            self.use_google = False
+            logger.info("Groq Cloud Whisper configured as primary ultra-fast transcription engine (~2s, 0% CPU).")
+        elif gcp_creds and os.path.exists(gcp_creds):
             try:
                 from google.cloud import speech
                 self.use_google = True
@@ -71,7 +82,7 @@ class TranscriptionService:
                 logger.debug(f"Failed to initialize Google Speech-to-Text: {e}")
         else:
             self.use_google = False
-            logger.info("Using high-speed local GPU Faster-Whisper for audio transcription.")
+            logger.info("Using local Faster-Whisper for audio transcription.")
 
     def _is_quota_error(self, error):
         """Check if the error is a Google Cloud quota/resource exhausted error."""

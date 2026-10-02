@@ -43,11 +43,12 @@ def get_user_clip(clip_id: int, user_id: int, db: Session) -> models.Clip:
 def dispatch_task(celery_task, *args, **kwargs):
     """
     Dispatches a task to Celery via Redis broker.
-    If Redis/Celery is unavailable or throws a connection error,
-    gracefully executes the task in a background daemon thread so processing succeeds.
+    If Redis/Celery is unavailable, has no active workers, or throws a connection error,
+    gracefully executes the task in a background daemon thread so processing succeeds immediately.
     """
     queue = kwargs.pop("queue", "aishorts-queue")
     from app.core.config import settings
+    task_fn = getattr(celery_task, "run", celery_task)
     is_localhost_redis = "localhost" in settings.CELERY_BROKER_URL or "127.0.0.1" in settings.CELERY_BROKER_URL
     is_cloud_env = bool(os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RENDER") or os.environ.get("PORT"))
 
@@ -55,19 +56,32 @@ def dispatch_task(celery_task, *args, **kwargs):
         logger.info(
             f"Redis broker is not set on cloud host. Executing {getattr(celery_task, '__name__', str(celery_task))} in background daemon thread."
         )
-        task_fn = getattr(celery_task, "run", celery_task)
         _fallback_executor.submit(task_fn, *args, **kwargs)
         return
 
+    # Check if a Celery worker is actually active and responsive
+    use_celery = False
     try:
-        celery_task.apply_async(args=list(args), queue=queue, **kwargs)
-        logger.info(f"Dispatched task {getattr(celery_task, '__name__', str(celery_task))} to Celery queue '{queue}'")
-    except Exception as e:
-        logger.warning(
-            f"Celery/Redis broker unavailable ({e}). Gracefully falling back to background daemon thread for {getattr(celery_task, '__name__', str(celery_task))}."
-        )
-        task_fn = getattr(celery_task, "run", celery_task)
-        _fallback_executor.submit(task_fn, *args, **kwargs)
+        from app.core.celery_app import celery_app
+        workers = celery_app.control.ping(timeout=0.25)
+        if workers:
+            use_celery = True
+    except Exception as ping_err:
+        logger.debug(f"Celery worker check failed ({ping_err}). Defaulting to background daemon thread.")
+        use_celery = False
+
+    if use_celery:
+        try:
+            celery_task.apply_async(args=list(args), queue=queue, **kwargs)
+            logger.info(f"Dispatched task {getattr(celery_task, '__name__', str(celery_task))} to Celery queue '{queue}'")
+            return
+        except Exception as e:
+            logger.warning(
+                f"Celery dispatch failed ({e}). Gracefully falling back to background daemon thread for {getattr(celery_task, '__name__', str(celery_task))}."
+            )
+
+    logger.info(f"Executing {getattr(celery_task, '__name__', str(celery_task))} in background daemon thread.")
+    _fallback_executor.submit(task_fn, *args, **kwargs)
 
 # Absolute path so uploads always land in backend/uploads/ regardless of launch CWD
 _BACKEND_DIR = _pathlib.Path(__file__).resolve().parent.parent.parent.parent.parent  # backend/
@@ -467,7 +481,14 @@ def get_video_status(
             stage_label = "Running AI content analysis..."
         elif transcription_stat == "processing":
             from app.services.transcription_service import transcription_service
-            engine = "Google STT" if (transcription_service.use_google and not transcription_service._google_quota_exhausted) else "Local Whisper"
+            from app.core.config import settings
+            has_groq = bool((settings.GROQ_API_KEY or os.environ.get("GROQ_API_KEY", "")).strip())
+            if has_groq:
+                engine = "Groq Cloud Whisper"
+            elif transcription_service.use_google and not transcription_service._google_quota_exhausted:
+                engine = "Google STT"
+            else:
+                engine = "Local Whisper"
             stage = "transcribing"
             stage_label = f"Transcribing audio with {engine}..."
         else:
