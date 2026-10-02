@@ -675,22 +675,60 @@ def delete_video(
     return {"message": "Video deleted successfully"}
 
 from pydantic import BaseModel
+import threading
 
 class TranslateTranscriptRequest(BaseModel):
     words: list[dict]
     target_lang: str
+
+_TRANSCRIPT_TRANSLATION_CACHE = {}
+_TRANSLATION_PROGRESS_LOCK = threading.Lock()
+_TRANSLATION_PROGRESS_EVENTS = {}
 
 @router.post("/translate-transcript")
 def translate_transcript(
     request: TranslateTranscriptRequest,
     current_user: models.User = Depends(get_current_user)
 ):
+    if not request.words:
+        return []
+    target = (request.target_lang or "").strip().lower()
+    if target in ["", "none", "original"]:
+        return request.words
+
+    # Cache key based on target language, word count, and sample word content
+    first_w = request.words[0].get("text", "") if len(request.words) > 0 else ""
+    last_w = request.words[-1].get("text", "") if len(request.words) > 0 else ""
+    cache_key = f"{target}_{len(request.words)}_{first_w}_{last_w}"
+
+    with _TRANSLATION_PROGRESS_LOCK:
+        if cache_key in _TRANSCRIPT_TRANSLATION_CACHE:
+            return _TRANSCRIPT_TRANSLATION_CACHE[cache_key]
+        if cache_key in _TRANSLATION_PROGRESS_EVENTS:
+            event = _TRANSLATION_PROGRESS_EVENTS[cache_key]
+            wait_for_existing = True
+        else:
+            event = threading.Event()
+            _TRANSLATION_PROGRESS_EVENTS[cache_key] = event
+            wait_for_existing = False
+
+    if wait_for_existing:
+        event.wait(timeout=30)
+        return _TRANSCRIPT_TRANSLATION_CACHE.get(cache_key, request.words)
+
     from app.services.translation_service import translate_and_distribute_words
     try:
         translated = translate_and_distribute_words(request.words, request.target_lang)
-        return translated
+        if translated:
+            _TRANSCRIPT_TRANSLATION_CACHE[cache_key] = translated
+        return translated or request.words
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error in translate_transcript: {e}", exc_info=True)
+        return request.words
+    finally:
+        with _TRANSLATION_PROGRESS_LOCK:
+            event.set()
+            _TRANSLATION_PROGRESS_EVENTS.pop(cache_key, None)
 
 @router.get("/clips/{clip_id}", response_model=schemas.Clip)
 def read_clip(

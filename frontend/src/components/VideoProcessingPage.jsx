@@ -82,6 +82,10 @@ export default function VideoProcessingPage() {
   const previewBgVideoRef = useRef(null);
   const audioRef = useRef(null);
   const requestRef = useRef();
+  const lastTranslateKeyRef = useRef('');
+  const lastEnglishKeyRef = useRef('');
+  const isTranslatingRef = useRef(false);
+  const isFetchingEnglishRef = useRef(false);
 
   /* Synchronize workflow stage based on video state */
   useEffect(() => {
@@ -208,7 +212,15 @@ export default function VideoProcessingPage() {
 
   /* Translation effect */
   useEffect(() => {
-    if (translateLanguage === 'none' || !video?.transcript?.length) { setTranslatedTranscript(null); return; }
+    if (translateLanguage === 'none' || !video?.transcript?.length) {
+      setTranslatedTranscript(null);
+      lastTranslateKeyRef.current = '';
+      return;
+    }
+    const key = `${video?.id}_${translateLanguage}_${video?.transcript?.length}`;
+    if (lastTranslateKeyRef.current === key || isTranslatingRef.current) return;
+    lastTranslateKeyRef.current = key;
+    isTranslatingRef.current = true;
     let active = true;
     (async () => {
       setTranslating(true);
@@ -217,16 +229,35 @@ export default function VideoProcessingPage() {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ words: video.transcript, target_lang: translateLanguage }),
         });
-        if (res.ok) { const d = await res.json(); if (active && d?.length) setTranslatedTranscript(d); }
-      } catch (e) { console.error(e); }
-      finally { if (active) setTranslating(false); }
+        if (res.ok) {
+          const d = await res.json();
+          if (active && d?.length) setTranslatedTranscript(d);
+        }
+      } catch (e) {
+        console.error(e);
+        lastTranslateKeyRef.current = '';
+      } finally {
+        isTranslatingRef.current = false;
+        if (active) setTranslating(false);
+      }
     })();
     return () => { active = false; };
-  }, [translateLanguage, video]);
+  }, [translateLanguage, video?.id, video?.transcript?.length]);
 
   useEffect(() => {
-    if (captionLanguage !== 'english' || !video?.transcript?.length) { setEnglishTranscript(null); return; }
-    if (translateLanguage === 'en') { setEnglishTranscript(translatedTranscript); return; }
+    if (captionLanguage !== 'english' || !video?.transcript?.length) {
+      setEnglishTranscript(null);
+      lastEnglishKeyRef.current = '';
+      return;
+    }
+    if (translateLanguage === 'en') {
+      setEnglishTranscript(translatedTranscript);
+      return;
+    }
+    const key = `${video?.id}_en_${video?.transcript?.length}`;
+    if (lastEnglishKeyRef.current === key || isFetchingEnglishRef.current) return;
+    lastEnglishKeyRef.current = key;
+    isFetchingEnglishRef.current = true;
     let active = true;
     (async () => {
       setFetchingEnglish(true);
@@ -235,12 +266,20 @@ export default function VideoProcessingPage() {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ words: video.transcript, target_lang: 'en' }),
         });
-        if (res.ok) { const d = await res.json(); if (active) setEnglishTranscript(d); }
-      } catch (e) { console.error(e); }
-      finally { if (active) setFetchingEnglish(false); }
+        if (res.ok) {
+          const d = await res.json();
+          if (active) setEnglishTranscript(d);
+        }
+      } catch (e) {
+        console.error(e);
+        lastEnglishKeyRef.current = '';
+      } finally {
+        isFetchingEnglishRef.current = false;
+        if (active) setFetchingEnglish(false);
+      }
     })();
     return () => { active = false; };
-  }, [captionLanguage, video, translateLanguage, translatedTranscript]);
+  }, [captionLanguage, video?.id, video?.transcript?.length, translateLanguage, translatedTranscript]);
 
   /* Load video */
   useEffect(() => {

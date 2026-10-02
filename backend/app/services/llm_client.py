@@ -49,7 +49,19 @@ def parse_json_list_robust(text: str) -> List[Any]:
     if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
         cleaned = cleaned[start_idx:end_idx + 1]
     
-    return json.loads(cleaned)
+    try:
+        data = json.loads(cleaned)
+        if isinstance(data, list):
+            return data
+    except Exception:
+        pass
+
+    import re
+    strings = re.findall(r'"((?:[^"\\]|\\.)*)"', cleaned)
+    if strings:
+        return strings
+
+    return []
 
 _CACHED_GROQ_MODEL = None
 
@@ -127,10 +139,13 @@ def safe_chat_completion(
         if response_format and response_format.get("type") == "json_object":
             extra_body["provider"]["require_parameters"] = True
 
-    # On Groq, default max_tokens is ~2048-4096 which trips on-demand OTPM limits (1000).
-    # Default to 800 tokens if unspecified for non-OpenRouter providers.
-    if not is_openrouter and "max_tokens" not in kwargs:
-        kwargs["max_tokens"] = 800
+    # On Groq, on-demand tier enforces OTPM limits (1000 for Qwen).
+    # Keep max_tokens bounded so Groq does not reject requests upfront with 429.
+    if not is_openrouter:
+        if "max_tokens" not in kwargs:
+            kwargs["max_tokens"] = 500
+        elif kwargs["max_tokens"] > 800 and "qwen" in model.lower():
+            kwargs["max_tokens"] = 500
 
     try:
         if response_format:
@@ -155,7 +170,7 @@ def safe_chat_completion(
         # Check if error is 404 / 413 / 429 / rate limit / model not found on non-openrouter client (e.g. Groq)
         err_msg = str(e).lower()
         if not is_openrouter and any(k in err_msg for k in ["model_not_found", "does not exist", "404", "413", "429", "rate_limit", "too large"]):
-            groq_fallbacks = ["qwen/qwen3.8-27b", "openai/gpt-oss-20b", "llama-3.3-70b-versatile", "llama-3.1-8b-instant", "openai/gpt-oss-120b"]
+            groq_fallbacks = ["qwen/qwen3.8-27b", "openai/gpt-oss-20b", "openai/gpt-oss-120b"]
             for fb_model in groq_fallbacks:
                 if fb_model != model:
                     logger.info(f"Retrying with alternative model '{fb_model}'...")
