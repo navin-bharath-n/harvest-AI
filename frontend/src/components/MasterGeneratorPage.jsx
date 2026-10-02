@@ -161,7 +161,7 @@ export default function MasterGeneratorPage() {
   const [variations, setVariations] = useState([]);
   const [cacheBust, setCacheBust] = useState(Date.now());
   const [prompt, setPrompt] = useState('');
-  const [length, setLength] = useState(180);
+  const [length, setLength] = useState(60);
   const [audioTheme, setAudioTheme] = useState('auto');
   const [translateLanguage, setTranslateLang] = useState('none');
   const [dubVoice, setDubVoice] = useState(false);
@@ -491,30 +491,34 @@ export default function MasterGeneratorPage() {
               </div>
             </div>
 
-            {/* Duration presets */}
+            {/* Duration presets for Shorts (Max 1 min / 60s) */}
             <div>
               <label style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-muted)' }}>
-                Target Video Duration
+                Target Video Duration <span style={{ color: 'var(--indigo-600)', fontWeight: 600 }}>(Shorts: Max 1 min)</span>
               </label>
               <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.6rem' }}>
-                {[120, 180, 300].map(preset => (
+                {[
+                  { sec: 15, label: '15s' },
+                  { sec: 30, label: '30s' },
+                  { sec: 60, label: '1 min ★' }
+                ].map(preset => (
                   <button
-                    key={preset}
-                    onClick={() => setLength(preset)}
-                    style={{ flex: 1, padding: '0.6rem', borderRadius: 'var(--radius-md)', border: `1.5px solid ${length === preset ? 'var(--indigo-600)' : 'var(--border-medium)'}`, background: length === preset ? 'var(--indigo-50)' : 'var(--bg-elevated)', color: length === preset ? 'var(--indigo-600)' : 'var(--text-heading)', fontWeight: length === preset ? 800 : 500, fontSize: '0.85rem', cursor: 'pointer', transition: 'all 0.2s' }}
+                    key={preset.sec}
+                    onClick={() => setLength(preset.sec)}
+                    style={{ flex: 1, padding: '0.6rem', borderRadius: 'var(--radius-md)', border: `1.5px solid ${length === preset.sec ? 'var(--indigo-600)' : 'var(--border-medium)'}`, background: length === preset.sec ? 'var(--indigo-50)' : 'var(--bg-elevated)', color: length === preset.sec ? 'var(--indigo-600)' : 'var(--text-heading)', fontWeight: length === preset.sec ? 800 : 500, fontSize: '0.85rem', cursor: 'pointer', transition: 'all 0.2s' }}
                   >
-                    {preset / 60} min {preset === 180 ? '★' : ''}
+                    {preset.label}
                   </button>
                 ))}
                 <button
-                  onClick={() => setLength(180)}
-                  style={{ flex: 1, padding: '0.6rem', borderRadius: 'var(--radius-md)', border: `1.5px solid ${![120, 180, 300].includes(length) ? 'var(--indigo-600)' : 'var(--border-medium)'}`, background: ![120, 180, 300].includes(length) ? 'var(--indigo-50)' : 'var(--bg-elevated)', color: ![120, 180, 300].includes(length) ? 'var(--indigo-600)' : 'var(--text-heading)', fontWeight: ![120, 180, 300].includes(length) ? 800 : 500, fontSize: '0.85rem', cursor: 'pointer', transition: 'all 0.2s' }}
+                  onClick={() => setLength(45)}
+                  style={{ flex: 1, padding: '0.6rem', borderRadius: 'var(--radius-md)', border: `1.5px solid ${![15, 30, 60].includes(length) ? 'var(--indigo-600)' : 'var(--border-medium)'}`, background: ![15, 30, 60].includes(length) ? 'var(--indigo-50)' : 'var(--bg-elevated)', color: ![15, 30, 60].includes(length) ? 'var(--indigo-600)' : 'var(--text-heading)', fontWeight: ![15, 30, 60].includes(length) ? 800 : 500, fontSize: '0.85rem', cursor: 'pointer', transition: 'all 0.2s' }}
                 >
                   Custom
                 </button>
               </div>
-              {![120, 180, 300].includes(length) && (
-                <input type="number" className="input-field" min="120" max="300" value={length} onChange={e => setLength(Math.min(300, Math.max(120, Number(e.target.value))))} placeholder="Duration in seconds" />
+              {![15, 30, 60].includes(length) && (
+                <input type="number" className="input-field" min="10" max="60" value={length} onChange={e => setLength(Math.min(60, Math.max(10, Number(e.target.value))))} placeholder="Duration (10 to 60 seconds)" />
               )}
             </div>
 

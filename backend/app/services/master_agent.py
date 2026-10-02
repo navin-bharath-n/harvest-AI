@@ -233,8 +233,8 @@ class MasterAIAgent:
         video_duration = float(metadata.get("duration", 0.0) or 0.0)
         scores = analysis.get("importance_scores", [])
 
-        # User-selected length
-        requested_length = float(length) if length and float(length) > 0 else 60.0
+        # User-selected length (strictly capped at 60s max for YouTube Shorts / Reels / TikTok)
+        requested_length = min(60.0, max(10.0, float(length))) if length and float(length) > 0 else 60.0
         target_dur = requested_length
         if video_duration > 0 and target_dur > video_duration:
             target_dur = video_duration

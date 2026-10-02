@@ -17,7 +17,7 @@ class SmartCropRequest(BaseModel):
     target_fps: int = 1
 
 class MasterGenerateRequest(BaseModel):
-    length: float = Field(default=180.0, ge=120.0, le=300.0)
+    length: float = Field(default=60.0, ge=10.0, le=60.0, description="Target duration for Shorts (max 60s / 1 min)")
     platform: str = "youtube"
     optional_prompt: str = ""
     audio_theme: Optional[str] = "auto"
