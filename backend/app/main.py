@@ -145,10 +145,38 @@ def seed_default_user_and_project(engine):
     finally:
         db.close()
 
+def sync_postgres_sequences(engine):
+    """
+    Ensure PostgreSQL auto-increment sequences (e.g. projects_id_seq, users_id_seq)
+    are aligned with the highest ID present in each table.
+    Prevents 'duplicate key value violates unique constraint' errors after seeding.
+    """
+    if not str(engine.url).startswith("postgresql"):
+        return
+    from sqlalchemy import text
+    try:
+        with engine.begin() as conn:
+            for table_name in ["users", "projects", "videos", "clips", "social_connections"]:
+                query = text(f"""
+                    SELECT setval(
+                        pg_get_serial_sequence('{table_name}', 'id'),
+                        COALESCE((SELECT MAX(id) FROM {table_name}), 0) + 1,
+                        false
+                    );
+                """)
+                try:
+                    conn.execute(query)
+                except Exception:
+                    pass
+        logger.info("PostgreSQL table sequences successfully synchronized.")
+    except Exception as e:
+        logger.warning(f"Could not synchronize PostgreSQL sequences: {e}")
+
 # Create database tables
 Base.metadata.create_all(bind=engine)
 auto_migrate_database(engine)
 seed_default_user_and_project(engine)
+sync_postgres_sequences(engine)
 
 # ---------------------------------------------------------------
 # Background processes managed by this server
