@@ -127,17 +127,6 @@ def seed_default_user_and_project(engine):
             default_user.hashed_password = get_password_hash("admin123")
             db.commit()
         
-        # Check if default project exists
-        default_project = db.query(Project).filter(Project.id == 1).first()
-        if not default_project:
-            logger.info("Seeding default project...")
-            default_project = Project(
-                id=1,
-                title="Default Project",
-                description="Auto-created default project",
-                owner_id=default_user.id
-            )
-            db.add(default_project)
         db.commit()
     except Exception as e:
         logger.warning(f"Failed to seed default database records: {e}", exc_info=True)
