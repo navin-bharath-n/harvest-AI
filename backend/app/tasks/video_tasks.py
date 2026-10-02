@@ -847,6 +847,7 @@ def render_clip_task(clip_id: int):
 
         clip.storage_path = relative_path
         clip.status = models.ClipStatus.COMPLETED
+        video.short_path = relative_path
         db.commit()
         logger.info(f"Successfully rendered clip {clip_id} to {relative_path}")
 

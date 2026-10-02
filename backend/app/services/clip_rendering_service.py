@@ -53,6 +53,7 @@ class ClipRenderingService:
                 def _build_fast_cmd(f_complex: str, v_map: str) -> list:
                     return [
                         'ffmpeg', '-y',
+                        '-threads', '1',
                         '-ss', str(start_time),
                         '-t', str(duration),
                         '-i', video_path,
@@ -61,7 +62,7 @@ class ClipRenderingService:
                         '-map', '0:a:0?',
                         '-c:v', 'libx264',
                         '-preset', 'veryfast',
-                        '-crf', '18',
+                        '-crf', '20',
                         '-c:a', 'aac',
                         '-b:a', '192k',
                         '-movflags', '+faststart',
@@ -101,13 +102,14 @@ class ClipRenderingService:
             # High-quality near-lossless trim with minimal logs
             trim_cmd = [
                 'ffmpeg', '-y',
+                '-threads', '1',
                 '-loglevel', 'error',
                 '-ss', str(start_time),
                 '-t', str(duration),
                 '-i', video_path,
                 '-map', '0:v:0',
                 '-map', '0:a:0?',
-                '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '12',
+                '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '20',
                 '-c:a', 'aac',
                 temp_trimmed_path
             ]
@@ -140,6 +142,7 @@ class ClipRenderingService:
             ffmpeg_cmd = [
                 'ffmpeg',
                 '-y',
+                '-threads', '1',
                 '-loglevel', 'error',
                 '-f', 'rawvideo',
                 '-vcodec', 'rawvideo',
@@ -153,8 +156,9 @@ class ClipRenderingService:
                 
             ffmpeg_cmd.extend([
                 '-c:v', 'libx264',
+                '-threads', '1',
                 '-preset', 'fast',
-                '-crf', '18',
+                '-crf', '20',
                 '-pix_fmt', 'yuv420p',
                 temp_video_path
             ])
