@@ -36,20 +36,18 @@ def get_current_user(
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
-    if token:
-        user_id = security.decode_access_token(token)
-        if user_id:
-            try:
-                user = db.query(models.User).filter(models.User.id == int(user_id)).first()
-                if user and user.is_active:
-                    return user
-            except Exception:
-                pass
+    if not token:
         raise credentials_exception
 
-    # Fallback for unauthenticated local development or single-user mode
-    default_user = db.query(models.User).filter(models.User.id == 1).first()
-    if default_user:
-        return default_user
-        
+    user_id = security.decode_access_token(token)
+    if not user_id:
+        raise credentials_exception
+
+    try:
+        user = db.query(models.User).filter(models.User.id == int(user_id)).first()
+        if user and user.is_active:
+            return user
+    except Exception:
+        pass
+
     raise credentials_exception

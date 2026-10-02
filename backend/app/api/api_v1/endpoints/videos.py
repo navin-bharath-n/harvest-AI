@@ -1,11 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 import shutil
 import os
 import uuid
 import logging
 from app.core.database import get_db
+from app.api.deps import get_current_user
 from app import models, schemas
 from app.tasks.video_tasks import process_video_task
 
@@ -20,6 +21,24 @@ logger = logging.getLogger(__name__)
 _fallback_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="video-fallback")
 
 router = APIRouter()
+
+def get_user_video(video_id: int, user_id: int, db: Session) -> models.Video:
+    video = db.query(models.Video).join(models.Project).filter(
+        models.Video.id == video_id,
+        models.Project.owner_id == user_id
+    ).first()
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+    return video
+
+def get_user_clip(clip_id: int, user_id: int, db: Session) -> models.Clip:
+    clip = db.query(models.Clip).join(models.Video).join(models.Project).filter(
+        models.Clip.id == clip_id,
+        models.Project.owner_id == user_id
+    ).first()
+    if not clip:
+        raise HTTPException(status_code=404, detail="Clip not found")
+    return clip
 
 def dispatch_task(celery_task, *args, **kwargs):
     """
@@ -61,10 +80,14 @@ MAX_UPLOAD_SIZE_BYTES = 2 * 1024 * 1024 * 1024  # 2 GB
 async def upload_video(
     project_id: int = Form(...),
     file: UploadFile = File(...),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
 ):
-    # Verify project exists
-    db_project = db.query(models.Project).filter(models.Project.id == project_id).first()
+    # Verify project exists and belongs to current user
+    db_project = db.query(models.Project).filter(
+        models.Project.id == project_id,
+        models.Project.owner_id == current_user.id
+    ).first()
     if not db_project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -146,10 +169,12 @@ async def upload_video(
     return db_video
 
 @router.post("/{video_id}/extract-highlights", response_model=schemas.Video)
-def extract_highlights(video_id: int, db: Session = Depends(get_db)):
-    db_video = db.query(models.Video).filter(models.Video.id == video_id).first()
-    if not db_video:
-        raise HTTPException(status_code=404, detail="Video not found")
+def extract_highlights(
+    video_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    db_video = get_user_video(video_id, current_user.id, db)
 
     db_video.status = models.VideoStatus.PROCESSING
     db_video.transcription_status = models.TranscriptionStatus.PROCESSING
@@ -163,15 +188,26 @@ def extract_highlights(video_id: int, db: Session = Depends(get_db)):
     return db_video
 
 @router.get("/", response_model=List[schemas.Video])
-def read_videos(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
-    videos = db.query(models.Video).offset(skip).limit(limit).all()
+def read_videos(
+    skip: int = 0,
+    limit: int = 100,
+    project_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    query = db.query(models.Video).join(models.Project).filter(models.Project.owner_id == current_user.id)
+    if project_id:
+        query = query.filter(models.Video.project_id == project_id)
+    videos = query.offset(skip).limit(limit).all()
     return videos
 
 @router.post("/{video_id}/transcribe", response_model=schemas.Video)
-def transcribe_video(video_id: int, db: Session = Depends(get_db)):
-    db_video = db.query(models.Video).filter(models.Video.id == video_id).first()
-    if not db_video:
-        raise HTTPException(status_code=404, detail="Video not found")
+def transcribe_video(
+    video_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    db_video = get_user_video(video_id, current_user.id, db)
 
     if db_video.status != models.VideoStatus.COMPLETED:
         raise HTTPException(status_code=400, detail="Video must be fully processed before transcription")
@@ -190,10 +226,12 @@ def transcribe_video(video_id: int, db: Session = Depends(get_db)):
     return db_video
 
 @router.post("/{video_id}/analyze", response_model=schemas.Video)
-def analyze_video(video_id: int, db: Session = Depends(get_db)):
-    db_video = db.query(models.Video).filter(models.Video.id == video_id).first()
-    if not db_video:
-        raise HTTPException(status_code=404, detail="Video not found")
+def analyze_video(
+    video_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    db_video = get_user_video(video_id, current_user.id, db)
 
     if db_video.transcription_status != models.TranscriptionStatus.COMPLETED or not db_video.transcript:
         raise HTTPException(status_code=400, detail="Video must be successfully transcribed before AI analysis")
@@ -212,10 +250,12 @@ def analyze_video(video_id: int, db: Session = Depends(get_db)):
     return db_video
 
 @router.post("/{video_id}/detect-highlights", response_model=schemas.Video)
-def detect_highlights(video_id: int, db: Session = Depends(get_db)):
-    db_video = db.query(models.Video).filter(models.Video.id == video_id).first()
-    if not db_video:
-        raise HTTPException(status_code=404, detail="Video not found")
+def detect_highlights(
+    video_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    db_video = get_user_video(video_id, current_user.id, db)
 
     if db_video.analysis_status != models.ContentAnalysisStatus.COMPLETED or not db_video.content_analysis:
         raise HTTPException(status_code=400, detail="Video must have completed content analysis first")
@@ -233,33 +273,14 @@ def detect_highlights(video_id: int, db: Session = Depends(get_db)):
 
     return db_video
 
-@router.post("/{video_id}/extract-highlights", response_model=schemas.Video)
-def trigger_extract_highlights(video_id: int, db: Session = Depends(get_db)):
-    db_video = db.query(models.Video).filter(models.Video.id == video_id).first()
-    if not db_video:
-        raise HTTPException(status_code=404, detail="Video not found")
-
-    db_video.status = models.VideoStatus.PROCESSING
-    db_video.transcription_status = models.TranscriptionStatus.PENDING
-    db_video.analysis_status = models.ContentAnalysisStatus.PENDING
-    db_video.highlight_status = models.HighlightDetectionStatus.PENDING
-    db.commit()
-    db.refresh(db_video)
-
-    from app.tasks.video_tasks import extract_top5_highlights_task
-    dispatch_task(extract_top5_highlights_task, db_video.id)
-
-    return db_video
-
 @router.post("/{video_id}/smart-crop", response_model=schemas.Video)
 def generate_smart_crop(
     video_id: int,
     request: schemas.SmartCropRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
 ):
-    db_video = db.query(models.Video).filter(models.Video.id == video_id).first()
-    if not db_video:
-        raise HTTPException(status_code=404, detail="Video not found")
+    db_video = get_user_video(video_id, current_user.id, db)
 
     if db_video.status != models.VideoStatus.COMPLETED:
         raise HTTPException(status_code=400, detail="Video must be fully processed first")
@@ -281,11 +302,10 @@ def generate_smart_crop(
 def render_clip(
     video_id: int,
     clip_in: schemas.ClipCreate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
 ):
-    db_video = db.query(models.Video).filter(models.Video.id == video_id).first()
-    if not db_video:
-        raise HTTPException(status_code=404, detail="Video not found")
+    db_video = get_user_video(video_id, current_user.id, db)
 
     if clip_in.end_time <= clip_in.start_time:
         raise HTTPException(status_code=400, detail="End time must be greater than start time")
@@ -311,11 +331,10 @@ def render_clip(
 @router.get("/{video_id}/clips", response_model=list[schemas.Clip])
 def get_clips(
     video_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
 ):
-    db_video = db.query(models.Video).filter(models.Video.id == video_id).first()
-    if not db_video:
-        raise HTTPException(status_code=404, detail="Video not found")
+    db_video = get_user_video(video_id, current_user.id, db)
 
     return db.query(models.Clip).filter(models.Clip.video_id == video_id).all()
 
@@ -323,9 +342,10 @@ def get_clips(
 def generate_master_shorts(
     video_id: int,
     request: schemas.MasterGenerateRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
 ):
-    db_video = db.query(models.Video).filter(models.Video.id == video_id).first()
+    db_video = get_user_video(video_id, current_user.id, db)
     if not db_video:
         raise HTTPException(status_code=404, detail="Video not found")
 
@@ -376,12 +396,11 @@ def generate_master_shorts(
 @router.get("/{video_id}/variations", response_model=list[schemas.Clip])
 def get_master_variations(
     video_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
 ):
     # Returns clips that have "Master Variation" in the title, deduplicated to the latest 5
-    db_video = db.query(models.Video).filter(models.Video.id == video_id).first()
-    if not db_video:
-        raise HTTPException(status_code=404, detail="Video not found")
+    db_video = get_user_video(video_id, current_user.id, db)
 
     clips = db.query(models.Clip).filter(
         models.Clip.video_id == video_id,
@@ -401,11 +420,13 @@ def get_master_variations(
     return list(reversed(unique_variations))
 
 @router.get("/{video_id}/status")
-def get_video_status(video_id: int, db: Session = Depends(get_db)):
+def get_video_status(
+    video_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
     """Returns a detailed pipeline status for the frontend progress UI."""
-    db_video = db.query(models.Video).filter(models.Video.id == video_id).first()
-    if not db_video:
-        raise HTTPException(status_code=404, detail="Video not found")
+    db_video = get_user_video(video_id, current_user.id, db)
 
     variations = [c for c in db_video.clips if c.title and "Master Variation" in c.title]
     completed_variations = [c for c in variations if c.status and c.status.value == "completed"]
@@ -481,37 +502,43 @@ def get_video_status(video_id: int, db: Session = Depends(get_db)):
     }
 
 @router.post("/cancel-all")
-def cancel_all_generations(db: Session = Depends(get_db)):
-    """Cancels all active video generation tasks across the whole system."""
+def cancel_all_generations(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """Cancels all active video generation tasks for the current user."""
     try:
         from app.services.master_agent import cancel_all_video_jobs
         cancel_all_video_jobs()
     except Exception as e:
         logger.warning(f"Error registering cancel all: {e}")
 
-    # Revoke all Celery tasks across all workers and queues
+    active_videos = db.query(models.Video).join(models.Project).filter(
+        models.Project.owner_id == current_user.id,
+        models.Video.status.in_([models.VideoStatus.PROCESSING, models.VideoStatus.PENDING])
+    ).all()
+
+    # Revoke all Celery tasks across all workers and queues for these videos
     try:
         from app.core.celery_app import celery_app
         i = celery_app.control.inspect()
         if i:
+            user_video_ids = {v.id for v in active_videos}
             for fetcher in [i.active, i.reserved, i.scheduled]:
                 try:
                     tasks_dict = fetcher() if fetcher else None
                     if tasks_dict:
                         for worker, tasks in tasks_dict.items():
                             for t in tasks:
-                                celery_app.control.revoke(t['id'], terminate=True, signal='SIGKILL')
-                                logger.info(f"Revoked Celery task {t['id']}")
+                                if t.get('args') and len(t['args']) > 0 and t['args'][0] in user_video_ids:
+                                    celery_app.control.revoke(t['id'], terminate=True, signal='SIGKILL')
+                                    logger.info(f"Revoked Celery task {t['id']}")
                 except Exception as e:
                     logger.warning(f"Error inspecting/revoking tasks: {e}")
     except Exception as e:
         logger.warning(f"Error revoking all Celery tasks: {e}")
 
-    # Mark all currently processing or pending videos as FAILED
-    active_videos = db.query(models.Video).filter(
-        models.Video.status.in_([models.VideoStatus.PROCESSING, models.VideoStatus.PENDING])
-    ).all()
-
+    # Mark currently processing or pending videos as FAILED
     for v in active_videos:
         v.status = models.VideoStatus.FAILED
         v.transcription_status = models.TranscriptionStatus.NONE
@@ -524,11 +551,13 @@ def cancel_all_generations(db: Session = Depends(get_db)):
 
 
 @router.post("/{video_id}/cancel-generation")
-def cancel_generation(video_id: int, db: Session = Depends(get_db)):
+def cancel_generation(
+    video_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
     """Cancels active video generation and revokes background Celery tasks."""
-    db_video = db.query(models.Video).filter(models.Video.id == video_id).first()
-    if not db_video:
-        raise HTTPException(status_code=404, detail="Video not found")
+    db_video = get_user_video(video_id, current_user.id, db)
 
     try:
         from app.services.master_agent import cancel_video_job
@@ -568,11 +597,10 @@ def cancel_generation(video_id: int, db: Session = Depends(get_db)):
 def update_clip(
     clip_id: int,
     clip_in: schemas.ClipCreate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
 ):
-    db_clip = db.query(models.Clip).filter(models.Clip.id == clip_id).first()
-    if not db_clip:
-        raise HTTPException(status_code=404, detail="Clip not found")
+    db_clip = get_user_clip(clip_id, current_user.id, db)
 
     db_clip.title = clip_in.title
     db_clip.start_time = clip_in.start_time
@@ -591,10 +619,12 @@ def update_clip(
 
 
 @router.delete("/{video_id}")
-def delete_video(video_id: int, db: Session = Depends(get_db)):
-    db_video = db.query(models.Video).filter(models.Video.id == video_id).first()
-    if not db_video:
-        raise HTTPException(status_code=404, detail="Video not found")
+def delete_video(
+    video_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    db_video = get_user_video(video_id, current_user.id, db)
 
     if db_video.storage_path and os.path.exists(db_video.storage_path):
         try:
@@ -630,7 +660,10 @@ class TranslateTranscriptRequest(BaseModel):
     target_lang: str
 
 @router.post("/translate-transcript")
-def translate_transcript(request: TranslateTranscriptRequest):
+def translate_transcript(
+    request: TranslateTranscriptRequest,
+    current_user: models.User = Depends(get_current_user)
+):
     from app.services.translation_service import translate_and_distribute_words
     try:
         translated = translate_and_distribute_words(request.words, request.target_lang)
@@ -641,22 +674,20 @@ def translate_transcript(request: TranslateTranscriptRequest):
 @router.get("/clips/{clip_id}", response_model=schemas.Clip)
 def read_clip(
     clip_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
 ):
-    db_clip = db.query(models.Clip).filter(models.Clip.id == clip_id).first()
-    if not db_clip:
-        raise HTTPException(status_code=404, detail="Clip not found")
+    db_clip = get_user_clip(clip_id, current_user.id, db)
     return db_clip
 
 @router.post("/clips/{clip_id}/publish")
 def publish_clip(
     clip_id: int,
     request: schemas.ClipPublishRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
 ):
-    db_clip = db.query(models.Clip).filter(models.Clip.id == clip_id).first()
-    if not db_clip:
-        raise HTTPException(status_code=404, detail="Clip not found")
+    db_clip = get_user_clip(clip_id, current_user.id, db)
 
     # Clear stale publishing statuses for the requested platforms in the database
     published_urls = db_clip.published_urls or {}

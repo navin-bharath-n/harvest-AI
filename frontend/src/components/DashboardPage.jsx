@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Folder, Plus, X, ChevronRight, BarChart2, Video, Trash2, Zap } from 'lucide-react';
+import { Folder, Plus, X, ChevronRight, BarChart2, Video, Trash2, Zap, LogOut, User as UserIcon } from 'lucide-react';
 import { api } from '../api/client';
+import { useAuth } from '../context/AuthContext';
 
 /* ---- helpers ---- */
 function statusChipClass(status) {
@@ -20,6 +21,7 @@ function StatusChip({ status }) {
 }
 
 export default function DashboardPage() {
+  const { user, logout } = useAuth();
   const [projects, setProjects] = useState([]);
   const [videos, setVideos] = useState([]);
   const [videosCount, setVideosCount] = useState(0);
@@ -112,7 +114,25 @@ export default function DashboardPage() {
         <div className="app-nav-breadcrumb">
           <strong>Dashboard</strong>
         </div>
-        <div className="app-nav-actions">
+        <div className="app-nav-actions" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+          <div
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '0.45rem',
+              padding: '0.35rem 0.75rem',
+              borderRadius: '9999px',
+              background: 'rgba(79, 70, 229, 0.1)',
+              border: '1px solid rgba(79, 70, 229, 0.25)',
+              color: '#818cf8',
+              fontSize: '0.825rem',
+              fontWeight: 600,
+            }}
+          >
+            <UserIcon size={14} />
+            <span>{user?.full_name || user?.email}</span>
+          </div>
+
           <button
             id="create-project-btn"
             className="btn-primary"
@@ -121,6 +141,16 @@ export default function DashboardPage() {
           >
             <Plus size={16} />
             New Project
+          </button>
+
+          <button
+            className="btn-secondary"
+            onClick={() => { logout(); navigate('/'); }}
+            title="Sign Out"
+            style={{ padding: '0.45rem 0.75rem', gap: '0.4rem', color: 'var(--text-muted)' }}
+          >
+            <LogOut size={15} />
+            <span>Sign Out</span>
           </button>
         </div>
       </nav>
@@ -134,8 +164,12 @@ export default function DashboardPage() {
         {/* ── PAGE HEADING ─────────────────────────────────── */}
         <div className="page-header" style={{ marginBottom: '2rem' }}>
           <div>
-            <h1 className="page-title">Workspace Dashboard</h1>
-            <p className="page-subtitle">Manage your neural video processing projects</p>
+            <h1 className="page-title">
+              Welcome back, {user?.full_name || user?.email?.split('@')[0] || 'Creator'}
+            </h1>
+            <p className="page-subtitle">
+              Private workspace · Only you have access to your projects and video generations
+            </p>
           </div>
         </div>
 

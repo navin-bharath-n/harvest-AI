@@ -3,11 +3,12 @@ import { useNavigate } from 'react-router-dom';
 import {
   ArrowUpRight, BadgeCheck, Captions, Cpu, Languages,
   Play, Sparkles, Video, Wand, Globe, Mic, Scissors,
-  Zap, Share2, TrendingUp, ChevronRight
+  Zap, Share2, TrendingUp, ChevronRight, LogOut, User as UserIcon
 } from 'lucide-react';
 import { motion, useInView } from 'framer-motion';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { Environment, Float, MeshTransmissionMaterial, Sparkles as ThreeSparkles } from '@react-three/drei';
+import { useAuth } from '../context/AuthContext';
 
 /* ============================================================
    ERROR BOUNDARY
@@ -259,6 +260,7 @@ function FadeIn({ children, delay = 0, style }) {
    ============================================================ */
 export default function LandingPage() {
   const navigate = useNavigate();
+  const { isAuthenticated, user, logout, openLogin, openRegister } = useAuth();
 
   const [webGLSupported] = useState(() => {
     if (typeof window === 'undefined') return false;
@@ -275,22 +277,55 @@ export default function LandingPage() {
       <header className="premium-nav" style={{ position: 'fixed', top: 0, left: 0, right: 0, zIndex: 100 }}>
         <button
           className="premium-brand"
-          onClick={() => navigate('/dashboard')}
+          onClick={() => navigate(isAuthenticated ? '/dashboard' : '/')}
           aria-label="Harvest AI home"
         >
           <span className="premium-brand-mark"><Video size={16} /></span>
           <span>Harvest AI</span>
         </button>
 
-        <div className="premium-nav-actions">
-          <button className="premium-secondary-button" onClick={() => navigate('/dashboard')}>
-            <Play size={14} />
-            Open Studio
-          </button>
-          <button className="premium-primary-button" onClick={() => navigate('/dashboard')}>
-            Get Started
-            <ChevronRight size={14} />
-          </button>
+        <div className="premium-nav-actions" style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
+          {isAuthenticated ? (
+            <>
+              <div style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '0.45rem',
+                padding: '0.35rem 0.75rem',
+                borderRadius: '9999px',
+                background: 'rgba(79, 70, 229, 0.12)',
+                border: '1px solid rgba(79, 70, 229, 0.25)',
+                color: '#818cf8',
+                fontSize: '0.825rem',
+                fontWeight: 600,
+              }}>
+                <UserIcon size={14} />
+                <span>{user?.full_name || user?.email || 'Logged In'}</span>
+              </div>
+              <button className="premium-secondary-button" onClick={() => navigate('/dashboard')}>
+                <Play size={14} />
+                Studio
+              </button>
+              <button
+                className="premium-secondary-button"
+                onClick={logout}
+                title="Sign Out"
+                style={{ padding: '0.5rem', color: '#94a3b8' }}
+              >
+                <LogOut size={15} />
+              </button>
+            </>
+          ) : (
+            <>
+              <button className="premium-secondary-button" onClick={openLogin}>
+                Sign In
+              </button>
+              <button className="premium-primary-button" onClick={openRegister}>
+                Get Started
+                <ChevronRight size={14} />
+              </button>
+            </>
+          )}
         </div>
       </header>
 
@@ -368,7 +403,13 @@ export default function LandingPage() {
           >
             <button
               className="premium-primary-button"
-              onClick={() => navigate('/dashboard')}
+              onClick={() => {
+                if (isAuthenticated) {
+                  navigate('/dashboard');
+                } else {
+                  openLogin();
+                }
+              }}
               style={{ padding: '0.8rem 1.8rem', fontSize: '0.97rem', gap: '0.45rem' }}
             >
               Enter Workspace

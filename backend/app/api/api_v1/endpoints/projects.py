@@ -2,26 +2,52 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import List
 from app.core.database import get_db
+from app.api.deps import get_current_user
 from app import models, schemas
 
 router = APIRouter()
 
 @router.post("/", response_model=schemas.Project)
-def create_project(project: schemas.ProjectCreate, db: Session = Depends(get_db)):
-    db_project = models.Project(**project.model_dump())
+def create_project(
+    project: schemas.ProjectCreate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    project_data = project.model_dump()
+    project_data["owner_id"] = current_user.id
+    db_project = models.Project(**project_data)
     db.add(db_project)
     db.commit()
     db.refresh(db_project)
     return db_project
 
 @router.get("/", response_model=List[schemas.Project])
-def read_projects(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
-    projects = db.query(models.Project).offset(skip).limit(limit).all()
+def read_projects(
+    skip: int = 0,
+    limit: int = 100,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    projects = (
+        db.query(models.Project)
+        .filter(models.Project.owner_id == current_user.id)
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
     return projects
 
 @router.get("/{project_id}", response_model=schemas.Project)
-def read_project(project_id: int, db: Session = Depends(get_db)):
-    db_project = db.query(models.Project).filter(models.Project.id == project_id).first()
+def read_project(
+    project_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    db_project = (
+        db.query(models.Project)
+        .filter(models.Project.id == project_id, models.Project.owner_id == current_user.id)
+        .first()
+    )
     if db_project is None:
         raise HTTPException(status_code=404, detail="Project not found")
     return db_project
@@ -33,8 +59,16 @@ import logging
 logger = logging.getLogger(__name__)
 
 @router.delete("/{project_id}")
-def delete_project(project_id: int, db: Session = Depends(get_db)):
-    db_project = db.query(models.Project).filter(models.Project.id == project_id).first()
+def delete_project(
+    project_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    db_project = (
+        db.query(models.Project)
+        .filter(models.Project.id == project_id, models.Project.owner_id == current_user.id)
+        .first()
+    )
     if not db_project:
         raise HTTPException(status_code=404, detail="Project not found")
     

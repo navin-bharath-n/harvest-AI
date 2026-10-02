@@ -19,6 +19,37 @@ client.interceptors.request.use((config) => {
   return config;
 }, (error) => Promise.reject(error));
 
+client.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401) {
+      localStorage.removeItem('harvest_token');
+      localStorage.removeItem('harvest_user');
+      window.dispatchEvent(new CustomEvent('harvest:unauthorized'));
+    }
+    return Promise.reject(error);
+  }
+);
+
+export async function authFetch(url, options = {}) {
+  const token = localStorage.getItem('harvest_token');
+  const headers = { ...(options.headers || {}) };
+  if (token && !headers['Authorization']) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+  const fullUrl = url.startsWith('http') ? url : `${API_BASE_URL}${url.startsWith('/') ? '' : '/'}${url}`;
+  const response = await fetch(fullUrl, {
+    ...options,
+    headers
+  });
+  if (response.status === 401) {
+    localStorage.removeItem('harvest_token');
+    localStorage.removeItem('harvest_user');
+    window.dispatchEvent(new CustomEvent('harvest:unauthorized'));
+  }
+  return response;
+}
+
 export const api = {
   // Auth methods
   login: async (email, password) => {
@@ -50,6 +81,7 @@ export const api = {
   logout: () => {
     localStorage.removeItem('harvest_token');
     localStorage.removeItem('harvest_user');
+    window.dispatchEvent(new CustomEvent('harvest:unauthorized'));
   },
 
   getCurrentUser: async () => {
@@ -60,40 +92,23 @@ export const api = {
   // Get all projects
   getProjects: async () => {
     const response = await client.get('/projects/');
-    return response.data;
+    return response.data || [];
   },
 
   // Create a new project
   createProject: async (title, description) => {
-    let ownerId = 1;
-    try {
-      const storedUser = JSON.parse(localStorage.getItem('harvest_user') || '{}');
-      if (storedUser?.id) {
-        ownerId = storedUser.id;
-      }
-    } catch {
-      // fallback to 1
-    }
-
     const response = await client.post('/projects/', {
       title,
-      description,
-      owner_id: ownerId
+      description
     });
     return response.data;
   },
 
   // Get all videos
-  getVideos: async () => {
-    try {
-      const response = await client.get('/videos/');
-      return response.data;
-    } catch (e) {
-      console.warn("Failed to fetch videos, using mock data", e);
-      return [
-        { id: 1, original_filename: 'demo.mp4', status: 'completed', project_id: 1 }
-      ];
-    }
+  getVideos: async (projectId = null) => {
+    const url = projectId ? `/videos/?project_id=${projectId}` : '/videos/';
+    const response = await client.get(url);
+    return response.data || [];
   },
 
   // Upload a video

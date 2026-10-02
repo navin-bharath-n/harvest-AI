@@ -75,11 +75,12 @@ def get_user_me(
 @router.get("/{user_id}/connections", response_model=List[schemas.SocialConnection])
 def read_user_connections(
     user_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
 ):
-    db_user = db.query(models.User).filter(models.User.id == user_id).first()
-    if not db_user:
-        raise HTTPException(status_code=404, detail="User not found")
+    # Enforce current_user ID
+    user_id = current_user.id
+    db_user = current_user
 
     connections = list(db_user.social_connections)
     from app.core.config import settings
@@ -135,11 +136,11 @@ def read_user_connections(
 def save_user_connection(
     user_id: int,
     connection_in: schemas.SocialConnectionCreate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
 ):
-    db_user = db.query(models.User).filter(models.User.id == user_id).first()
-    if not db_user:
-        raise HTTPException(status_code=404, detail="User not found")
+    user_id = current_user.id
+    db_user = current_user
 
     # Verify credentials via SocialPublishService
     from app.services.social_publish_service import SocialPublishService
@@ -181,11 +182,10 @@ def save_user_connection(
 def delete_user_connection(
     user_id: int,
     platform: str,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
 ):
-    db_user = db.query(models.User).filter(models.User.id == user_id).first()
-    if not db_user:
-        raise HTTPException(status_code=404, detail="User not found")
+    user_id = current_user.id
 
     db_conn = db.query(models.SocialConnection).filter(
         models.SocialConnection.user_id == user_id,

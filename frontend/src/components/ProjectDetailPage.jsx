@@ -3,10 +3,11 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { 
   UploadCloud, Video, ChevronLeft, Wand, Trash2, Clock, CheckCircle, 
-  AlertCircle, Loader, Zap, Sparkles, X
+  AlertCircle, Loader, Zap, Sparkles, X, LogOut, User as UserIcon
 } from 'lucide-react';
 import { api } from '../api/client';
 import { useGeneration } from '../context/GenerationContext';
+import { useAuth } from '../context/AuthContext';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || 'https://localhost:8000/api/v1';
 
@@ -33,6 +34,7 @@ function StatusIcon({ status }) {
 }
 
 export default function ProjectDetailPage() {
+  const { user, logout } = useAuth();
   const { projectId } = useParams();
   const [project,   setProject]   = useState(null);
   const [videos,    setVideos]    = useState([]);
@@ -169,6 +171,36 @@ export default function ProjectDetailPage() {
           </button>
           <span style={{ color: 'var(--border-strong)' }}>/</span>
           <strong>{project?.title}</strong>
+        </div>
+
+        <div className="app-nav-actions" style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+          <div
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '0.45rem',
+              padding: '0.35rem 0.75rem',
+              borderRadius: '9999px',
+              background: 'rgba(79, 70, 229, 0.1)',
+              border: '1px solid rgba(79, 70, 229, 0.25)',
+              color: '#818cf8',
+              fontSize: '0.825rem',
+              fontWeight: 600,
+            }}
+          >
+            <UserIcon size={14} />
+            <span>{user?.full_name || user?.email}</span>
+          </div>
+
+          <button
+            className="btn-secondary"
+            onClick={() => { logout(); navigate('/'); }}
+            title="Sign Out"
+            style={{ padding: '0.45rem 0.75rem', gap: '0.4rem', color: 'var(--text-muted)' }}
+          >
+            <LogOut size={15} />
+            <span>Sign Out</span>
+          </button>
         </div>
       </nav>
 

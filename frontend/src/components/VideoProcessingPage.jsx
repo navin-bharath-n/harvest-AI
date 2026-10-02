@@ -4,9 +4,10 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { 
   ChevronLeft, Scissors, Mic, Wand, PlayCircle, Film, RefreshCw, Video, Globe, Zap,
   Play, Pause, Volume2, Sparkles, CheckCircle2, Clock, Music, Loader2,
-  ArrowRight, Settings, FileText, Sliders, Check
+  ArrowRight, Settings, FileText, Sliders, Check, LogOut, User as UserIcon
 } from 'lucide-react';
-import { api } from '../api/client';
+import { api, authFetch } from '../api/client';
+import { useAuth } from '../context/AuthContext';
 import SocialPublishingPanel from './SocialPublishingPanel';
 
 const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'https://localhost:8000';
@@ -47,6 +48,7 @@ function StatusChip({ status }) {
 }
 
 export default function VideoProcessingPage() {
+  const { user, logout } = useAuth();
   const { videoId } = useParams();
   const navigate = useNavigate();
 
@@ -105,7 +107,7 @@ export default function VideoProcessingPage() {
     setIsEditingSettings(false);
     setStage('processing');
     try {
-      await fetch(`${API_BASE}/videos/${video.id}/extract-highlights`, { method: 'POST' });
+      await authFetch(`${API_BASE}/videos/${video.id}/extract-highlights`, { method: 'POST' });
       const all = await api.getVideos();
       const u = all.find(v => v.id === video.id);
       if (u) setVideo(u);
@@ -168,7 +170,7 @@ export default function VideoProcessingPage() {
   const handleRenderSingleShort = async (clip, idx) => {
     try {
       setRenderingClipId(idx);
-      const res = await fetch(`${API_BASE}/videos/${video.id}/clips`, {
+      const res = await authFetch(`${API_BASE}/videos/${video.id}/clips`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -187,7 +189,7 @@ export default function VideoProcessingPage() {
         }),
       });
       if (res.ok) {
-        const newClips = await fetch(`${API_BASE}/videos/${video.id}/clips`).then(r => r.json());
+        const newClips = await authFetch(`${API_BASE}/videos/${video.id}/clips`).then(r => r.json());
         setClips(newClips);
       }
     } catch (err) {
@@ -211,7 +213,7 @@ export default function VideoProcessingPage() {
     (async () => {
       setTranslating(true);
       try {
-        const res = await fetch(`${API_BASE}/videos/translate-transcript`, {
+        const res = await authFetch(`${API_BASE}/videos/translate-transcript`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ words: video.transcript, target_lang: translateLanguage }),
         });
@@ -229,7 +231,7 @@ export default function VideoProcessingPage() {
     (async () => {
       setFetchingEnglish(true);
       try {
-        const res = await fetch(`${API_BASE}/videos/translate-transcript`, {
+        const res = await authFetch(`${API_BASE}/videos/translate-transcript`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ words: video.transcript, target_lang: 'en' }),
         });
@@ -301,17 +303,17 @@ export default function VideoProcessingPage() {
           if (u) setVideo(u);
 
           // Fetch detailed status
-          const statusRes = await fetch(`${API_BASE}/videos/${video.id}/status`);
+          const statusRes = await authFetch(`${API_BASE}/videos/${video.id}/status`);
           if (statusRes.ok) {
             setPipelineStatus(await statusRes.json());
           }
 
-          const r = await fetch(`${API_BASE}/videos/${video.id}/clips`);
+          const r = await authFetch(`${API_BASE}/videos/${video.id}/clips`);
           if (r.ok) { setClips(await r.json()); setCacheBust(Date.now()); }
         } catch (e) { console.error(e); }
       }, 2000);
     } else {
-      fetch(`${API_BASE}/videos/${video.id}/clips`)
+      authFetch(`${API_BASE}/videos/${video.id}/clips`)
         .then(r => r.json()).then(d => { setClips(d); setCacheBust(Date.now()); }).catch(console.error);
     }
     return () => clearInterval(id);
@@ -366,19 +368,19 @@ export default function VideoProcessingPage() {
     { key: 'metadata', title: 'Video Metadata Extraction', description: 'Extract FPS, resolution, bitrate, and audio streams.', status: video.status, canTrigger: false },
     {
       key: 'transcription', title: 'Audio Transcription', description: 'Convert audio track into word-level timestamps using Google STT or local Whisper.', status: video.transcription_status, canTrigger: video.status === 'completed',
-      triggerAction: () => fetch(`${API_BASE}/videos/${video.id}/transcribe`, { method: 'POST' })
+      triggerAction: () => authFetch(`${API_BASE}/videos/${video.id}/transcribe`, { method: 'POST' })
     },
     {
       key: 'analysis', title: 'AI Content Analysis (Qwen3)', description: 'Understand topic, key scenes, and outline highlights.', status: video.analysis_status, canTrigger: video.transcription_status === 'completed',
-      triggerAction: () => fetch(`${API_BASE}/videos/${video.id}/analyze`, { method: 'POST' })
+      triggerAction: () => authFetch(`${API_BASE}/videos/${video.id}/analyze`, { method: 'POST' })
     },
     {
       key: 'highlights', title: 'Highlight Candidates Selection', description: 'Detect top visual sequences and viral appeal.', status: video.highlight_status, canTrigger: video.analysis_status === 'completed',
-      triggerAction: () => fetch(`${API_BASE}/videos/${video.id}/detect-highlights`, { method: 'POST' })
+      triggerAction: () => authFetch(`${API_BASE}/videos/${video.id}/detect-highlights`, { method: 'POST' })
     },
     {
       key: 'crop', title: 'Smart Cropping Trajectory (9:16)', description: 'Track primary subjects for vertical formatting.', status: video.crop_status, canTrigger: video.status === 'completed',
-      triggerAction: () => fetch(`${API_BASE}/videos/${video.id}/smart-crop`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ target_fps: parseInt(targetFps) }) })
+      triggerAction: () => authFetch(`${API_BASE}/videos/${video.id}/smart-crop`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ target_fps: parseInt(targetFps) }) })
     },
   ];
 
@@ -406,7 +408,7 @@ export default function VideoProcessingPage() {
             {video.original_filename}
           </strong>
         </div>
-        <div className="app-nav-actions">
+        <div className="app-nav-actions" style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
           <StatusChip status={video.status} />
           {(video.status === 'pending' || video.status === 'processing') && (
             <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 2, ease: 'linear' }}>
@@ -417,7 +419,7 @@ export default function VideoProcessingPage() {
             className="btn-primary" 
             onClick={async () => {
               try {
-                await fetch(`${API_BASE}/videos/${video.id}/extract-highlights`, { method: 'POST' });
+                await authFetch(`${API_BASE}/videos/${video.id}/extract-highlights`, { method: 'POST' });
                 const all = await api.getVideos();
                 const u = all.find(v => v.id === video.id);
                 if (u) setVideo(u);
@@ -427,6 +429,34 @@ export default function VideoProcessingPage() {
             title="Re-run AI to find fresh Top 5 viral moments with original audio"
           >
             <Sparkles size={14} /> Re-Analyze Top 5
+          </button>
+
+          <div
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '0.45rem',
+              padding: '0.35rem 0.75rem',
+              borderRadius: '9999px',
+              background: 'rgba(79, 70, 229, 0.1)',
+              border: '1px solid rgba(79, 70, 229, 0.25)',
+              color: '#818cf8',
+              fontSize: '0.825rem',
+              fontWeight: 600,
+            }}
+          >
+            <UserIcon size={14} />
+            <span>{user?.full_name || user?.email}</span>
+          </div>
+
+          <button
+            className="btn-secondary"
+            onClick={() => { logout(); navigate('/'); }}
+            title="Sign Out"
+            style={{ padding: '0.45rem 0.75rem', gap: '0.4rem', color: 'var(--text-muted)' }}
+          >
+            <LogOut size={15} />
+            <span>Sign Out</span>
           </button>
         </div>
       </nav>
