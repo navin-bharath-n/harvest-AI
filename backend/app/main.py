@@ -172,11 +172,26 @@ def sync_postgres_sequences(engine):
     except Exception as e:
         logger.warning(f"Could not synchronize PostgreSQL sequences: {e}")
 
-# Create database tables
-Base.metadata.create_all(bind=engine)
-auto_migrate_database(engine)
-seed_default_user_and_project(engine)
-sync_postgres_sequences(engine)
+# Create database tables with automatic retry for local DNS and network hiccups
+def init_db(engine_instance, max_retries=5, delay=2):
+    for attempt in range(1, max_retries + 1):
+        try:
+            Base.metadata.create_all(bind=engine_instance)
+            auto_migrate_database(engine_instance)
+            seed_default_user_and_project(engine_instance)
+            sync_postgres_sequences(engine_instance)
+            logger.info("Database tables, migrations, and sequences successfully initialized.")
+            return True
+        except Exception as e:
+            logger.warning(f"Database initialization attempt {attempt}/{max_retries} failed ({e}). Retrying in {delay}s...")
+            if attempt < max_retries:
+                import time
+                time.sleep(delay)
+            else:
+                logger.error("Could not connect to database after retries. The server will start, but database operations may fail until network connection is restored.")
+                return False
+
+init_db(engine)
 
 # ---------------------------------------------------------------
 # Background processes managed by this server
