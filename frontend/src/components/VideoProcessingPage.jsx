@@ -284,13 +284,15 @@ export default function VideoProcessingPage() {
   }, [video, framingMode]);
 
   /* Polling */
-  const isPipelineActive = video && (
+  const isAnyClipRendering = clips.some(c => c.status === 'pending' || c.status === 'rendering') || renderingClipId !== null;
+
+  const isPipelineActive = (video && (
     video.status === 'pending' || video.status === 'processing' ||
     video.transcription_status === 'pending' || video.transcription_status === 'processing' ||
     video.analysis_status === 'pending' || video.analysis_status === 'processing' ||
     video.highlight_status === 'pending' || video.highlight_status === 'processing' ||
     video.crop_status === 'pending' || video.crop_status === 'processing'
-  );
+  )) || isAnyClipRendering;
 
   useEffect(() => {
     if (!video) return;
@@ -360,9 +362,11 @@ export default function VideoProcessingPage() {
   const origRelPath = origStoragePath.includes('uploads/') ? origStoragePath.substring(origStoragePath.indexOf('uploads/')) : origStoragePath;
   const videoUrl = video.storage_path ? `${backendUrl}/${origRelPath}?t=${cacheBust}` : '';
 
-  const shortStoragePath = (video.short_path || '').replace(/\\/g, '/');
+  const latestCompletedClip = clips?.filter(c => c.status === 'completed' && c.storage_path).slice(-1)[0];
+  const activeShortStorage = video.short_path || latestCompletedClip?.storage_path || '';
+  const shortStoragePath = activeShortStorage.replace(/\\/g, '/');
   const shortRelPath = shortStoragePath.includes('uploads/') ? shortStoragePath.substring(shortStoragePath.indexOf('uploads/')) : shortStoragePath;
-  const shortUrl = video.short_path ? `${backendUrl}/${shortRelPath}?t=${cacheBust}` : '';
+  const shortUrl = activeShortStorage ? `${backendUrl}/${shortRelPath}?t=${cacheBust}` : '';
 
   const steps = [
     { key: 'metadata', title: 'Video Metadata Extraction', description: 'Extract FPS, resolution, bitrate, and audio streams.', status: video.status, canTrigger: false },
@@ -794,7 +798,9 @@ export default function VideoProcessingPage() {
                 {video.highlights.clips.map((clip, idx) => {
                   const isSelected = selectedClipIdx === idx;
                   const isPlaying = playingAudioIdx === idx;
-                  const isRendering = renderingClipId === idx;
+                  const matchingClip = clips.find(c => Math.abs(c.start_time - clip.start_time) < 0.5);
+                  const isRendering = renderingClipId === idx || (matchingClip && (matchingClip.status === 'pending' || matchingClip.status === 'rendering'));
+                  const isCompleted = matchingClip && matchingClip.status === 'completed';
                   const clipDuration = clip.duration || (clip.end_time - clip.start_time);
 
                   return (
@@ -830,6 +836,11 @@ export default function VideoProcessingPage() {
                         </div>
 
                         <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexShrink: 0 }}>
+                          {isCompleted && (
+                            <span style={{ background: 'var(--status-done-bg)', color: 'var(--status-done-text)', border: '1px solid var(--status-done-border)', borderRadius: 'var(--radius-full)', padding: '3px 9px', fontSize: '0.76rem', fontWeight: 800 }}>
+                              ✓ Short Rendered
+                            </span>
+                          )}
                           <span style={{ background: 'var(--status-run-bg)', color: 'var(--status-run-text)', border: '1px solid var(--status-run-border)', borderRadius: 'var(--radius-full)', padding: '3px 9px', fontSize: '0.76rem', fontWeight: 800 }}>
                             🔥 {clip.viral_score}/100
                           </span>
@@ -940,7 +951,7 @@ export default function VideoProcessingPage() {
 
                         <button
                           onClick={() => handleRenderSingleShort(clip, idx)}
-                          disabled={isRendering}
+                          disabled={isRendering || isAnyClipRendering}
                           style={{
                             padding: '0.55rem 1.25rem',
                             fontSize: '0.85rem',
@@ -949,13 +960,13 @@ export default function VideoProcessingPage() {
                             display: 'flex',
                             alignItems: 'center',
                             gap: '0.5rem',
-                            cursor: isRendering ? 'wait' : 'pointer',
+                            cursor: (isRendering || isAnyClipRendering) ? 'not-allowed' : 'pointer',
                             background: isSelected ? 'linear-gradient(135deg, var(--indigo-600), #4338ca)' : 'var(--accent-dark)',
                             color: '#fff',
                             border: 'none',
                             boxShadow: isSelected ? '0 4px 14px rgba(79,70,229,0.35)' : 'none',
                             transition: 'all 0.2s ease',
-                            opacity: isRendering ? 0.7 : 1
+                            opacity: (isRendering || isAnyClipRendering) ? 0.75 : 1
                           }}
                           title="Renders ONLY this single 9:16 short (~180MB RAM, safe for Render 512MB limit)"
                         >
@@ -965,6 +976,11 @@ export default function VideoProcessingPage() {
                                 <RefreshCw size={13} />
                               </motion.div>
                               Rendering Short…
+                            </>
+                          ) : isCompleted ? (
+                            <>
+                              <CheckCircle2 size={14} color="#a7f3d0" />
+                              Re-Generate This Short
                             </>
                           ) : (
                             <>
