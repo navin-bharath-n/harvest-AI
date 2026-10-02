@@ -1,7 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ChevronLeft, Scissors, Mic, Wand, PlayCircle, Film, RefreshCw, Video, Globe, Zap } from 'lucide-react';
+import { 
+  ChevronLeft, Scissors, Mic, Wand, PlayCircle, Film, RefreshCw, Video, Globe, Zap,
+  Play, Pause, Volume2, Sparkles, CheckCircle2, Clock, Music, Loader2
+} from 'lucide-react';
 import { api } from '../api/client';
 import SocialPublishingPanel from './SocialPublishingPanel';
 
@@ -56,6 +59,12 @@ export default function VideoProcessingPage() {
   const [captionLanguage, setCaptionLanguage] = useState('original');
   const [dubMixMode, setDubMixMode] = useState('replace');
   const [framingMode, setFramingMode] = useState('fit_blur'); // 'fit_blur', 'fit_black', 'smart_crop'
+  const [captionStyle, setCaptionStyle] = useState('viral_pop'); // 'viral_pop', 'karaoke', 'clean', 'none'
+  const [selectedClipIdx, setSelectedClipIdx] = useState(0);
+  const [playingAudioIdx, setPlayingAudioIdx] = useState(null);
+  const [audioCurrentTime, setAudioCurrentTime] = useState(0);
+  const [audioDuration, setAudioDuration] = useState(0);
+  const [renderingClipId, setRenderingClipId] = useState(null);
   const [translatedTranscript, setTranslatedTranscript] = useState(null);
   const [translating, setTranslating] = useState(false);
   const [englishTranscript, setEnglishTranscript] = useState(null);
@@ -66,7 +75,98 @@ export default function VideoProcessingPage() {
   const videoRef = useRef(null);
   const previewVideoRef = useRef(null);
   const previewBgVideoRef = useRef(null);
+  const audioRef = useRef(null);
   const requestRef = useRef();
+
+  /* Audio Preview Listeners */
+  useEffect(() => {
+    const el = audioRef.current;
+    if (!el) return;
+    const handleTime = () => setAudioCurrentTime(el.currentTime);
+    const handleDuration = () => setAudioDuration(el.duration || 0);
+    const handleEnded = () => {
+      setPlayingAudioIdx(null);
+      setAudioCurrentTime(0);
+    };
+    el.addEventListener('timeupdate', handleTime);
+    el.addEventListener('loadedmetadata', handleDuration);
+    el.addEventListener('ended', handleEnded);
+    return () => {
+      el.removeEventListener('timeupdate', handleTime);
+      el.removeEventListener('loadedmetadata', handleDuration);
+      el.removeEventListener('ended', handleEnded);
+    };
+  }, []);
+
+  const togglePlayAudio = (idx, clip) => {
+    if (playingAudioIdx === idx) {
+      audioRef.current?.pause();
+      setPlayingAudioIdx(null);
+    } else {
+      if (audioRef.current) {
+        let audioSrc = null;
+        if (clip.audio_url) {
+          audioSrc = clip.audio_url.startsWith('http')
+            ? clip.audio_url
+            : `${SERVER_URL}${clip.audio_url.startsWith('/') ? '' : '/'}${clip.audio_url}`;
+        }
+        if (audioSrc) {
+          audioRef.current.src = audioSrc;
+          audioRef.current.play().catch(e => {
+            console.log('Audio playback fallback to video element', e);
+            if (videoRef.current) {
+              videoRef.current.currentTime = clip.start_time;
+              videoRef.current.play();
+            }
+          });
+          setPlayingAudioIdx(idx);
+        } else if (videoRef.current) {
+          videoRef.current.currentTime = clip.start_time;
+          videoRef.current.play();
+          setPlayingAudioIdx(idx);
+        }
+      }
+    }
+  };
+
+  const handleRenderSingleShort = async (clip, idx) => {
+    try {
+      setRenderingClipId(idx);
+      const res = await fetch(`${API_BASE}/videos/${video.id}/clips`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: clip.title || `Short #${idx + 1}`,
+          start_time: clip.start_time,
+          end_time: clip.end_time,
+          edit_options: {
+            translate_language: translateLanguage,
+            dub_voice: dubVoice,
+            caption_language: captionLanguage,
+            dub_mix_mode: dubMixMode,
+            framing_mode: framingMode,
+            caption_style: captionStyle,
+            subtitles: getSubtitles()
+          }
+        }),
+      });
+      if (res.ok) {
+        const newClips = await fetch(`${API_BASE}/videos/${video.id}/clips`).then(r => r.json());
+        setClips(newClips);
+      }
+    } catch (err) {
+      console.error('Error rendering short:', err);
+    } finally {
+      setRenderingClipId(null);
+    }
+  };
+
+  const formatAudioTime = (secs) => {
+    if (isNaN(secs) || secs == null) return '0:00';
+    const m = Math.floor(secs / 60);
+    const s = Math.floor(secs % 60);
+    return `${m}:${s < 10 ? '0' : ''}${s}`;
+  };
 
   /* Translation effect */
   useEffect(() => {
@@ -277,8 +377,20 @@ export default function VideoProcessingPage() {
               <RefreshCw size={16} color="var(--status-run-text)" />
             </motion.div>
           )}
-          <button className="btn-primary" onClick={() => navigate(`/master-generator/${video.id}`)} style={{ gap: '0.4rem', padding: '0.5rem 1rem', fontSize: '0.82rem' }}>
-            <Zap size={14} /> AI Shorts
+          <button 
+            className="btn-primary" 
+            onClick={async () => {
+              try {
+                await fetch(`${API_BASE}/videos/${video.id}/extract-highlights`, { method: 'POST' });
+                const all = await api.getVideos();
+                const u = all.find(v => v.id === video.id);
+                if (u) setVideo(u);
+              } catch (e) { console.error(e); }
+            }} 
+            style={{ gap: '0.4rem', padding: '0.5rem 1rem', fontSize: '0.82rem' }}
+            title="Re-run AI to find fresh Top 5 viral moments with original audio"
+          >
+            <Sparkles size={14} /> Re-Analyze Top 5
           </button>
         </div>
       </nav>
@@ -442,71 +554,272 @@ export default function VideoProcessingPage() {
             </div>
           )}
 
-          {/* Highlight candidates */}
-          {video.highlights?.clips && (
-            <div>
-              <div className="section-heading" style={{ marginBottom: '1rem' }}>
-                <Scissors size={17} color="var(--status-run-text)" />
-                Top Highlight Candidates
+          {/* Top 5 Highlights with Original Audio Previews & Single Short Selection */}
+          {(video.highlight_status === 'processing' || video.status === 'processing' || video.transcription_status === 'processing') && (
+            <div className="glass-panel" style={{ padding: '1.5rem', border: '1px solid var(--indigo-200)', background: 'linear-gradient(135deg, rgba(238,242,255,0.85), rgba(245,243,255,0.95))', borderRadius: 'var(--radius-lg)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.85rem' }}>
+                <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 2, ease: 'linear' }}>
+                  <RefreshCw size={24} color="var(--indigo-600)" />
+                </motion.div>
+                <div>
+                  <h4 style={{ margin: 0, fontSize: '0.98rem', color: 'var(--text-heading)', fontWeight: 800 }}>
+                    Analyzing Speech & Extracting Top 5 Moments…
+                  </h4>
+                  <p style={{ margin: '0.25rem 0 0', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                    Transcribing with Groq Whisper & detecting viral hooks with original audio previews. Ready in ~5 seconds!
+                  </p>
+                </div>
               </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                {video.highlights.clips.map((clip, idx) => (
-                  <div key={idx} className="glass-panel" style={{ padding: '1.1rem 1.25rem' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.4rem' }}>
-                      <h4 style={{ margin: 0, fontSize: '0.92rem', color: 'var(--text-heading)' }}>{idx + 1}. {clip.title}</h4>
-                      <div style={{ display: 'flex', gap: '0.6rem', fontSize: '0.78rem', color: 'var(--text-muted)', flexShrink: 0 }}>
-                        <span style={{ background: 'var(--status-run-bg)', color: 'var(--status-run-text)', border: '1px solid var(--status-run-border)', borderRadius: 'var(--radius-full)', padding: '2px 8px', fontWeight: 700 }}>🔥 {clip.viral_score}/100</span>
-                        <span style={{ background: 'var(--gold-50)', color: 'var(--gold-600)', border: '1px solid #fde68a', borderRadius: 'var(--radius-full)', padding: '2px 8px', fontWeight: 700 }}>⭐ {clip.importance_score}/100</span>
+            </div>
+          )}
+
+          {video.highlights?.clips && video.highlights.clips.length > 0 && (
+            <div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+                <div>
+                  <div className="section-heading" style={{ marginBottom: '0.2rem', fontSize: '1.05rem', color: 'var(--text-heading)' }}>
+                    <Sparkles size={18} color="var(--indigo-600)" />
+                    Top 5 Moments (Original Audio)
+                  </div>
+                  <p style={{ margin: 0, fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                    Listen to the crystal-clear original audio preview below. Select your favorite moment to generate 1 viral short safely.
+                  </p>
+                </div>
+                <span style={{ fontSize: '0.72rem', fontWeight: 700, padding: '3px 9px', borderRadius: 'var(--radius-full)', background: 'var(--status-done-bg)', color: 'var(--status-done-text)', border: '1px solid var(--status-done-border)' }}>
+                  {video.highlights.clips.length} Curated Moments
+                </span>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.9rem' }}>
+                {video.highlights.clips.map((clip, idx) => {
+                  const isSelected = selectedClipIdx === idx;
+                  const isPlaying = playingAudioIdx === idx;
+                  const isRendering = renderingClipId === idx;
+                  const clipDuration = clip.duration || (clip.end_time - clip.start_time);
+
+                  return (
+                    <div
+                      key={clip.id || idx}
+                      className="glass-panel"
+                      style={{
+                        padding: '1.25rem',
+                        border: isSelected ? '2px solid var(--indigo-600)' : '1px solid var(--border-subtle)',
+                        boxShadow: isSelected ? '0 6px 20px rgba(79,70,229,0.12)' : 'var(--shadow-sm)',
+                        background: isSelected ? 'rgba(238,242,255,0.3)' : 'var(--bg-surface)',
+                        transition: 'all 0.2s ease',
+                        borderRadius: 'var(--radius-lg)'
+                      }}
+                    >
+                      {/* Top row: Title, Viral score, Select radio */}
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.5rem', gap: '0.75rem' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
+                          <button
+                            onClick={() => setSelectedClipIdx(idx)}
+                            style={{
+                              width: 22, height: 22, borderRadius: '50%', border: `2px solid ${isSelected ? 'var(--indigo-600)' : 'var(--border-medium)'}`,
+                              background: isSelected ? 'var(--indigo-600)' : 'transparent',
+                              display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', padding: 0, flexShrink: 0
+                            }}
+                            title={isSelected ? 'Selected Moment' : 'Select this moment'}
+                          >
+                            {isSelected && <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#fff' }} />}
+                          </button>
+                          <h4 style={{ margin: 0, fontSize: '0.96rem', fontWeight: 800, color: 'var(--text-heading)' }}>
+                            #{idx + 1}. {clip.title}
+                          </h4>
+                        </div>
+
+                        <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexShrink: 0 }}>
+                          <span style={{ background: 'var(--status-run-bg)', color: 'var(--status-run-text)', border: '1px solid var(--status-run-border)', borderRadius: 'var(--radius-full)', padding: '2px 8px', fontSize: '0.75rem', fontWeight: 800 }}>
+                            🔥 {clip.viral_score}/100
+                          </span>
+                          <span style={{ background: 'var(--bg-inset)', color: 'var(--text-muted)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-full)', padding: '2px 8px', fontSize: '0.75rem', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                            <Clock size={11} /> {clipDuration.toFixed(1)}s
+                          </span>
+                        </div>
                       </div>
-                    </div>
-                    <p style={{ margin: '0 0 0.5rem', fontSize: '0.82rem', color: 'var(--text-muted)' }}>{clip.reason}</p>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span style={{ fontSize: '0.75rem', color: 'var(--text-faint)', background: 'var(--bg-inset)', padding: '2px 8px', borderRadius: 'var(--radius-full)' }}>
-                        {clip.start_time}s – {clip.end_time}s
-                      </span>
-                      <div style={{ display: 'flex', gap: '0.5rem' }}>
-                        <button className="btn-secondary" style={{ padding: '0.3rem 0.8rem', fontSize: '0.76rem', gap: '0.3rem' }}
-                          onClick={() => { if (videoRef.current) { videoRef.current.currentTime = clip.start_time; videoRef.current.play(); } }}>
-                          <PlayCircle size={12} /> Preview
-                        </button>
+
+                      {/* Reason / Hook */}
+                      <p style={{ margin: '0 0 0.85rem', fontSize: '0.82rem', color: 'var(--text-muted)', lineHeight: 1.5, paddingLeft: '2rem' }}>
+                        {clip.reason}
+                      </p>
+
+                      {/* PERFECT ORIGINAL AUDIO PLAYER BAR */}
+                      <div style={{
+                        display: 'flex', alignItems: 'center', gap: '0.75rem',
+                        background: isPlaying ? 'rgba(79,70,229,0.08)' : 'var(--bg-inset)',
+                        border: `1px solid ${isPlaying ? 'var(--indigo-300)' : 'var(--border-subtle)'}`,
+                        padding: '0.65rem 0.9rem', borderRadius: 'var(--radius-md)', marginBottom: '0.85rem'
+                      }}>
+                        {/* Play/Pause Button */}
                         <button
+                          onClick={() => togglePlayAudio(idx, clip)}
                           style={{
-                            padding: '0.3rem 0.8rem', fontSize: '0.76rem', display: 'flex', alignItems: 'center', gap: '0.3rem', fontWeight: 700, borderRadius: 'var(--radius-md)',
-                            cursor: (framingMode === 'smart_crop' && video.crop_status !== 'completed') ? 'not-allowed' : 'pointer',
-                            background: (framingMode === 'smart_crop' && video.crop_status !== 'completed') ? 'var(--bg-inset)' : 'var(--accent-dark)',
-                            color: (framingMode === 'smart_crop' && video.crop_status !== 'completed') ? 'var(--text-faint)' : '#fff',
-                            border: 'none', transition: 'all 0.2s'
+                            width: 34, height: 34, borderRadius: '50%',
+                            background: isPlaying ? 'var(--indigo-600)' : 'var(--accent-dark)',
+                            color: '#fff', border: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            cursor: 'pointer', flexShrink: 0, transition: 'all 0.2s',
+                            boxShadow: isPlaying ? '0 0 12px rgba(79,70,229,0.45)' : 'none'
                           }}
-                          disabled={framingMode === 'smart_crop' && video.crop_status !== 'completed'}
-                          title={framingMode === 'smart_crop' && video.crop_status !== 'completed' ? 'Generate Smart Crop first' : ''}
-                          onClick={async () => {
-                            try {
-                              await fetch(`${API_BASE}/videos/${video.id}/clips`, {
-                                method: 'POST', headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({
-                                  title: clip.title,
-                                  start_time: clip.start_time,
-                                  end_time: clip.end_time,
-                                  edit_options: {
-                                    translate_language: translateLanguage,
-                                    dub_voice: dubVoice,
-                                    caption_language: captionLanguage,
-                                    dub_mix_mode: dubMixMode,
-                                    framing_mode: framingMode,
-                                    subtitles: getSubtitles()
-                                  }
-                                }),
-                              });
-                            } catch (e) { console.error(e); }
+                          title={isPlaying ? 'Pause original audio' : 'Listen to original audio preview'}
+                        >
+                          {isPlaying ? <Pause size={15} /> : <Play size={15} style={{ marginLeft: 2 }} />}
+                        </button>
+
+                        {/* Audio Info & Wave Indicator */}
+                        <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.75rem' }}>
+                            <span style={{ fontWeight: 700, color: isPlaying ? 'var(--indigo-600)' : 'var(--text-heading)', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                              <Volume2 size={13} color={isPlaying ? 'var(--indigo-600)' : 'var(--text-muted)'} />
+                              Original Audio Clip
+                              {isPlaying && (
+                                <span style={{ fontSize: '0.68rem', color: 'var(--indigo-600)', fontStyle: 'italic', fontWeight: 600 }}>
+                                  (Playing…)
+                                </span>
+                              )}
+                            </span>
+                            <span style={{ fontSize: '0.72rem', color: 'var(--text-faint)', fontVariantNumeric: 'tabular-nums' }}>
+                              {isPlaying ? formatAudioTime(audioCurrentTime) : '0:00'} / {formatAudioTime(clipDuration)}
+                            </span>
+                          </div>
+
+                          {/* Progress bar */}
+                          <div
+                            style={{
+                              height: 4, width: '100%', background: 'var(--border-medium)', borderRadius: 2,
+                              overflow: 'hidden', cursor: 'pointer', position: 'relative'
+                            }}
+                            onClick={(e) => {
+                              if (isPlaying && audioRef.current && audioDuration > 0) {
+                                const rect = e.currentTarget.getBoundingClientRect();
+                                const clickX = e.clientX - rect.left;
+                                const pct = clickX / rect.width;
+                                audioRef.current.currentTime = pct * audioDuration;
+                              }
+                            }}
+                          >
+                            <div
+                              style={{
+                                height: '100%',
+                                width: isPlaying && audioDuration > 0 ? `${(audioCurrentTime / audioDuration) * 100}%` : '0%',
+                                background: 'var(--indigo-600)',
+                                borderRadius: 2,
+                                transition: 'width 0.1s linear'
+                              }}
+                            />
+                          </div>
+                        </div>
+
+                        {/* Time Window chip */}
+                        <span style={{ fontSize: '0.7rem', color: 'var(--text-faint)', background: '#fff', border: '1px solid var(--border-subtle)', padding: '2px 7px', borderRadius: 'var(--radius-sm)', whiteSpace: 'nowrap' }}>
+                          {clip.start_time}s – {clip.end_time}s
+                        </span>
+                      </div>
+
+                      {/* Action Row: Selection & 1-Video Render Button */}
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: '0.2rem' }}>
+                        <button
+                          onClick={() => setSelectedClipIdx(idx)}
+                          style={{
+                            background: 'none', border: 'none', padding: 0,
+                            fontSize: '0.8rem', fontWeight: 700,
+                            color: isSelected ? 'var(--indigo-600)' : 'var(--text-muted)',
+                            cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.4rem'
                           }}
                         >
-                          <Film size={12} /> Render Clip
+                          {isSelected ? (
+                            <>
+                              <CheckCircle2 size={15} color="var(--indigo-600)" />
+                              <span style={{ color: 'var(--indigo-600)' }}>Selected for 1-Short Render</span>
+                            </>
+                          ) : (
+                            <span>Click to Select this moment</span>
+                          )}
+                        </button>
+
+                        <button
+                          onClick={() => handleRenderSingleShort(clip, idx)}
+                          disabled={isRendering || (framingMode === 'smart_crop' && video.crop_status !== 'completed')}
+                          style={{
+                            padding: '0.5rem 1.1rem',
+                            fontSize: '0.82rem',
+                            fontWeight: 800,
+                            borderRadius: 'var(--radius-md)',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '0.45rem',
+                            cursor: isRendering ? 'wait' : 'pointer',
+                            background: isSelected ? 'linear-gradient(135deg, var(--indigo-600), #4338ca)' : 'var(--accent-dark)',
+                            color: '#fff',
+                            border: 'none',
+                            boxShadow: isSelected ? '0 4px 12px rgba(79,70,229,0.3)' : 'none',
+                            transition: 'all 0.2s ease',
+                            opacity: isRendering ? 0.7 : 1
+                          }}
+                          title="Renders ONLY this single short (Safe ~180MB RAM, finishes in ~15-20s)"
+                        >
+                          {isRendering ? (
+                            <>
+                              <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 1, ease: 'linear' }}>
+                                <RefreshCw size={13} />
+                              </motion.div>
+                              Rendering Short…
+                            </>
+                          ) : (
+                            <>
+                              <Film size={14} />
+                              Generate This Short (1 Video)
+                            </>
+                          )}
                         </button>
                       </div>
+
+                      {/* If selected: inline quick styling options for this short */}
+                      {isSelected && (
+                        <motion.div
+                          initial={{ opacity: 0, height: 0 }}
+                          animate={{ opacity: 1, height: 'auto' }}
+                          style={{ marginTop: '0.85rem', paddingTop: '0.75rem', borderTop: '1px dashed var(--border-subtle)', display: 'flex', flexWrap: 'wrap', gap: '1rem', alignItems: 'center' }}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.75rem' }}>
+                            <span style={{ color: 'var(--text-muted)', fontWeight: 600 }}>Framing:</span>
+                            <select
+                              value={framingMode}
+                              onChange={e => setFramingMode(e.target.value)}
+                              style={{ fontSize: '0.75rem', padding: '0.2rem 0.5rem', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-medium)', background: '#fff', fontWeight: 600 }}
+                            >
+                              <option value="fit_blur">🖼️ Fit (Ambient Blur) - Recommended</option>
+                              <option value="fit_black">⬛ Fit (Black Letterbox)</option>
+                              <option value="smart_crop">🔍 Smart Crop (9:16)</option>
+                            </select>
+                          </div>
+
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.75rem' }}>
+                            <span style={{ color: 'var(--text-muted)', fontWeight: 600 }}>Captions:</span>
+                            <select
+                              value={captionStyle}
+                              onChange={e => setCaptionStyle(e.target.value)}
+                              style={{ fontSize: '0.75rem', padding: '0.2rem 0.5rem', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-medium)', background: '#fff', fontWeight: 600 }}
+                            >
+                              <option value="viral_pop">🔥 Viral Pop (Bold Animated)</option>
+                              <option value="karaoke">🎤 Karaoke Highlight</option>
+                              <option value="clean">✨ Clean Minimal</option>
+                              <option value="none">🚫 No Captions</option>
+                            </select>
+                          </div>
+
+                          <span style={{ fontSize: '0.7rem', color: 'var(--status-done-text)', fontWeight: 700, marginLeft: 'auto' }}>
+                            ⚡ Safe 512MB RAM Mode: 1 Short at a time (~180MB RAM)
+                          </span>
+                        </motion.div>
+                      )}
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
+
+              {/* Hidden Audio element for crystal clear preview */}
+              <audio ref={audioRef} preload="auto" />
             </div>
           )}
 

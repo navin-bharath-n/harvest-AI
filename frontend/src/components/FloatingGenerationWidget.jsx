@@ -31,7 +31,7 @@ export default function FloatingGenerationWidget() {
   };
 
   const handleNavigate = (videoId) => {
-    navigate(`/master-generator/${videoId}`);
+    navigate(`/video/${videoId}`);
   };
 
   return (
@@ -81,7 +81,7 @@ export default function FloatingGenerationWidget() {
       <AnimatePresence>
         {/* Active Generation Cards */}
         {activeTasks.map(task => {
-          const isCurrentPage = location.pathname === `/master-generator/${task.videoId}`;
+          const isCurrentPage = location.pathname === `/video/${task.videoId}`;
           const progressPercent = Math.max(10, Math.min(95, ((task.variationsReady || 0) / (task.variationsTotal || 5)) * 100));
 
           return (

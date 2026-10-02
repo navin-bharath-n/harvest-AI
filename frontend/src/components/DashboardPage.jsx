@@ -235,7 +235,7 @@ export default function DashboardPage() {
 
                     <button
                       className="btn-indigo"
-                      onClick={() => navigate(`/master-generator/${video.id}`)}
+                      onClick={() => navigate(`/video/${video.id}`)}
                       style={{ width: '100%', marginTop: 'auto', justifyContent: 'center', gap: '0.4rem', fontSize: '0.85rem', padding: '0.6rem' }}
                     >
                       <Zap size={15} />

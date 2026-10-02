@@ -113,9 +113,9 @@ export default function ProjectDetailPage() {
       const responses = await Promise.all(uploadPromises);
       await loadData();
 
-      // Navigate to the Master Generator page to review/make any changes (prompt, dub voice, audio theme, duration)
+      // Navigate to the Video Studio to listen to top 5 audio highlights and render selected short
       if (responses.length > 0 && responses[0] && responses[0].id) {
-        navigate(`/master-generator/${responses[0].id}`);
+        navigate(`/video/${responses[0].id}`);
       }
     } catch (err) {
       console.error('Upload failed', err);
@@ -341,7 +341,7 @@ export default function ProjectDetailPage() {
 
                         <button
                           className={isTaskGenerating ? "btn-secondary" : "btn-primary"}
-                          onClick={() => navigate(`/master-generator/${video.id}`)}
+                          onClick={() => navigate(`/video/${video.id}`)}
                           style={{ padding: '0.5rem 0.95rem', fontSize: '0.82rem', gap: '0.35rem' }}
                         >
                           {isTaskGenerating ? (

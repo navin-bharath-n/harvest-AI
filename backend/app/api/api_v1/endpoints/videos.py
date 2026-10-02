@@ -126,7 +126,7 @@ async def upload_video(
     except Exception as e:
         logger.warning(f"Fast ffprobe metadata probe on upload: {e}")
 
-    # Create DB record in COMPLETED (ready to generate) state
+    # Create DB record in PROCESSING state and auto-start low-memory top 5 highlight extraction
     db_video = models.Video(
         original_filename=file.filename,
         storage_path=file_path,
@@ -134,11 +134,17 @@ async def upload_video(
         duration=duration,
         resolution=resolution,
         fps=fps,
-        status=models.VideoStatus.COMPLETED
+        status=models.VideoStatus.PROCESSING,
+        transcription_status=models.TranscriptionStatus.PROCESSING,
+        analysis_status=models.ContentAnalysisStatus.PENDING,
+        highlight_status=models.HighlightDetectionStatus.PENDING
     )
     db.add(db_video)
     db.commit()
     db.refresh(db_video)
+
+    from app.tasks.video_tasks import extract_top5_highlights_task
+    dispatch_task(extract_top5_highlights_task, db_video.id)
 
     return db_video
 
@@ -210,6 +216,24 @@ def detect_highlights(video_id: int, db: Session = Depends(get_db)):
 
     from app.tasks.video_tasks import detect_highlights_task
     dispatch_task(detect_highlights_task, db_video.id)
+
+    return db_video
+
+@router.post("/{video_id}/extract-highlights", response_model=schemas.Video)
+def trigger_extract_highlights(video_id: int, db: Session = Depends(get_db)):
+    db_video = db.query(models.Video).filter(models.Video.id == video_id).first()
+    if not db_video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    db_video.status = models.VideoStatus.PROCESSING
+    db_video.transcription_status = models.TranscriptionStatus.PENDING
+    db_video.analysis_status = models.ContentAnalysisStatus.PENDING
+    db_video.highlight_status = models.HighlightDetectionStatus.PENDING
+    db.commit()
+    db.refresh(db_video)
+
+    from app.tasks.video_tasks import extract_top5_highlights_task
+    dispatch_task(extract_top5_highlights_task, db_video.id)
 
     return db_video
 

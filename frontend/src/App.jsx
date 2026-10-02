@@ -4,7 +4,6 @@ import LandingPage from './components/LandingPage';
 import DashboardPage from './components/DashboardPage';
 import ProjectDetailPage from './components/ProjectDetailPage';
 import VideoProcessingPage from './components/VideoProcessingPage';
-import MasterGeneratorPage from './components/MasterGeneratorPage';
 import { GenerationProvider } from './context/GenerationContext';
 import FloatingGenerationWidget from './components/FloatingGenerationWidget';
 import './index.css';
@@ -18,7 +17,7 @@ function App() {
           <Route path="/dashboard" element={<DashboardPage />} />
           <Route path="/project/:projectId" element={<ProjectDetailPage />} />
           <Route path="/video/:videoId" element={<VideoProcessingPage />} />
-          <Route path="/master-generator/:videoId" element={<MasterGeneratorPage />} />
+          <Route path="/master-generator/:videoId" element={<VideoProcessingPage />} />
         </Routes>
         <FloatingGenerationWidget />
       </GenerationProvider>
