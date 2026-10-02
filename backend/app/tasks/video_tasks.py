@@ -531,10 +531,8 @@ def render_clip_task(clip_id: int):
         output_filename = f"clip_{uuid.uuid4().hex[:8]}.mp4"
         output_path = os.path.join(clips_dir, output_filename)
 
-        # Compute path relative to the app dir so the frontend can serve it via /uploads/
-        # _BACKEND_DIR is defined at module level as the backend/ directory
-        _app_dir = str(_BACKEND_DIR / "app")
-        relative_path = os.path.relpath(output_path, _app_dir).replace("\\", "/")
+        # Compute path relative to backend/ directory so it yields "uploads/clips/..."
+        relative_path = os.path.relpath(output_path, str(_BACKEND_DIR)).replace("\\", "/")
 
         # Determine edit options
         edit_options = clip.edit_options or {}
@@ -954,7 +952,7 @@ def generate_master_shorts_task(
             final_path = os.path.join(clips_dir, output_filename)
             shutil.copy2(src_path, final_path)
 
-            rel_path = os.path.relpath(final_path, _app_dir).replace("\\", "/")
+            rel_path = os.path.relpath(final_path, str(_BACKEND_DIR)).replace("\\", "/")
 
             db_clip = models.Clip(
                 video_id=video_id,
