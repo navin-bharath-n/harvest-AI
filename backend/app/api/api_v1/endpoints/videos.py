@@ -166,7 +166,7 @@ async def upload_video(
     # Create DB record in COMPLETED upload state with pending analysis
     db_video = models.Video(
         original_filename=file.filename,
-        storage_path=file_path,
+        storage_path=f"uploads/{unique_filename}",
         project_id=project_id,
         duration=duration,
         resolution=resolution,

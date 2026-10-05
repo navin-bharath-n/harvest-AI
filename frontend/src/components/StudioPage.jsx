@@ -26,6 +26,11 @@ export default function StudioPage() {
   const [selectedVideo, setSelectedVideo] = useState(null);
   const [clips, setClips] = useState([]);
   const [selectedClip, setSelectedClip] = useState(null);
+  const [clipPlaybackError, setClipPlaybackError] = useState(false);
+
+  useEffect(() => {
+    setClipPlaybackError(false);
+  }, [selectedClip]);
 
   // Upload State
   const [isUploading, setIsUploading] = useState(false);
@@ -1239,9 +1244,26 @@ export default function StudioPage() {
                           key={selectedClip.storage_path}
                           src={formatVideoUrl(selectedClip.storage_path)}
                           controls
+                          onError={() => setClipPlaybackError(true)}
                           style={{ width: '100%', height: '100%', objectFit: 'contain' }}
                         />
                       </div>
+
+                      {clipPlaybackError && (
+                        <div
+                          style={{
+                            padding: '0.85rem 1rem',
+                            backgroundColor: '#fffdf5',
+                            border: '1px solid #e8dfc8',
+                            borderRadius: '6px',
+                            fontSize: '0.8rem',
+                            color: '#73571d',
+                            lineHeight: 1.5,
+                          }}
+                        >
+                          <strong>Media not found on this server (HTTP 404):</strong> This clip file exists on the machine where it was originally processed, or was cleared after an ephemeral cloud container restart. Click <em>Generate 5 Master Variations</em> below to re-render it directly on this server.
+                        </div>
+                      )}
 
                       {/* Download */}
                       <a

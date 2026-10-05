@@ -10,6 +10,25 @@ logger = logging.getLogger(__name__)
 # Absolute path to the backend directory — anchors all relative upload paths
 _BACKEND_DIR = Path(__file__).resolve().parent.parent.parent  # backend/
 
+def _resolve_video_path(storage_path: str) -> str:
+    """Robust cross-platform path resolver for local Windows and cloud Linux (Docker/Render)."""
+    if not storage_path:
+        return ""
+    if os.path.exists(storage_path):
+        return os.path.abspath(storage_path)
+    normalized = storage_path.replace("\\", "/").lstrip("/")
+    candidate_rel = os.path.join(str(_BACKEND_DIR), normalized)
+    if os.path.exists(candidate_rel):
+        return os.path.abspath(candidate_rel)
+    fname = os.path.basename(storage_path)
+    candidate_uploads = os.path.join(str(_BACKEND_DIR), "uploads", fname)
+    if os.path.exists(candidate_uploads):
+        return os.path.abspath(candidate_uploads)
+    candidate_clips = os.path.join(str(_BACKEND_DIR), "uploads", "clips", fname)
+    if os.path.exists(candidate_clips):
+        return os.path.abspath(candidate_clips)
+    return candidate_rel
+
 @celery_app.task(ignore_result=True)
 def process_video_task(video_id: int):
     logger.info(f"Starting to process video {video_id}")
@@ -25,10 +44,7 @@ def process_video_task(video_id: int):
         db.commit()
 
         # Resolve video path to an absolute path anchored to the backend directory
-        if os.path.isabs(video.storage_path):
-            video_path = video.storage_path
-        else:
-            video_path = str(_BACKEND_DIR / video.storage_path)
+        video_path = _resolve_video_path(video.storage_path)
 
         if not os.path.exists(video_path):
             logger.error(f"Video file not found at {video_path}")
@@ -279,10 +295,7 @@ def extract_top5_highlights_task(video_id: int):
         db.commit()
 
         # 1. Resolve video path
-        if os.path.isabs(video.storage_path):
-            video_path = video.storage_path
-        else:
-            video_path = str(_BACKEND_DIR / video.storage_path)
+        video_path = _resolve_video_path(video.storage_path)
 
         if not os.path.exists(video_path):
             logger.error(f"Video file not found at {video_path}")
@@ -447,10 +460,7 @@ def generate_smart_crop_task(video_id: int, target_fps: int = 1):
         db.commit()
 
         # Resolve video path to absolute, anchored to backend dir
-        if os.path.isabs(video.storage_path):
-            video_path = video.storage_path
-        else:
-            video_path = str(_BACKEND_DIR / video.storage_path)
+        video_path = _resolve_video_path(video.storage_path)
 
         if not os.path.exists(video_path):
             logger.error(f"Video file not found at {video_path}")
@@ -496,10 +506,7 @@ def render_clip_task(clip_id: int):
 
         import os
         import uuid
-        if os.path.isabs(video.storage_path):
-            video_path = video.storage_path
-        else:
-            video_path = str(_BACKEND_DIR / video.storage_path)
+        video_path = _resolve_video_path(video.storage_path)
 
         # Determine edit options early so we know if crop is even needed
         edit_options = clip.edit_options or {}
@@ -905,13 +912,8 @@ def generate_master_shorts_task(
         import uuid
         from app.services.master_agent import master_agent
 
-        # Build absolute video path — storage_path may be relative like "uploads/uuid.mp4"
-        # Anchor it to the backend/app directory where uploads are stored
-        _app_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-        if os.path.isabs(video.storage_path):
-            video_path = video.storage_path
-        else:
-            video_path = os.path.join(_app_dir, video.storage_path)
+        # Build absolute video path with cross-platform fallback
+        video_path = _resolve_video_path(video.storage_path)
 
         if not os.path.exists(video_path):
             logger.error(f"Video file not found at {video_path}")
@@ -926,7 +928,7 @@ def generate_master_shorts_task(
         ).all()
         for old_clip in old_variations:
             if old_clip.storage_path:
-                old_file = os.path.join(_app_dir, old_clip.storage_path)
+                old_file = _resolve_video_path(old_clip.storage_path)
                 if os.path.exists(old_file):
                     try:
                         os.remove(old_file)
