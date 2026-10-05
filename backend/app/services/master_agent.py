@@ -350,20 +350,28 @@ class MasterAIAgent:
 
         logger.info(f"Candidate highlight windows: {candidate_windows}")
 
-        # 4. Smart Cropping Trajectory
-        if progress_callback:
-            progress_callback("cropping")
-        logger.info("Calculating crop trajectory...")
-        try:
-            crop_data = smart_cropping_service.generate_crop_metadata(video_path)
-            full_trajectory = crop_data.get("trajectory", [])
+        # 4. Smart Cropping Trajectory (only if crop framing mode is requested)
+        needs_crop = framing_mode in ["crop", "smart_crop", "fill"]
+        full_trajectory = []
+        if needs_crop:
+            if progress_callback:
+                progress_callback("cropping")
+            logger.info("Calculating crop trajectory for smart crop mode...")
+            try:
+                crop_data = smart_cropping_service.generate_crop_metadata(video_path, target_fps=1)
+                full_trajectory = crop_data.get("trajectory", [])
+                if db_video is not None:
+                    from app.models.video import CropStatus
+                    db_video.crop_metadata = crop_data
+                    db_video.crop_status = CropStatus.COMPLETED
+            except Exception as e:
+                logger.warning(f"Smart cropping failed (using static center crop): {e}")
+                full_trajectory = []
+        else:
+            logger.info(f"Framing mode is '{framing_mode}' - skipping heavy crop trajectory calculation.")
             if db_video is not None:
                 from app.models.video import CropStatus
-                db_video.crop_metadata = crop_data
                 db_video.crop_status = CropStatus.COMPLETED
-        except Exception as e:
-            logger.warning(f"Smart cropping failed (using static center crop): {e}")
-            full_trajectory = []
 
         # Analyze topic for content-matched songs / BGM
         video_topic = analysis.get("topic", "")

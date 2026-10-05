@@ -26,6 +26,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from app.core.database import engine, Base
 from app.api.api_v1.api import api_router
 from app.core.config import settings
@@ -388,6 +389,7 @@ else:
     )
 
 app.add_middleware(CORSMiddleware, **_cors_kwargs)
+app.add_middleware(GZipMiddleware, minimum_size=500)
 
 # Absolute uploads directory (backend/uploads/ - parent of app/)
 _UPLOADS_DIR = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "uploads"))
@@ -399,8 +401,15 @@ _BACKEND_DIR_MAIN = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath
 _ERROR_LOG_PATH = os.path.join(_BACKEND_DIR_MAIN, "error.log")
 
 @app.middleware("http")
-async def disable_cache_control_middleware(request: Request, call_next):
+async def security_and_cache_middleware(request: Request, call_next):
     response = await call_next(request)
+    # Security Headers (Defense in depth)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "SAMEORIGIN"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(), payment=()"
+    
     if request.url.path.startswith("/api"):
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate, max-age=0"
         response.headers["Pragma"] = "no-cache"
@@ -420,9 +429,11 @@ async def catch_exceptions_middleware(request: Request, call_next):
                 f.write("\n\n")
         except Exception:
             pass
+        
+        # In production, never leak raw exception messages or internal file paths to clients
         return JSONResponse(
             status_code=500,
-            content={"detail": f"Internal server error: {str(exc)}"},
+            content={"detail": "An unexpected server error occurred. Please try again later."},
         )
 
 app.include_router(api_router, prefix=settings.API_V1_STR)

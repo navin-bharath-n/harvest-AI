@@ -7,15 +7,15 @@ class SocialConnectionBase(BaseModel):
     account_name: Optional[str] = None
     account_handle: Optional[str] = None
     account_avatar: Optional[str] = None
-    credentials: Optional[Dict[str, Any]] = None
 
 class SocialConnectionCreate(SocialConnectionBase):
-    pass
+    credentials: Optional[Dict[str, Any]] = None
 
 class SocialConnection(SocialConnectionBase):
     id: int
     user_id: int
     created_at: datetime
+    is_connected: bool = True
 
     class Config:
         from_attributes = True

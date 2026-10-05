@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
 from typing import List, Optional
@@ -6,13 +6,23 @@ import json as _json
 import logging
 from app.core.database import get_db
 from app import models, schemas
+from app.core import security
+from app.api.deps import get_current_user
+from app.core.rate_limiter import login_limiter, registration_limiter
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-from app.core import security
-from app.api.deps import get_current_user
+# Pre-computed dummy hash to prevent timing attacks / user enumeration
+_DUMMY_PASSWORD_HASH = security.get_password_hash("harvest_auth_timing_attack_defense_padding_hash_2026")
+
+def _get_client_ip(request: Request) -> str:
+    """Extract client IP respecting X-Forwarded-For when behind trusted reverse proxies."""
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
 
 def _get_frontend_origin() -> str:
     """Returns the configured frontend origin for postMessage targeting."""
@@ -29,15 +39,30 @@ def _get_frontend_origin() -> str:
 @router.post("/register", response_model=schemas.Token)
 def register_user(
     user_in: schemas.UserCreate,
+    request: Request,
     db: Session = Depends(get_db)
 ):
-    existing_user = db.query(models.User).filter(models.User.email == user_in.email).first()
-    if existing_user:
-        raise HTTPException(status_code=400, detail="A user with this email already exists.")
+    client_ip = _get_client_ip(request)
     
+    # 1. Rate-limit registrations per IP (e.g. max 10 per hour)
+    allowed, retry_after = registration_limiter.check_rate_limit(f"reg_ip_{client_ip}", max_requests=10, window_seconds=3600)
+    if not allowed:
+        logger.warning(f"SECURITY AUDIT: Rate limit exceeded for registration from IP {client_ip}")
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many account creation attempts. Please wait {retry_after} seconds before trying again."
+        )
+
+    # 2. Check existing user by normalized email
+    normalized_email = user_in.email.strip().lower()
+    existing_user = db.query(models.User).filter(models.User.email == normalized_email).first()
+    if existing_user:
+        raise HTTPException(status_code=400, detail="An account with this email address already exists.")
+    
+    # 3. Hash password and persist user
     hashed_password = security.get_password_hash(user_in.password)
     db_user = models.User(
-        email=user_in.email,
+        email=normalized_email,
         full_name=user_in.full_name,
         hashed_password=hashed_password,
         is_active=True
@@ -46,6 +71,8 @@ def register_user(
     db.commit()
     db.refresh(db_user)
 
+    logger.info(f"SECURITY AUDIT: User registered successfully (id={db_user.id}, email='{normalized_email}', ip={client_ip})")
+
     access_token = security.create_access_token(subject=db_user.id)
     return schemas.Token(access_token=access_token, token_type="bearer", user=db_user)
 
@@ -53,13 +80,68 @@ def register_user(
 @router.post("/login", response_model=schemas.Token)
 def login_user(
     login_in: schemas.LoginRequest,
+    request: Request,
     db: Session = Depends(get_db)
 ):
-    user = db.query(models.User).filter(models.User.email == login_in.email).first()
-    if not user or not security.verify_password(login_in.password, user.hashed_password):
-        raise HTTPException(status_code=400, detail="Incorrect email or password.")
+    client_ip = _get_client_ip(request)
+    normalized_email = login_in.email.strip().lower()
+    email_key = f"login_email_{normalized_email}"
+    ip_key = f"login_ip_{client_ip}"
+
+    # 1. Check account / IP lockout
+    is_locked_email, remaining_email = login_limiter.is_locked(email_key)
+    if is_locked_email:
+        logger.warning(f"SECURITY AUDIT: Blocked login attempt on locked email '{normalized_email}' from IP {client_ip}")
+        raise HTTPException(
+            status_code=429,
+            detail=f"Account temporarily locked due to multiple failed login attempts. Please wait {remaining_email} seconds before trying again."
+        )
+
+    is_locked_ip, remaining_ip = login_limiter.is_locked(ip_key)
+    if is_locked_ip:
+        logger.warning(f"SECURITY AUDIT: Blocked login attempt from locked IP {client_ip}")
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many failed login attempts from this network. Please wait {remaining_ip} seconds before trying again."
+        )
+
+    # 2. Query user & constant-time password verification (timing attack prevention)
+    user = db.query(models.User).filter(models.User.email == normalized_email).first()
+    if user is None:
+        # Run dummy verification so execution time matches real verification, preventing user enumeration
+        security.verify_password(login_in.password, _DUMMY_PASSWORD_HASH)
+        is_valid = False
+    else:
+        is_valid = security.verify_password(login_in.password, user.hashed_password)
+
+    # 3. Handle verification failure
+    if not is_valid:
+        is_locked, attempts, remaining = login_limiter.record_failed_attempt(email_key, max_attempts=5, window_seconds=900, lockout_seconds=900)
+        login_limiter.record_failed_attempt(ip_key, max_attempts=15, window_seconds=900, lockout_seconds=900)
+
+        logger.warning(f"SECURITY AUDIT: Failed login for '{normalized_email}' from IP {client_ip} (attempt #{attempts})")
+
+        if is_locked:
+            raise HTTPException(
+                status_code=429,
+                detail=f"Too many failed login attempts. Account temporarily locked for {remaining} seconds."
+            )
+        
+        remaining_attempts = max(0, 5 - attempts)
+        msg = "Incorrect email or password."
+        if remaining_attempts <= 2:
+            msg += f" {remaining_attempts} attempt{'s' if remaining_attempts != 1 else ''} remaining before temporary lockout."
+        raise HTTPException(status_code=400, detail=msg)
+
+    # 4. Check active status
     if not user.is_active:
-        raise HTTPException(status_code=400, detail="Inactive user account.")
+        logger.warning(f"SECURITY AUDIT: Inactive user '{normalized_email}' attempted login from IP {client_ip}")
+        raise HTTPException(status_code=403, detail="Your account is deactivated. Please contact support.")
+
+    # 5. Success: clear failed attempts and issue token
+    login_limiter.clear_failed_attempts(email_key)
+    login_limiter.clear_failed_attempts(ip_key)
+    logger.info(f"SECURITY AUDIT: Successful login for user id={user.id} ('{normalized_email}') from IP {client_ip}")
 
     access_token = security.create_access_token(subject=user.id)
     return schemas.Token(access_token=access_token, token_type="bearer", user=user)

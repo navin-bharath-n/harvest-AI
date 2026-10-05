@@ -501,18 +501,23 @@ def render_clip_task(clip_id: int):
         else:
             video_path = str(_BACKEND_DIR / video.storage_path)
 
-        # Check if we have crop trajectory; if not, calculate on the fly
+        # Determine edit options early so we know if crop is even needed
+        edit_options = clip.edit_options or {}
+        framing_mode = (edit_options.get("framing_mode") or "fit_blur").lower()
+        needs_crop = framing_mode in ["crop", "smart_crop", "fill"]
+
+        # Check if we have crop trajectory; calculate on the fly ONLY IF crop mode is requested
         has_crop_trajectory = (
             video.crop_metadata is not None
             and isinstance(video.crop_metadata, dict)
-            and video.crop_metadata.get("trajectory")
+            and bool(video.crop_metadata.get("trajectory"))
         )
 
-        if not has_crop_trajectory:
-            logger.info(f"No crop trajectory found for video {video.id}. Generating on the fly...")
+        if needs_crop and not has_crop_trajectory:
+            logger.info(f"Smart crop mode '{framing_mode}' requested for video {video.id}. Generating trajectory...")
             try:
                 from app.services.smart_cropping_service import smart_cropping_service
-                crop_data = smart_cropping_service.generate_crop_metadata(video_path)
+                crop_data = smart_cropping_service.generate_crop_metadata(video_path, target_fps=1)
                 video.crop_metadata = crop_data
                 video.crop_status = models.CropStatus.COMPLETED
                 db.commit()
@@ -520,6 +525,8 @@ def render_clip_task(clip_id: int):
                 logger.info("Successfully generated crop trajectory on the fly.")
             except Exception as e:
                 logger.warning(f"Failed to generate crop metadata on the fly: {e}")
+        else:
+            logger.info(f"Framing mode is '{framing_mode}'. Skipping heavy crop trajectory calculation.")
 
         clip.status = models.ClipStatus.RENDERING
         db.commit()
@@ -534,8 +541,6 @@ def render_clip_task(clip_id: int):
         # Compute path relative to backend/ directory so it yields "uploads/clips/..."
         relative_path = os.path.relpath(output_path, str(_BACKEND_DIR)).replace("\\", "/")
 
-        # Determine edit options
-        edit_options = clip.edit_options or {}
         prompt = edit_options.get("prompt")
         instructions = {}
 

@@ -1,7 +1,7 @@
 import axios from 'axios';
 
 const SERVER_URL = (import.meta.env.VITE_SERVER_URL || '').replace(/\/$/, '');
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL || (SERVER_URL ? `${SERVER_URL}/api/v1` : 'https://localhost:8000/api/v1');
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL || (SERVER_URL ? `${SERVER_URL}/api/v1` : '/api/v1');
 
 const client = axios.create({
   baseURL: API_BASE_URL,
@@ -95,11 +95,15 @@ export const api = {
     return response.data || [];
   },
 
-  // Create a new project
-  createProject: async (title, description) => {
+  // Create a new project (supports both ({ title, name, description }) and (title, description))
+  createProject: async (titleOrData, maybeDescription) => {
+    const isObj = typeof titleOrData === 'object' && titleOrData !== null;
+    const title = (isObj ? (titleOrData.title || titleOrData.name || '') : (titleOrData || '')).toString().trim();
+    const description = isObj ? titleOrData.description : maybeDescription;
+
     const response = await client.post('/projects/', {
       title,
-      description
+      description: description || undefined
     });
     return response.data;
   },
@@ -109,6 +113,12 @@ export const api = {
     const url = projectId ? `/videos/?project_id=${projectId}` : '/videos/';
     const response = await client.get(url);
     return response.data || [];
+  },
+
+  // Get a single video by ID
+  getVideo: async (videoId) => {
+    const response = await client.get(`/videos/${videoId}`);
+    return response.data;
   },
 
   // Upload a video
@@ -124,6 +134,54 @@ export const api = {
       onUploadProgress
     });
     return response.data;
+  },
+
+  // Trigger 1-Click Master Generation (full AI pipeline: transcribe -> hooks -> crop -> render variations)
+  masterGenerate: async (videoId, config = {}) => {
+    const payload = {
+      length: config.length || 60.0,
+      platform: config.platform || 'youtube',
+      optional_prompt: config.optional_prompt || '',
+      audio_theme: config.audio_theme || 'auto',
+      translate_language: config.translate_language || 'none',
+      dub_voice: config.dub_voice || false,
+      caption_language: config.caption_language || 'translated',
+      dub_mix_mode: config.dub_mix_mode || 'replace',
+      speaker_gender: config.speaker_gender || 'female',
+      framing_mode: config.framing_mode || 'fit_blur',
+    };
+    const response = await client.post(`/videos/${videoId}/master-generate`, payload);
+    return response.data;
+  },
+
+  // Transcribe audio
+  transcribeVideo: async (videoId) => {
+    const response = await client.post(`/videos/${videoId}/transcribe`);
+    return response.data;
+  },
+
+  // Detect viral highlights / hooks
+  detectHighlights: async (videoId) => {
+    const response = await client.post(`/videos/${videoId}/detect-highlights`);
+    return response.data;
+  },
+
+  // Smart crop to 9:16 vertical orientation
+  smartCrop: async (videoId, config = {}) => {
+    const response = await client.post(`/videos/${videoId}/smart-crop`, config);
+    return response.data;
+  },
+
+  // Get all clips for a video
+  getClips: async (videoId) => {
+    const response = await client.get(`/videos/${videoId}/clips`);
+    return response.data || [];
+  },
+
+  // Get master variations
+  getVariations: async (videoId) => {
+    const response = await client.get(`/videos/${videoId}/variations`);
+    return response.data || [];
   },
 
   // Delete a project

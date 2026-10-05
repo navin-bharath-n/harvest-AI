@@ -6,6 +6,10 @@ services:
     dockerfilePath: ./Dockerfile
     plan: starter # Starter plan recommended for FFmpeg; can be switched to 'free'
     region: oregon
+    disk:
+      name: harvest-uploads
+      mountPath: /app/uploads
+      sizeGB: 10
     envVars:
       - key: PORT
         value: 10000

@@ -215,6 +215,16 @@ def read_videos(
     videos = query.offset(skip).limit(limit).all()
     return videos
 
+@router.get("/{video_id}", response_model=schemas.Video)
+def read_single_video(
+    video_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """Retrieve a single video by ID without downloading the entire video collection."""
+    db_video = get_user_video(video_id, current_user.id, db)
+    return db_video
+
 @router.post("/{video_id}/transcribe", response_model=schemas.Video)
 def transcribe_video(
     video_id: int,
@@ -446,6 +456,33 @@ def get_video_status(
     completed_variations = [c for c in variations if c.status and c.status.value == "completed"]
 
     TOTAL_VARIATIONS = 5
+
+    # Check if the source video file physically exists on the server disk
+    video_file_missing = False
+    if db_video.storage_path:
+        actual_path = db_video.storage_path if os.path.isabs(db_video.storage_path) else os.path.join(UPLOAD_DIR, os.path.basename(db_video.storage_path))
+        if not os.path.exists(actual_path):
+            video_file_missing = True
+
+    if video_file_missing and db_video.status and db_video.status.value in ["processing", "pending"]:
+        db_video.status = models.VideoStatus.FAILED
+        db.commit()
+        return {
+            "video_id": video_id,
+            "original_filename": db_video.original_filename or f"Video {video_id}",
+            "stage": "failed",
+            "stage_label": "Source video file is missing on the server disk. Please re-upload.",
+            "video_status": "failed",
+            "transcription_status": "failed",
+            "analysis_status": "failed",
+            "highlight_status": "failed",
+            "crop_status": "failed",
+            "variations_ready": 0,
+            "variations_total": TOTAL_VARIATIONS,
+            "is_done": False,
+            "is_complete": False,
+            "file_missing": True
+        }
 
     # Determine which pipeline stage is active
     stage = "idle"

@@ -1,6 +1,13 @@
 User-agent: *
 Allow: /
+Allow: /privacy
+Allow: /terms
+Allow: /cookies
 Disallow: /api/
 Disallow: /uploads/
+Disallow: /dashboard
+Disallow: /project/
+Disallow: /video/
+Disallow: /master-generator/
 
 Sitemap: https://yourdomain.com/sitemap.xml

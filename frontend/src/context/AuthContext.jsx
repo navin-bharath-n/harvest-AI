@@ -13,7 +13,15 @@ export function AuthProvider({ children }) {
       return null;
     }
   });
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(() => {
+    try {
+      const savedToken = localStorage.getItem('harvest_token');
+      const savedUser = localStorage.getItem('harvest_user');
+      return !(savedToken && savedUser);
+    } catch {
+      return true;
+    }
+  });
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [authModalMode, setAuthModalMode] = useState('login'); // 'login' | 'register'
 

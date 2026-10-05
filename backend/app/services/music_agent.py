@@ -327,21 +327,24 @@ Output ONLY valid JSON:
                 "-c:v", "copy",
                 "-c:a", "aac",
                 "-b:a", "192k",
+                "-shortest",
                 "-movflags", "+faststart",
                 output_path
             ]
 
         try:
-            result = subprocess.run(cmd, capture_output=True)
+            result = subprocess.run(cmd, capture_output=True, timeout=60)
             if result.returncode != 0:
                 raise subprocess.CalledProcessError(result.returncode, cmd, result.stderr)
             logger.info(f"Music applied successfully to {output_path}")
-        except subprocess.CalledProcessError as e:
-            stderr = e.stderr.decode("utf-8", errors="ignore") if e.stderr else ""
-            logger.error(f"FFmpeg music mixing error: {stderr}")
+        except Exception as e:
+            logger.error(f"FFmpeg music mixing error or timeout: {e}")
             # Fallback: copy video cleanly without failing
             logger.warning("Falling back to copy without music.")
-            subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", video_path, "-c", "copy", "-movflags", "+faststart", output_path], capture_output=True)
+            try:
+                subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", video_path, "-c", "copy", "-movflags", "+faststart", output_path], capture_output=True, timeout=30)
+            except Exception:
+                pass
 
 
 music_agent = MusicRecommendationAgent()

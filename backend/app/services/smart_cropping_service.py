@@ -9,9 +9,7 @@ import cv2
 import numpy as np
 import logging
 from collections import deque
-import mediapipe as mp
-from ultralytics import YOLO
-from deep_sort_realtime.deepsort_tracker import DeepSort
+import gc
 
 import warnings
 warnings.filterwarnings("ignore", message=".*weights_only.*", category=FutureWarning)
@@ -19,25 +17,22 @@ warnings.filterwarnings("ignore", message=".*weights_only.*", category=FutureWar
 logger = logging.getLogger(__name__)
 cv2.setNumThreads(1)
 
-# ── MediaPipe Solutions Configuration ──────────────────
-_MP_AVAILABLE = hasattr(mp, "solutions") and hasattr(mp.solutions, "face_mesh")
-if not _MP_AVAILABLE:
-    logger.warning(
-        f"mediapipe {mp.__version__} does not expose mp.solutions.face_mesh. "
-        "Face-based active-speaker detection disabled. Install mediapipe==0.10.14 to re-enable."
-    )
-else:
-    logger.info("MediaPipe face_mesh loaded successfully.")
-
-# ── YOLO + DeepSort Configuration ───────────────────────────────────────────────
-_YOLO_AVAILABLE = True
-logger.info("YOLO + DeepSort loaded successfully.")
-
-
 class SmartCroppingService:
     def __init__(self):
-        # ── GPU / CUDA Device Detection ──────────────────────────────────────
         self.device = "cpu"
+        self.yolo = None
+        self.tracker = None
+        self.mp_face_mesh = None
+        self._models_loaded = False
+        self.mar_history = {}
+        self.mar_window_size = 15
+
+    def _ensure_models(self):
+        """Lazy-loads YOLO, DeepSort, and MediaPipe only when explicitly needed."""
+        if self._models_loaded:
+            return
+
+        self._models_loaded = True
         try:
             import torch
             if torch.cuda.is_available():
@@ -46,33 +41,39 @@ class SmartCroppingService:
         except ImportError:
             pass
 
-        # ── YOLO / DeepSort ──────────────────────────────────────────────────
-        if _YOLO_AVAILABLE:
-            try:
-                # yolo11n.pt lives in the backend/ root directory
-                _backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-                yolo_model_path = os.path.join(_backend_dir, "yolo11n.pt")
+        # Check if environment is low-resource cloud (e.g. Render 512MB RAM)
+        is_cloud = bool(os.environ.get("RENDER") or os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("PORT"))
+
+        # Lazy-load YOLO & DeepSort
+        try:
+            from ultralytics import YOLO
+            from deep_sort_realtime.deepsort_tracker import DeepSort
+
+            _backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+            yolo_model_path = os.path.join(_backend_dir, "yolo11n.pt")
+            if os.path.exists(yolo_model_path):
                 self.yolo = YOLO(yolo_model_path)
                 if self.device == "cuda":
                     self.yolo.to("cuda")
                 self.tracker = DeepSort(max_age=30, n_init=3, nms_max_overlap=1.0)
-            except Exception as e:
-                logger.warning(f"YOLO model load failed ({e}). Using face-center fallback.")
-                self.yolo = None
-                self.tracker = None
-        else:
+                logger.info("YOLOv11 and DeepSort initialized successfully on demand.")
+            else:
+                logger.info(f"YOLO model file not found at {yolo_model_path}. Using center-crop fallback.")
+        except Exception as e:
+            logger.warning(f"YOLO/DeepSort lazy load skipped ({e}). Using lightweight center-crop fallback.")
             self.yolo = None
             self.tracker = None
 
-        # ── MediaPipe Face Mesh ──────────────────────────────────────────────
-        if _MP_AVAILABLE:
-            self.mp_face_mesh = mp.solutions.face_mesh
-        else:
-            self.mp_face_mesh = None
-
-        # MAR (Mouth Aspect Ratio) tracking for active-speaker detection
-        self.mar_history = {}
-        self.mar_window_size = 15
+        # Lazy-load MediaPipe Face Mesh (only if not on constrained cloud CPU to prevent OOM)
+        if not is_cloud or self.device == "cuda":
+            try:
+                import mediapipe as mp
+                if hasattr(mp, "solutions") and hasattr(mp.solutions, "face_mesh"):
+                    self.mp_face_mesh = mp.solutions.face_mesh
+                    logger.info("MediaPipe face_mesh loaded successfully.")
+            except Exception as e:
+                logger.debug(f"MediaPipe face_mesh not available ({e}).")
+                self.mp_face_mesh = None
 
     def _calculate_mar(self, face_landmarks, frame_height: int) -> float:
         """Mouth Aspect Ratio — measures lip opening to detect speech."""
@@ -83,11 +84,7 @@ class SmartCroppingService:
     def generate_crop_metadata(self, video_path: str, target_fps: int = 1) -> dict:
         """
         Processes video to generate 9:16 smooth crop coordinates.
-
-        Pipeline (each layer is optional and degrades gracefully):
-          1. YOLO person detection + DeepSort tracking  (needs ultralytics)
-          2. MediaPipe active-speaker detection via MAR (needs mediapipe <= 0.10.14)
-          3. Centre-crop fallback if neither is available
+        Uses lazy model loading, bounded memory usage, and progressive fallbacks.
         """
         if not os.path.exists(video_path):
             raise FileNotFoundError(f"Video file not found: {video_path}")
@@ -96,6 +93,10 @@ class SmartCroppingService:
         fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
         width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+        if width <= 0 or height <= 0:
+            cap.release()
+            return {"trajectory": []}
 
         # 9:16 crop window dimensions
         target_aspect = 9 / 16
@@ -106,18 +107,28 @@ class SmartCroppingService:
         else:
             crop_height = height
 
-        frame_skip = max(1, int(fps / target_fps))
+        # Only lazy-load heavy models if actually running detection
+        self._ensure_models()
+
+        # Target sampling: 1 frame every 1-2 seconds to keep CPU/memory minimal
+        frame_skip = max(1, int(fps / max(0.5, target_fps)))
         crop_trajectory = []
 
-        # Exponential Moving Average centre (lower alpha = smoother, more lag)
         smooth_cx = width  / 2
         smooth_cy = height / 2
         alpha = 0.2
-
         frame_idx = 0
 
+        # Check torch no_grad context
+        no_grad_ctx = None
+        try:
+            import torch
+            no_grad_ctx = torch.no_grad()
+            no_grad_ctx.__enter__()
+        except Exception:
+            pass
+
         def _process_frames(face_mesh_ctx=None):
-            """Inner loop — runs with or without a face_mesh context."""
             nonlocal smooth_cx, smooth_cy, frame_idx
 
             while cap.isOpened():
@@ -130,13 +141,13 @@ class SmartCroppingService:
                     continue
 
                 timestamp = frame_idx / fps
-                tracks     = []
+                tracks = []
                 detections = []
 
-                # ── 1. YOLO Detection ────────────────────────────────────────
+                # ── 1. YOLO Detection (downsized frame for max speed & min RAM)
                 if self.yolo is not None:
                     try:
-                        results = self.yolo(frame, device=self.device, classes=[0], imgsz=320, verbose=False)
+                        results = self.yolo(frame, device=self.device, classes=[0], imgsz=256, verbose=False)
                         for r in results:
                             for box in r.boxes:
                                 x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
@@ -145,14 +156,14 @@ class SmartCroppingService:
                     except Exception as e:
                         logger.debug(f"YOLO detection error on frame {frame_idx}: {e}")
 
-                # ── 2. DeepSort Tracking ─────────────────────────────────────
+                # ── 2. DeepSort Tracking
                 if self.tracker is not None and detections:
                     try:
                         tracks = self.tracker.update_tracks(detections, frame=frame)
                     except Exception as e:
                         logger.debug(f"DeepSort error on frame {frame_idx}: {e}")
 
-                # ── 3. Active Speaker Detection (MediaPipe) ──────────────────
+                # ── 3. Active Speaker Detection (MediaPipe)
                 active_speaker_id = None
                 max_variance = 0.0
 
@@ -166,7 +177,7 @@ class SmartCroppingService:
                                 h, w, _ = frame.shape
                                 cx_face = int(face_landmarks.landmark[1].x * w)
                                 cy_face = int(face_landmarks.landmark[1].y * h)
-                                mar     = self._calculate_mar(face_landmarks, h)
+                                mar = self._calculate_mar(face_landmarks, h)
 
                                 matched_track_id = None
                                 for track in tracks:
@@ -183,14 +194,14 @@ class SmartCroppingService:
                                     self.mar_history[matched_track_id].append(mar)
 
                                     if len(self.mar_history[matched_track_id]) > 5:
-                                        variance = np.var(self.mar_history[matched_track_id])
+                                        variance = float(np.var(self.mar_history[matched_track_id]))
                                         if variance > max_variance:
                                             max_variance = variance
                                             active_speaker_id = matched_track_id
                     except Exception as e:
                         logger.debug(f"MediaPipe error on frame {frame_idx}: {e}")
 
-                # ── 4. Select Target & Calculate Crop ────────────────────────
+                # ── 4. Select Target & Calculate Crop
                 target_box = None
 
                 if active_speaker_id and max_variance > 1.0:
@@ -199,7 +210,7 @@ class SmartCroppingService:
                             target_box = track.to_ltrb()
                             break
 
-                if target_box is None:
+                if target_box is None and tracks:
                     max_area = 0
                     for track in tracks:
                         if not track.is_confirmed():
@@ -213,8 +224,6 @@ class SmartCroppingService:
                 if target_box is not None:
                     total_frame_area = max(1, width * height)
                     box_area = (target_box[2] - target_box[0]) * (target_box[3] - target_box[1])
-                    # Only track if subject occupies meaningful frame area (> 2.5% of frame)
-                    # Prevents jittery tracking of tiny corner webcams, icons, or slide avatars
                     if box_area >= 0.025 * total_frame_area:
                         cx = (target_box[0] + target_box[2]) / 2
                         cy = (target_box[1] + target_box[3]) / 2
@@ -224,7 +233,6 @@ class SmartCroppingService:
                         smooth_cx = alpha * (width / 2) + (1 - alpha) * smooth_cx
                         smooth_cy = alpha * (height / 2) + (1 - alpha) * smooth_cy
                 else:
-                    # Drift smoothly to center for presentations / screen recordings
                     smooth_cx = alpha * (width / 2) + (1 - alpha) * smooth_cx
                     smooth_cy = alpha * (height / 2) + (1 - alpha) * smooth_cy
 
@@ -246,29 +254,35 @@ class SmartCroppingService:
 
                 frame_idx += 1
 
-        # Run with or without MediaPipe
-        if _MP_AVAILABLE and self.mp_face_mesh is not None:
-            try:
-                with self.mp_face_mesh.FaceMesh(
-                    max_num_faces=5,
-                    refine_landmarks=True,
-                    min_detection_confidence=0.5,
-                    min_tracking_confidence=0.5,
-                ) as face_mesh:
-                    _process_frames(face_mesh_ctx=face_mesh)
-            except Exception as e:
-                logger.warning(f"MediaPipe FaceMesh context failed ({e}). Re-running without face detection.")
-                cap.release()
-                cap = cv2.VideoCapture(video_path)
-                frame_idx = 0
-                smooth_cx, smooth_cy = width / 2, height / 2
+        try:
+            if self.mp_face_mesh is not None:
+                try:
+                    with self.mp_face_mesh.FaceMesh(
+                        max_num_faces=3,
+                        refine_landmarks=False,
+                        min_detection_confidence=0.5,
+                        min_tracking_confidence=0.5,
+                    ) as face_mesh:
+                        _process_frames(face_mesh_ctx=face_mesh)
+                except Exception as e:
+                    logger.warning(f"MediaPipe FaceMesh failed ({e}). Running without face detection.")
+                    cap.release()
+                    cap = cv2.VideoCapture(video_path)
+                    frame_idx = 0
+                    smooth_cx, smooth_cy = width / 2, height / 2
+                    _process_frames(face_mesh_ctx=None)
+            else:
                 _process_frames(face_mesh_ctx=None)
-        else:
-            _process_frames(face_mesh_ctx=None)
+        finally:
+            cap.release()
+            if no_grad_ctx is not None:
+                try:
+                    no_grad_ctx.__exit__(None, None, None)
+                except Exception:
+                    pass
+            gc.collect()
 
-        cap.release()
-        logger.info(f"Generated {len(crop_trajectory)} crop keyframes at ~{target_fps} FPS.")
+        logger.info(f"Generated {len(crop_trajectory)} crop keyframes at target sampling.")
         return {"trajectory": crop_trajectory}
-
 
 smart_cropping_service = SmartCroppingService()

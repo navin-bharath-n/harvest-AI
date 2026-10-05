@@ -17,7 +17,10 @@ export function GenerationProvider({ children }) {
 
   const [completedTasks, setCompletedTasks] = useState([]);
   const activeTasksRef = useRef(activeTasks);
-  activeTasksRef.current = activeTasks;
+
+  useEffect(() => {
+    activeTasksRef.current = activeTasks;
+  }, [activeTasks]);
 
   // Persist active tasks to localStorage
   useEffect(() => {
@@ -101,7 +104,9 @@ export function GenerationProvider({ children }) {
     setActiveTasks([]);
     try {
       localStorage.removeItem(STORAGE_KEY);
-    } catch {}
+    } catch {
+      // Ignore storage errors on cleanup
+    }
     try {
       await api.cancelAllGenerations();
     } catch (e) {
@@ -122,46 +127,53 @@ export function GenerationProvider({ children }) {
       const currentTasks = activeTasksRef.current;
       if (currentTasks.length === 0) return;
 
-      for (const task of currentTasks) {
-        try {
-          const status = await api.getVideoStatus(task.videoId);
-          
-          if (status.is_done || status.is_complete || (status.variations_ready >= 5)) {
-            // Task is completed!
-            setActiveTasks(prev => prev.filter(t => t.videoId !== task.videoId));
-            setCompletedTasks(prev => {
-              const alreadyNotified = prev.find(c => c.videoId === task.videoId);
-              if (alreadyNotified) return prev;
-              return [...prev, {
-                videoId: task.videoId,
-                videoTitle: status.original_filename || task.videoTitle,
-                completedAt: Date.now()
-              }];
-            });
-          } else if (status.video_status === 'failed' || (status.video_status === 'completed' && status.stage === 'idle' && (status.variations_ready || 0) === 0)) {
-            // Task failed or is idle in DB (not generating)
-            setActiveTasks(prev => prev.filter(t => t.videoId !== task.videoId));
-          } else {
-            // Update progress
-            setActiveTasks(prev => prev.map(t => {
-              if (t.videoId === task.videoId) {
-                return {
-                  ...t,
-                  videoTitle: status.original_filename || t.videoTitle,
-                  stage: status.stage || t.stage,
-                  stageLabel: status.stage_label || t.stageLabel,
-                  variationsReady: status.variations_ready || 0,
-                  variationsTotal: status.variations_total || 5,
-                  videoStatus: status.video_status
-                };
-              }
-              return t;
-            }));
-          }
-        } catch (err) {
-          console.warn(`Background poll error for video ${task.videoId}:`, err);
+      // Poll all active tasks in parallel instead of one-by-one sequentially
+      const results = await Promise.allSettled(
+        currentTasks.map(task => api.getVideoStatus(task.videoId))
+      );
+
+      results.forEach((res, idx) => {
+        if (res.status !== 'fulfilled') {
+          console.warn(`Background poll error for video ${currentTasks[idx]?.videoId}:`, res.reason);
+          return;
         }
-      }
+        const status = res.value;
+        const task = currentTasks[idx];
+        if (!status || !task) return;
+
+        if (status.is_done || status.is_complete || (status.variations_ready >= 5)) {
+          // Task is completed!
+          setActiveTasks(prev => prev.filter(t => t.videoId !== task.videoId));
+          setCompletedTasks(prev => {
+            const alreadyNotified = prev.find(c => c.videoId === task.videoId);
+            if (alreadyNotified) return prev;
+            return [...prev, {
+              videoId: task.videoId,
+              videoTitle: status.original_filename || task.videoTitle,
+              completedAt: Date.now()
+            }];
+          });
+        } else if (status.video_status === 'failed' || (status.video_status === 'completed' && status.stage === 'idle' && (status.variations_ready || 0) === 0)) {
+          // Task failed or is idle in DB (not generating)
+          setActiveTasks(prev => prev.filter(t => t.videoId !== task.videoId));
+        } else {
+          // Update progress
+          setActiveTasks(prev => prev.map(t => {
+            if (t.videoId === task.videoId) {
+              return {
+                ...t,
+                videoTitle: status.original_filename || t.videoTitle,
+                stage: status.stage || t.stage,
+                stageLabel: status.stage_label || t.stageLabel,
+                variationsReady: status.variations_ready || 0,
+                variationsTotal: status.variations_total || 5,
+                videoStatus: status.video_status
+              };
+            }
+            return t;
+          }));
+        }
+      });
     }, 2500);
 
     return () => clearInterval(interval);

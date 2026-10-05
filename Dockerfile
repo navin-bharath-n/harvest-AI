@@ -13,6 +13,9 @@ RUN apt-get update \
         g++ \
         git \
         ffmpeg \
+        fonts-dejavu-core \
+        fonts-freefont-ttf \
+        fontconfig \
         libgl1 \
         libglib2.0-0 \
         postgresql-client \
