@@ -47,9 +47,21 @@ def _client():
 
 
 def upload_fileobj(fileobj, key: str, content_type: str | None = None) -> str:
-    extra = {"ContentType": content_type} if content_type else None
     bucket = _clean_setting(settings.B2_BUCKET)
-    _client().upload_fileobj(fileobj, bucket, key, ExtraArgs=extra or {})
+    # The API caps source uploads at 2 GiB. Use a single PutObject request so
+    # boto3 does not initiate multipart uploads for this bounded media flow.
+    fileobj.seek(0, os.SEEK_END)
+    content_length = fileobj.tell()
+    fileobj.seek(0)
+    request = {
+        "Bucket": bucket,
+        "Key": key,
+        "Body": fileobj,
+        "ContentLength": content_length,
+    }
+    if content_type:
+        request["ContentType"] = content_type
+    _client().put_object(**request)
     return f"b2://{bucket}/{key}"
 
 
