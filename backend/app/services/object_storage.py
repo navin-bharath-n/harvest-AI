@@ -8,29 +8,49 @@ import tempfile
 from functools import lru_cache
 from pathlib import Path
 
+from botocore.config import Config
+
 from app.core.config import settings
 
 
 def enabled() -> bool:
-    return bool(settings.B2_ENDPOINT_URL and settings.B2_BUCKET and settings.B2_KEY_ID and settings.B2_APPLICATION_KEY)
+    return all(_clean_setting(value) for value in (
+        settings.B2_ENDPOINT_URL, settings.B2_BUCKET,
+        settings.B2_KEY_ID, settings.B2_APPLICATION_KEY,
+    ))
+
+
+def _clean_setting(value: str | None) -> str:
+    """Tolerate values pasted from quoted .env examples into host dashboards."""
+    return (value or "").strip().strip("\"'").strip()
 
 
 @lru_cache(maxsize=1)
 def _client():
     import boto3
+    endpoint = _clean_setting(settings.B2_ENDPOINT_URL)
+    region = _clean_setting(settings.B2_REGION) or "us-east-005"
+    bucket = _clean_setting(settings.B2_BUCKET)
+    key_id = _clean_setting(settings.B2_KEY_ID)
+    application_key = _clean_setting(settings.B2_APPLICATION_KEY)
     return boto3.client(
         "s3",
-        endpoint_url=settings.B2_ENDPOINT_URL,
-        region_name=settings.B2_REGION,
-        aws_access_key_id=settings.B2_KEY_ID,
-        aws_secret_access_key=settings.B2_APPLICATION_KEY,
+        endpoint_url=endpoint,
+        region_name=region,
+        aws_access_key_id=key_id,
+        aws_secret_access_key=application_key,
+        config=Config(
+            signature_version="s3v4",
+            s3={"addressing_style": "path"},
+        ),
     )
 
 
 def upload_fileobj(fileobj, key: str, content_type: str | None = None) -> str:
     extra = {"ContentType": content_type} if content_type else None
-    _client().upload_fileobj(fileobj, settings.B2_BUCKET, key, ExtraArgs=extra or {})
-    return f"b2://{settings.B2_BUCKET}/{key}"
+    bucket = _clean_setting(settings.B2_BUCKET)
+    _client().upload_fileobj(fileobj, bucket, key, ExtraArgs=extra or {})
+    return f"b2://{bucket}/{key}"
 
 
 def upload_file(path: str, key: str, content_type: str | None = None) -> str:
