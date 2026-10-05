@@ -52,7 +52,11 @@ def _remove_safe(path_str: str):
 # Redis is required for distributed production workers. If it is unavailable,
 # keep the development fallback bounded so concurrent requests cannot start an
 # unbounded number of model/FFmpeg jobs inside the API process.
-_fallback_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="video-fallback")
+from app.core.config import settings as _settings
+_fallback_executor = ThreadPoolExecutor(
+    max_workers=max(1, _settings.CELERY_CONCURRENCY),
+    thread_name_prefix="video-fallback",
+)
 
 router = APIRouter()
 
@@ -167,7 +171,7 @@ async def upload_video(
         except HTTPException:
             raise
         except Exception as e:
-            logger.error(f"Failed to upload video to B2: {e}")
+            logger.error(f"Failed to upload video to remote storage: {e}")
             raise HTTPException(status_code=502, detail="Failed to store video in object storage")
         file_path = object_storage.local_path(storage_path)
     else:
@@ -419,7 +423,7 @@ def get_clips(
     from app.services import object_storage
     # Annotate each clip with whether its media file physically exists on this server
     for c in clips:
-        if c.storage_path and c.storage_path.startswith("b2://"):
+        if object_storage.is_remote(c.storage_path):
             c.storage_path = object_storage.url(c.storage_path)
             c.file_exists = True
         elif c.storage_path:
@@ -506,7 +510,7 @@ def get_master_variations(
         if title_key not in seen_titles:
             seen_titles.add(title_key)
             # Annotate file_exists
-            if c.storage_path and c.storage_path.startswith("b2://"):
+            if object_storage.is_remote(c.storage_path):
                 c.storage_path = object_storage.url(c.storage_path)
                 c.file_exists = True
             elif c.storage_path:
@@ -536,7 +540,7 @@ def get_video_status(
     # Check if the source video file physically exists on the server disk
     video_file_missing = False
     from app.services import object_storage
-    if db_video.storage_path and db_video.storage_path.startswith("b2://"):
+    if object_storage.is_remote(db_video.storage_path):
         video_file_missing = False
     elif db_video.storage_path:
         actual_path = db_video.storage_path if os.path.isabs(db_video.storage_path) else os.path.join(UPLOAD_DIR, os.path.basename(db_video.storage_path))
@@ -863,8 +867,8 @@ def read_clip(
     current_user: models.User = Depends(get_current_user)
 ):
     db_clip = get_user_clip(clip_id, current_user.id, db)
-    if db_clip.storage_path and db_clip.storage_path.startswith("b2://"):
-        from app.services import object_storage
+    from app.services import object_storage
+    if object_storage.is_remote(db_clip.storage_path):
         db_clip.storage_path = object_storage.url(db_clip.storage_path)
     return db_clip
 

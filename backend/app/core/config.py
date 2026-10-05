@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     FRONTEND_ORIGIN: Optional[str] = None
     AUTO_START_CELERY: bool = True
     AUTO_START_OLLAMA: bool = True
+    # Number of independent background jobs a worker may run at once. Keep this
+    # conservative because video/ML jobs can use substantial RAM and CPU.
     CELERY_CONCURRENCY: int = 1
 
     GROQ_API_KEY: Optional[str] = None
@@ -42,6 +44,16 @@ class Settings(BaseSettings):
     PUBLIC_VIDEO_URL: Optional[str] = None
 
     # Backblaze B2 S3-compatible object storage (optional; local disk when unset).
+    # STORAGE_BACKEND=auto keeps legacy behavior; set to r2 to store new uploads in R2.
+    STORAGE_BACKEND: str = "auto"
+    R2_ACCOUNT_ID: Optional[str] = None
+    R2_ENDPOINT_URL: Optional[str] = None
+    R2_REGION: str = "auto"
+    R2_BUCKET: Optional[str] = None
+    R2_ACCESS_KEY_ID: Optional[str] = None
+    R2_SECRET_ACCESS_KEY: Optional[str] = None
+    STORAGE_PRESIGNED_URL_TTL: int = 3600
+
     B2_ENDPOINT_URL: Optional[str] = None
     B2_REGION: str = "us-east-005"
     B2_BUCKET: Optional[str] = None

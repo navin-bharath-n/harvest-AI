@@ -7,10 +7,11 @@ if exist "..\.venv\Scripts\python.exe" (
 ) else (
     set "PY=python"
 )
+if "%CELERY_CONCURRENCY%"=="" set "CELERY_CONCURRENCY=1"
 %PY% -m celery -A app.core.celery_app worker ^
     --loglevel=info ^
     -Q aishorts-queue ^
     --pool=threads ^
-    --concurrency=1 ^
+    --concurrency=%CELERY_CONCURRENCY% ^
     --prefetch-multiplier=1 ^
     -n harvest_worker@%%h

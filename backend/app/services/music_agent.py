@@ -137,7 +137,6 @@ Output ONLY valid JSON:
         """
         from app.core.config import settings
 
-        clean_query = urllib.parse.quote(query)
         cache_key = hashlib.md5(query.lower().encode()).hexdigest()[:12]
         cached_path = os.path.join(_MUSIC_CACHE_DIR, f"audius_{cache_key}.mp3")
 
@@ -147,7 +146,8 @@ Output ONLY valid JSON:
             return cached_path
 
         app_name = getattr(settings, "AUDIUS_APP_NAME", "HARVEST_AI") or "HARVEST_AI"
-        configured_base = getattr(settings, "AUDIUS_API_BASE", "https://api.audius.co") or "https://api.audius.co"
+        configured_base = (getattr(settings, "AUDIUS_API_BASE", "https://api.audius.co")
+                           or "https://api.audius.co").rstrip("/")
 
         api_endpoints = [
             configured_base,
@@ -156,11 +156,19 @@ Output ONLY valid JSON:
         ]
         # Deduplicate while preserving order
         seen = set()
-        endpoints = [x for x in api_endpoints if not (x in seen or seen.add(x))]
+        endpoints = []
+        for endpoint in api_endpoints:
+            if not endpoint:
+                continue
+            endpoint = endpoint.rstrip("/")
+            if endpoint not in seen:
+                seen.add(endpoint)
+                endpoints.append(endpoint)
 
         for base_url in endpoints:
             try:
-                search_url = f"{base_url}/v1/tracks/search?query={clean_query}&app_name={app_name}"
+                search_params = urllib.parse.urlencode({"query": query, "app_name": app_name})
+                search_url = f"{base_url}/v1/tracks/search?{search_params}"
                 req = urllib.request.Request(search_url, headers={"User-Agent": USER_AGENT})
                 with urllib.request.urlopen(req, timeout=8) as resp:
                     if resp.status != 200:
@@ -170,15 +178,26 @@ Output ONLY valid JSON:
                     if not tracks:
                         continue
 
-                    # Try up to the top 5 tracks in case of dead nodes or 404s
-                    for track in tracks[:5]:
+                    # Audius can return search hits that have no playable stream.
+                    # Skip those before making requests and cap live stream attempts.
+                    stream_attempts = 0
+                    for track in tracks:
+                        streamable = track.get("is_streamable", track.get("isStreamable"))
+                        if isinstance(streamable, str):
+                            streamable = streamable.strip().lower() not in {"false", "0", "no", ""}
+                        if streamable is False:
+                            continue
                         track_id = track.get("id")
                         if not track_id:
                             continue
+                        if stream_attempts >= 5:
+                            break
+                        stream_attempts += 1
                         track_title = track.get("title", "Unknown")
                         logger.info(f"Discovered Music API track from Audius: '{track_title}' (ID: {track_id})")
 
-                        stream_url = f"{base_url}/v1/tracks/{track_id}/stream?app_name=HARVEST_AI"
+                        stream_params = urllib.parse.urlencode({"app_name": app_name})
+                        stream_url = f"{base_url}/v1/tracks/{urllib.parse.quote(str(track_id), safe='')}/stream?{stream_params}"
                         temp_cache = f"{cached_path}.tmp"
                         try:
                             stream_req = urllib.request.Request(stream_url, headers={"User-Agent": USER_AGENT})
@@ -201,6 +220,17 @@ Output ONLY valid JSON:
                             else:
                                 if os.path.exists(temp_cache):
                                     os.remove(temp_cache)
+                        except urllib.error.HTTPError as se:
+                            if se.code == 404:
+                                logger.info(f"Audius stream unavailable for '{track_title}' (ID: {track_id}); trying another result/provider.")
+                            else:
+                                logger.warning(f"Audius stream error for track '{track_title}' (ID: {track_id}): HTTP {se.code}")
+                            if os.path.exists(temp_cache):
+                                try:
+                                    os.remove(temp_cache)
+                                except Exception:
+                                    pass
+                            continue
                         except Exception as se:
                             logger.warning(f"Audius stream error for track '{track_title}' (ID: {track_id}): {se}")
                             if os.path.exists(temp_cache):

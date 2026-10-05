@@ -14,9 +14,9 @@ def _resolve_video_path(storage_path: str) -> str:
     """Robust cross-platform path resolver for local Windows and cloud Linux (Docker/Render)."""
     if not storage_path:
         return ""
-    from app.services.object_storage import local_path
-    if storage_path.startswith("b2://"):
-        return local_path(storage_path)
+    from app.services import object_storage
+    if object_storage.is_remote(storage_path):
+        return object_storage.local_path(storage_path)
     if os.path.exists(storage_path):
         return os.path.abspath(storage_path)
     normalized = storage_path.replace("\\", "/").lstrip("/")
