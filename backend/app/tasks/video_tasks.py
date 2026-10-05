@@ -14,6 +14,9 @@ def _resolve_video_path(storage_path: str) -> str:
     """Robust cross-platform path resolver for local Windows and cloud Linux (Docker/Render)."""
     if not storage_path:
         return ""
+    from app.services.object_storage import local_path
+    if storage_path.startswith("b2://"):
+        return local_path(storage_path)
     if os.path.exists(storage_path):
         return os.path.abspath(storage_path)
     normalized = storage_path.replace("\\", "/").lstrip("/")
@@ -857,7 +860,13 @@ def render_clip_task(clip_id: int):
                 except Exception as ex:
                     logger.warning(f"Failed to remove temp file {fpath}: {ex}")
 
-        clip.storage_path = relative_path
+        from app.services import object_storage
+        if object_storage.enabled():
+            clip.storage_path = object_storage.upload_file(
+                output_path, f"clips/{os.path.basename(output_path)}", "video/mp4"
+            )
+        else:
+            clip.storage_path = relative_path
         clip.status = models.ClipStatus.COMPLETED
         video.short_path = relative_path
         db.commit()
@@ -960,7 +969,12 @@ def generate_master_shorts_task(
             final_path = os.path.join(clips_dir, output_filename)
             shutil.copy2(src_path, final_path)
 
-            rel_path = os.path.relpath(final_path, str(_BACKEND_DIR)).replace("\\", "/")
+            from app.services import object_storage
+            rel_path = (
+                object_storage.upload_file(final_path, f"clips/{output_filename}", "video/mp4")
+                if object_storage.enabled()
+                else os.path.relpath(final_path, str(_BACKEND_DIR)).replace("\\", "/")
+            )
 
             db_clip = models.Clip(
                 video_id=video_id,

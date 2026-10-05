@@ -153,29 +153,51 @@ async def upload_video(
 
     unique_filename = f"{uuid.uuid4()}{file_ext}"
     file_path = os.path.join(UPLOAD_DIR, unique_filename)
+    from app.services import object_storage
+    if object_storage.enabled():
+        try:
+            file.file.seek(0, os.SEEK_END)
+            upload_size = file.file.tell()
+            file.file.seek(0)
+            if upload_size > MAX_UPLOAD_SIZE_BYTES:
+                raise HTTPException(status_code=413, detail="File too large. Maximum allowed size is 2 GB.")
+            storage_path = object_storage.upload_fileobj(
+                file.file, f"originals/{unique_filename}", file.content_type
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to upload video to B2: {e}")
+            raise HTTPException(status_code=502, detail="Failed to store video in object storage")
+        file_path = object_storage.local_path(storage_path)
+    else:
+        storage_path = None
     resolved_path = os.path.abspath(file_path)
-    if not resolved_path.startswith(os.path.abspath(UPLOAD_DIR)):
+    if not object_storage.enabled() and not resolved_path.startswith(os.path.abspath(UPLOAD_DIR)):
         raise HTTPException(status_code=400, detail="Invalid file destination")
 
-    # Stream file to disk in 1MB chunks to avoid high memory usage
+    # Stream to local disk in development; B2 upload streams through its SDK.
     bytes_written = 0
     try:
-        with open(resolved_path, "wb") as buffer:
-            while chunk := await file.read(1024 * 1024):
-                bytes_written += len(chunk)
-                if bytes_written > MAX_UPLOAD_SIZE_BYTES:
-                    buffer.close()
-                    if os.path.exists(resolved_path):
-                        os.remove(resolved_path)
-                    raise HTTPException(
-                        status_code=413,
-                        detail=f"File too large. Maximum allowed size is {MAX_UPLOAD_SIZE_BYTES // (1024 ** 3)} GB."
-                    )
-                buffer.write(chunk)
+        if object_storage.enabled():
+            bytes_written = os.path.getsize(file_path)
+        else:
+            with open(resolved_path, "wb") as buffer:
+                while chunk := await file.read(1024 * 1024):
+                    bytes_written += len(chunk)
+                    if bytes_written > MAX_UPLOAD_SIZE_BYTES:
+                        buffer.close()
+                        if os.path.exists(resolved_path):
+                            os.remove(resolved_path)
+                        raise HTTPException(
+                            status_code=413,
+                            detail=f"File too large. Maximum allowed size is {MAX_UPLOAD_SIZE_BYTES // (1024 ** 3)} GB."
+                        )
+                    buffer.write(chunk)
     except HTTPException:
         raise
     except Exception as e:
-        if os.path.exists(resolved_path):
+        if not object_storage.enabled() and os.path.exists(resolved_path):
             os.remove(resolved_path)
         logger.error(f"Failed to save uploaded video: {e}")
         raise HTTPException(status_code=500, detail="Failed to save video upload")
@@ -200,7 +222,7 @@ async def upload_video(
     # Create DB record in COMPLETED upload state with pending analysis
     db_video = models.Video(
         original_filename=file.filename,
-        storage_path=f"uploads/{unique_filename}",
+        storage_path=storage_path or f"uploads/{unique_filename}",
         project_id=project_id,
         duration=duration,
         resolution=resolution,
@@ -394,9 +416,13 @@ def get_clips(
 ):
     db_video = get_user_video(video_id, current_user.id, db)
     clips = db.query(models.Clip).filter(models.Clip.video_id == video_id).all()
+    from app.services import object_storage
     # Annotate each clip with whether its media file physically exists on this server
     for c in clips:
-        if c.storage_path:
+        if c.storage_path and c.storage_path.startswith("b2://"):
+            c.storage_path = object_storage.url(c.storage_path)
+            c.file_exists = True
+        elif c.storage_path:
             resolved = _resolve_path(c.storage_path)
             c.file_exists = os.path.isfile(resolved)
         else:
@@ -466,6 +492,7 @@ def get_master_variations(
 ):
     # Returns clips that have "Master Variation" in the title, deduplicated to the latest 5
     db_video = get_user_video(video_id, current_user.id, db)
+    from app.services import object_storage
 
     clips = db.query(models.Clip).filter(
         models.Clip.video_id == video_id,
@@ -479,7 +506,10 @@ def get_master_variations(
         if title_key not in seen_titles:
             seen_titles.add(title_key)
             # Annotate file_exists
-            if c.storage_path:
+            if c.storage_path and c.storage_path.startswith("b2://"):
+                c.storage_path = object_storage.url(c.storage_path)
+                c.file_exists = True
+            elif c.storage_path:
                 c.file_exists = os.path.isfile(_resolve_path(c.storage_path))
             else:
                 c.file_exists = False
@@ -505,7 +535,10 @@ def get_video_status(
 
     # Check if the source video file physically exists on the server disk
     video_file_missing = False
-    if db_video.storage_path:
+    from app.services import object_storage
+    if db_video.storage_path and db_video.storage_path.startswith("b2://"):
+        video_file_missing = False
+    elif db_video.storage_path:
         actual_path = db_video.storage_path if os.path.isabs(db_video.storage_path) else os.path.join(UPLOAD_DIR, os.path.basename(db_video.storage_path))
         if not os.path.exists(actual_path):
             video_file_missing = True
@@ -732,9 +765,8 @@ def delete_clip(
     db_clip = get_user_clip(clip_id, current_user.id, db)
     if db_clip.storage_path:
         try:
-            resolved = _resolve_path(db_clip.storage_path)
-            if os.path.isfile(resolved):
-                os.remove(resolved)
+            from app.services import object_storage
+            object_storage.delete(db_clip.storage_path)
         except Exception as e:
             logger.warning(f"Could not remove clip file {db_clip.storage_path}: {e}")
     db.delete(db_clip)
@@ -750,7 +782,8 @@ def delete_video(
 ):
     db_video = get_user_video(video_id, current_user.id, db)
 
-    _remove_safe(db_video.storage_path)
+    from app.services import object_storage
+    object_storage.delete(db_video.storage_path)
     _remove_safe(db_video.audio_path)
     if db_video.storage_path:
         base_name = os.path.splitext(os.path.basename(db_video.storage_path))[0]
@@ -830,6 +863,9 @@ def read_clip(
     current_user: models.User = Depends(get_current_user)
 ):
     db_clip = get_user_clip(clip_id, current_user.id, db)
+    if db_clip.storage_path and db_clip.storage_path.startswith("b2://"):
+        from app.services import object_storage
+        db_clip.storage_path = object_storage.url(db_clip.storage_path)
     return db_clip
 
 @router.post("/clips/{clip_id}/publish")

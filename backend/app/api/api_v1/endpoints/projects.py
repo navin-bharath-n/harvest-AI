@@ -95,7 +95,8 @@ def delete_project(
         raise HTTPException(status_code=404, detail="Project not found")
 
     for video in db_project.videos:
-        _remove_media_item(video.storage_path)
+        from app.services import object_storage
+        object_storage.delete(video.storage_path)
         _remove_media_item(video.audio_path)
         _remove_media_item(video.frame_directory)
         if video.storage_path:

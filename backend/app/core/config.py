@@ -41,6 +41,14 @@ class Settings(BaseSettings):
     INSTAGRAM_BUSINESS_ID: Optional[str] = None
     PUBLIC_VIDEO_URL: Optional[str] = None
 
+    # Backblaze B2 S3-compatible object storage (optional; local disk when unset).
+    B2_ENDPOINT_URL: Optional[str] = None
+    B2_REGION: str = "us-east-005"
+    B2_BUCKET: Optional[str] = None
+    B2_KEY_ID: Optional[str] = None
+    B2_APPLICATION_KEY: Optional[str] = None
+    B2_PRESIGNED_URL_TTL: int = 3600
+
     GOOGLE_CLIENT_ID: Optional[str] = None
     GOOGLE_CLIENT_SECRET: Optional[str] = None
     GOOGLE_REDIRECT_URI: str = "https://localhost:8000/api/v1/users/auth/youtube/callback"
