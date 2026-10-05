@@ -42,26 +42,31 @@ def _client():
         config=Config(
             signature_version="s3v4",
             s3={"addressing_style": "path"},
+            connect_timeout=20,
+            read_timeout=300,
+            retries={"mode": "standard", "max_attempts": 5},
         ),
     )
 
 
 def upload_fileobj(fileobj, key: str, content_type: str | None = None) -> str:
+    from boto3.s3.transfer import TransferConfig
+
     bucket = _clean_setting(settings.B2_BUCKET)
-    # The API caps source uploads at 2 GiB. Use a single PutObject request so
-    # boto3 does not initiate multipart uploads for this bounded media flow.
-    fileobj.seek(0, os.SEEK_END)
-    content_length = fileobj.tell()
-    fileobj.seek(0)
-    request = {
-        "Bucket": bucket,
-        "Key": key,
-        "Body": fileobj,
-        "ContentLength": content_length,
-    }
-    if content_type:
-        request["ContentType"] = content_type
-    _client().put_object(**request)
+    extra = {"ContentType": content_type} if content_type else None
+    transfer_config = TransferConfig(
+        multipart_threshold=32 * 1024 * 1024,
+        multipart_chunksize=64 * 1024 * 1024,
+        max_concurrency=1,
+        use_threads=False,
+    )
+    _client().upload_fileobj(
+        fileobj,
+        bucket,
+        key,
+        ExtraArgs=extra or {},
+        Config=transfer_config,
+    )
     return f"b2://{bucket}/{key}"
 
 
