@@ -3,7 +3,7 @@ import { useNavigate, Link } from 'react-router-dom';
 import {
   Plus, UploadCloud, Video, Sparkles, Play,
   Download, LogOut, Scissors, RefreshCw, Wand2, Loader,
-  CheckCircle2, Film, Clock, XCircle
+  CheckCircle2, Film, Clock, XCircle, Trash2, AlertTriangle
 } from 'lucide-react';
 import { api } from '../api/client';
 import { useAuth } from '../context/AuthContext';
@@ -50,6 +50,10 @@ export default function StudioPage() {
   // Publishing State
   const [publishing, setPublishing] = useState(false);
   const [publishStatus, setPublishStatus] = useState('');
+
+  // Deletion State — confirm-before-delete dialogs
+  const [confirmDialog, setConfirmDialog] = useState(null); // { type, id, label }
+  const [deleteLoading, setDeleteLoading] = useState(false);
 
   const SERVER_URL = (import.meta.env.VITE_SERVER_URL || '').replace(/\/$/, '');
 
@@ -403,6 +407,44 @@ export default function StudioPage() {
     }
   };
 
+  // Confirm-and-execute deletion
+  const confirmDelete = async () => {
+    if (!confirmDialog) return;
+    setDeleteLoading(true);
+    try {
+      if (confirmDialog.type === 'clip') {
+        await api.deleteClip(confirmDialog.id);
+        // Remove from clips list and deselect if it was selected
+        setClips((prev) => prev.filter((c) => c.id !== confirmDialog.id));
+        if (selectedClip?.id === confirmDialog.id) setSelectedClip(null);
+        setActionMessage('Clip deleted.');
+      } else if (confirmDialog.type === 'video') {
+        await api.deleteVideo(confirmDialog.id);
+        setSelectedVideo(null);
+        setClips([]);
+        setSelectedClip(null);
+        await loadVideos();
+        setActionMessage('Video deleted.');
+      } else if (confirmDialog.type === 'project') {
+        await api.deleteProject(confirmDialog.id);
+        setActiveProjectId(null);
+        setSelectedVideo(null);
+        setClips([]);
+        setSelectedClip(null);
+        await loadProjects();
+        setActionMessage('Project deleted.');
+      }
+      setTimeout(() => setActionMessage(''), 4000);
+    } catch (err) {
+      console.error('Delete error:', err);
+      const detail = err.response?.data?.detail;
+      setActionMessage(typeof detail === 'string' ? detail : 'Deletion failed. Please try again.');
+    } finally {
+      setDeleteLoading(false);
+      setConfirmDialog(null);
+    }
+  };
+
   const formatVideoUrl = (path) => {
     if (!path) return '';
     if (path.startsWith('http://') || path.startsWith('https://')) return path;
@@ -538,6 +580,29 @@ export default function StudioPage() {
             >
               <Plus size={14} /> New Project
             </button>
+
+            {activeProjectId && (
+              <button
+                onClick={() => {
+                  const p = projects.find((x) => x.id === activeProjectId);
+                  setConfirmDialog({ type: 'project', id: activeProjectId, label: p?.title || p?.name || `Project #${activeProjectId}` });
+                }}
+                title="Delete this project"
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  padding: '0.45rem',
+                  borderRadius: '6px',
+                  backgroundColor: '#ffffff',
+                  border: '1px solid #e6e6e1',
+                  color: '#c0392b',
+                  cursor: 'pointer',
+                  transition: 'background-color 0.15s ease',
+                }}
+              >
+                <Trash2 size={14} />
+              </button>
+            )}
           </div>
         </div>
 
@@ -708,6 +773,29 @@ export default function StudioPage() {
                         </span>
                       </div>
                     </div>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setConfirmDialog({ type: 'video', id: vid.id, label: vid.original_filename || `Video #${vid.id}` });
+                      }}
+                      title="Delete this video"
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        padding: '0.3rem',
+                        borderRadius: '4px',
+                        backgroundColor: 'transparent',
+                        border: 'none',
+                        color: '#aaa',
+                        cursor: 'pointer',
+                        flexShrink: 0,
+                        transition: 'color 0.15s ease',
+                      }}
+                      onMouseEnter={(e) => e.currentTarget.style.color = '#c0392b'}
+                      onMouseLeave={(e) => e.currentTarget.style.color = '#aaa'}
+                    >
+                      <Trash2 size={14} />
+                    </button>
                   </div>
                 );
               })
@@ -1164,6 +1252,7 @@ export default function StudioPage() {
                               flexDirection: 'column',
                               gap: '0.6rem',
                               transition: 'border-color 0.15s ease, background-color 0.15s ease',
+                              position: 'relative',
                             }}
                           >
                             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -1173,12 +1262,12 @@ export default function StudioPage() {
                                   fontWeight: 700,
                                   padding: '2px 6px',
                                   borderRadius: '4px',
-                                  backgroundColor: '#ecfdf5',
-                                  color: '#1f6f4a',
-                                  border: '1px solid #a7f3d0',
+                                  backgroundColor: clip.file_exists === false ? '#fef2f2' : '#ecfdf5',
+                                  color: clip.file_exists === false ? '#c0392b' : '#1f6f4a',
+                                  border: `1px solid ${clip.file_exists === false ? '#fca5a5' : '#a7f3d0'}`,
                                 }}
                               >
-                                {clip.viral_score || 95}/100 Score
+                                {clip.file_exists === false ? 'File Missing' : `${clip.viral_score || 95}/100 Score`}
                               </span>
                               <span style={{ fontSize: '0.75rem', color: '#5b616b' }}>
                                 {Math.round(clip.duration || 30)}s
@@ -1191,7 +1280,30 @@ export default function StudioPage() {
 
                             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '0.75rem', color: '#5b616b' }}>
                               <span>Status: {clip.status || 'ready'}</span>
-                              <Play size={14} color="#16181d" />
+                              <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
+                                <Play size={14} color="#16181d" />
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setConfirmDialog({ type: 'clip', id: clip.id, label: clip.title || `Short #${clip.id}` });
+                                  }}
+                                  title="Delete this clip"
+                                  style={{
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    padding: '2px',
+                                    background: 'transparent',
+                                    border: 'none',
+                                    color: '#aaa',
+                                    cursor: 'pointer',
+                                    transition: 'color 0.15s ease',
+                                  }}
+                                  onMouseEnter={(e) => e.currentTarget.style.color = '#c0392b'}
+                                  onMouseLeave={(e) => e.currentTarget.style.color = '#aaa'}
+                                >
+                                  <Trash2 size={13} />
+                                </button>
+                              </div>
                             </div>
                           </div>
                         );
@@ -1564,6 +1676,132 @@ export default function StudioPage() {
               </div>
             </form>
           </div>
+        </div>
+      )}
+      {/* ── Confirmation Dialog ── */}
+      {confirmDialog && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            backgroundColor: 'rgba(22, 24, 29, 0.55)',
+            backdropFilter: 'blur(3px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 9999,
+          }}
+          onClick={() => !deleteLoading && setConfirmDialog(null)}
+        >
+          <div
+            style={{
+              backgroundColor: '#ffffff',
+              borderRadius: '10px',
+              padding: '2rem',
+              maxWidth: '400px',
+              width: '90%',
+              boxShadow: '0 20px 60px rgba(0,0,0,0.15)',
+              border: '1px solid #e6e6e1',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1rem' }}>
+              <div style={{
+                width: 38, height: 38, borderRadius: '50%',
+                backgroundColor: '#fef2f2', border: '1px solid #fca5a5',
+                display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+              }}>
+                <AlertTriangle size={18} color="#c0392b" />
+              </div>
+              <div>
+                <h3 style={{ margin: 0, fontSize: '1rem', fontWeight: 700, color: '#16181d' }}>
+                  Delete {confirmDialog.type === 'clip' ? 'Clip' : confirmDialog.type === 'video' ? 'Video' : 'Project'}
+                </h3>
+                <p style={{ margin: '0.2rem 0 0', fontSize: '0.8rem', color: '#5b616b' }}>
+                  This action cannot be undone.
+                </p>
+              </div>
+            </div>
+
+            <p style={{ margin: '0 0 1.5rem', fontSize: '0.875rem', color: '#5b616b', lineHeight: 1.5 }}>
+              {confirmDialog.type === 'project'
+                ? <>Are you sure you want to delete the project <strong style={{ color: '#16181d' }}>"{confirmDialog.label}"</strong>? All videos and generated clips within this project will be permanently deleted from the server.</>
+                : confirmDialog.type === 'video'
+                ? <>Are you sure you want to delete <strong style={{ color: '#16181d' }}>"{confirmDialog.label}"</strong>? All clips generated from this video will also be removed.</>
+                : <>Are you sure you want to delete clip <strong style={{ color: '#16181d' }}>"{confirmDialog.label}"</strong>? The video file will be removed from the server.</>
+              }
+            </p>
+
+            <div style={{ display: 'flex', gap: '0.6rem', justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => setConfirmDialog(null)}
+                disabled={deleteLoading}
+                style={{
+                  padding: '0.55rem 1.1rem',
+                  borderRadius: '6px',
+                  backgroundColor: '#ffffff',
+                  border: '1px solid #e6e6e1',
+                  color: '#5b616b',
+                  fontWeight: 500,
+                  fontSize: '0.875rem',
+                  cursor: deleteLoading ? 'not-allowed' : 'pointer',
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmDelete}
+                disabled={deleteLoading}
+                style={{
+                  padding: '0.55rem 1.1rem',
+                  borderRadius: '6px',
+                  backgroundColor: deleteLoading ? '#e0958e' : '#c0392b',
+                  border: 'none',
+                  color: '#ffffff',
+                  fontWeight: 600,
+                  fontSize: '0.875rem',
+                  cursor: deleteLoading ? 'not-allowed' : 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.4rem',
+                  transition: 'background-color 0.15s ease',
+                }}
+              >
+                {deleteLoading ? (
+                  <><Loader size={14} style={{ animation: 'spin 1s linear infinite' }} /> Deleting…</>
+                ) : (
+                  <><Trash2 size={14} /> Delete</>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Action Message Toast ── */}
+      {actionMessage && (
+        <div
+          style={{
+            position: 'fixed',
+            bottom: '1.5rem',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            backgroundColor: '#16181d',
+            color: '#fafaf8',
+            padding: '0.75rem 1.5rem',
+            borderRadius: '8px',
+            fontSize: '0.875rem',
+            fontWeight: 500,
+            boxShadow: '0 4px 24px rgba(0,0,0,0.18)',
+            zIndex: 9998,
+            pointerEvents: 'none',
+            whiteSpace: 'nowrap',
+            maxWidth: '90vw',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+          }}
+        >
+          {actionMessage}
         </div>
       )}
     </div>

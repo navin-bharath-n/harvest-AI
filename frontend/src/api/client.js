@@ -190,9 +190,15 @@ export const api = {
     return response.data;
   },
 
-  // Delete a video
+  // Delete a video (and all its clips/media)
   deleteVideo: async (videoId) => {
     const response = await client.delete(`/videos/${videoId}`);
+    return response.data;
+  },
+
+  // Delete a single generated clip / variation
+  deleteClip: async (clipId) => {
+    const response = await client.delete(`/videos/clips/${clipId}`);
     return response.data;
   },
 

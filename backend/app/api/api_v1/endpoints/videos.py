@@ -15,6 +15,40 @@ from concurrent.futures import ThreadPoolExecutor
 
 logger = logging.getLogger(__name__)
 
+# Absolute path to the backend/ directory — used to resolve relative paths consistently
+# across local Windows dev and Linux cloud (Docker / Render) deployments.
+_BACKEND_DIR = _pathlib.Path(__file__).resolve().parent.parent.parent.parent.parent
+
+def _resolve_path(path_str: str) -> str:
+    """Resolve a stored path (may be relative or Windows absolute) to an OS-native absolute path."""
+    if not path_str:
+        return ""
+    if os.path.exists(path_str):
+        return os.path.abspath(path_str)
+    normalized = path_str.replace("\\", "/").lstrip("/")
+    candidate = os.path.join(str(_BACKEND_DIR), normalized)
+    if os.path.exists(candidate):
+        return os.path.abspath(candidate)
+    fname = os.path.basename(path_str)
+    for sub in ("uploads", os.path.join("uploads", "clips")):
+        c = os.path.join(str(_BACKEND_DIR), sub, fname)
+        if os.path.exists(c):
+            return os.path.abspath(c)
+    return os.path.abspath(candidate)
+
+def _remove_safe(path_str: str):
+    """Remove a file or directory, trying multiple path resolution strategies."""
+    if not path_str:
+        return
+    resolved = _resolve_path(path_str)
+    try:
+        if os.path.isfile(resolved):
+            os.remove(resolved)
+        elif os.path.isdir(resolved):
+            shutil.rmtree(resolved, ignore_errors=True)
+    except Exception as e:
+        logger.warning(f"Could not remove media {path_str!r}: {e}")
+
 # Redis is required for distributed production workers. If it is unavailable,
 # keep the development fallback bounded so concurrent requests cannot start an
 # unbounded number of model/FFmpeg jobs inside the API process.
@@ -359,8 +393,15 @@ def get_clips(
     current_user: models.User = Depends(get_current_user)
 ):
     db_video = get_user_video(video_id, current_user.id, db)
-
-    return db.query(models.Clip).filter(models.Clip.video_id == video_id).all()
+    clips = db.query(models.Clip).filter(models.Clip.video_id == video_id).all()
+    # Annotate each clip with whether its media file physically exists on this server
+    for c in clips:
+        if c.storage_path:
+            resolved = _resolve_path(c.storage_path)
+            c.file_exists = os.path.isfile(resolved)
+        else:
+            c.file_exists = False
+    return clips
 
 @router.post("/{video_id}/master-generate", response_model=schemas.Video)
 def generate_master_shorts(
@@ -437,6 +478,11 @@ def get_master_variations(
         title_key = c.title or str(c.id)
         if title_key not in seen_titles:
             seen_titles.add(title_key)
+            # Annotate file_exists
+            if c.storage_path:
+                c.file_exists = os.path.isfile(_resolve_path(c.storage_path))
+            else:
+                c.file_exists = False
             unique_variations.append(c)
         if len(unique_variations) >= 5:
             break
@@ -676,6 +722,26 @@ def update_clip(
     return db_clip
 
 
+@router.delete("/clips/{clip_id}")
+def delete_clip(
+    clip_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """Delete a single generated clip / variation and its media file."""
+    db_clip = get_user_clip(clip_id, current_user.id, db)
+    if db_clip.storage_path:
+        try:
+            resolved = _resolve_path(db_clip.storage_path)
+            if os.path.isfile(resolved):
+                os.remove(resolved)
+        except Exception as e:
+            logger.warning(f"Could not remove clip file {db_clip.storage_path}: {e}")
+    db.delete(db_clip)
+    db.commit()
+    return {"message": "Clip deleted successfully", "clip_id": clip_id}
+
+
 @router.delete("/{video_id}")
 def delete_video(
     video_id: int,
@@ -684,32 +750,22 @@ def delete_video(
 ):
     db_video = get_user_video(video_id, current_user.id, db)
 
-    if db_video.storage_path and os.path.exists(db_video.storage_path):
+    _remove_safe(db_video.storage_path)
+    _remove_safe(db_video.audio_path)
+    if db_video.storage_path:
+        base_name = os.path.splitext(os.path.basename(db_video.storage_path))[0]
+        _remove_safe(os.path.join(str(_BACKEND_DIR), "uploads", base_name))
+    if db_video.frame_directory:
         try:
-            os.remove(db_video.storage_path)
-        except Exception as e:
-            print(f"Error removing storage_path {db_video.storage_path}: {e}")
-    if db_video.audio_path and os.path.exists(db_video.audio_path):
-        try:
-            os.remove(db_video.audio_path)
-        except Exception as e:
-            print(f"Error removing audio_path {db_video.audio_path}: {e}")
-    if db_video.frame_directory and os.path.exists(db_video.frame_directory):
-        try:
-            shutil.rmtree(db_video.frame_directory, ignore_errors=True)
-        except Exception as e:
-            print(f"Error removing frame_directory {db_video.frame_directory}: {e}")
-
+            shutil.rmtree(_resolve_path(db_video.frame_directory), ignore_errors=True)
+        except Exception:
+            pass
     for clip in db_video.clips:
-        if clip.storage_path and os.path.exists(clip.storage_path):
-            try:
-                os.remove(clip.storage_path)
-            except Exception as e:
-                print(f"Error removing clip storage_path {clip.storage_path}: {e}")
+        _remove_safe(clip.storage_path)
 
     db.delete(db_video)
     db.commit()
-    return {"message": "Video deleted successfully"}
+    return {"message": "Video deleted successfully", "video_id": video_id}
 
 from pydantic import BaseModel
 import threading

@@ -53,6 +53,7 @@ class Clip(BaseModel):
     created_at: Optional[datetime] = None
     edit_options: Optional[dict] = None
     published_urls: Optional[dict] = None
+    file_exists: Optional[bool] = True
     
     class Config:
         from_attributes = True

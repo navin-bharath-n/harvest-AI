@@ -55,8 +55,30 @@ def read_project(
 import os
 import shutil
 import logging
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
+_BACKEND_DIR = Path(__file__).resolve().parent.parent.parent.parent.parent
+
+def _remove_media_item(path_str: str):
+    if not path_str:
+        return
+    candidates = [
+        path_str,
+        os.path.join(str(_BACKEND_DIR), path_str.replace("\\", "/").lstrip("/")),
+        os.path.join(str(_BACKEND_DIR), "uploads", os.path.basename(path_str)),
+        os.path.join(str(_BACKEND_DIR), "uploads", "clips", os.path.basename(path_str)),
+    ]
+    for c in candidates:
+        try:
+            if os.path.isfile(c):
+                os.remove(c)
+                break
+            elif os.path.isdir(c):
+                shutil.rmtree(c, ignore_errors=True)
+                break
+        except Exception as e:
+            logger.warning(f"Error removing media path {c}: {e}")
 
 @router.delete("/{project_id}")
 def delete_project(
@@ -71,30 +93,18 @@ def delete_project(
     )
     if not db_project:
         raise HTTPException(status_code=404, detail="Project not found")
-    
+
     for video in db_project.videos:
-        if video.storage_path and os.path.exists(video.storage_path):
-            try:
-                os.remove(video.storage_path)
-            except Exception as e:
-                logger.warning(f"Error removing storage_path {video.storage_path}: {e}")
-        if video.audio_path and os.path.exists(video.audio_path):
-            try:
-                os.remove(video.audio_path)
-            except Exception as e:
-                logger.warning(f"Error removing audio_path {video.audio_path}: {e}")
-        if video.frame_directory and os.path.exists(video.frame_directory):
-            try:
-                shutil.rmtree(video.frame_directory, ignore_errors=True)
-            except Exception as e:
-                logger.warning(f"Error removing frame_directory {video.frame_directory}: {e}")
+        _remove_media_item(video.storage_path)
+        _remove_media_item(video.audio_path)
+        _remove_media_item(video.frame_directory)
+        if video.storage_path:
+            base_name = os.path.splitext(os.path.basename(video.storage_path))[0]
+            _remove_media_item(os.path.join(str(_BACKEND_DIR), "uploads", base_name))
         for clip in video.clips:
-            if clip.storage_path and os.path.exists(clip.storage_path):
-                try:
-                    os.remove(clip.storage_path)
-                except Exception as e:
-                    logger.warning(f"Error removing clip storage_path {clip.storage_path}: {e}")
-                    
+            _remove_media_item(clip.storage_path)
+
     db.delete(db_project)
     db.commit()
-    return {"message": "Project deleted successfully"}
+    return {"message": "Project deleted successfully", "project_id": project_id}
+
