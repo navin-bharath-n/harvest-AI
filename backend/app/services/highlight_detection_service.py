@@ -86,7 +86,7 @@ CRITICAL RULES FOR CLIP SELECTION:
    - 30% Hook (How strong is the first 3 seconds of the clip at grabbing attention?)
    - 20% Retention (How well does the clip maintain interest throughout?)
    - 10% Emotion (Does it evoke laughter, surprise, curiosity, or empathy?)
-3. Each clip must be no longer than {target_length:.0f} seconds. Aim for about {target_length:.0f} seconds when the source has enough complete speech.
+3. Choose a strong moment, then return a range about {target_length:.0f} seconds long. The application will preserve the selected duration and center the range around your chosen moment; only use a shorter range when the source itself is shorter.
 4. You MUST output EXACTLY 5 clips.
 
 You MUST output exactly and ONLY valid JSON matching this schema, with no markdown formatting around it:

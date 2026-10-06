@@ -377,6 +377,19 @@ def rename_video(
     db.refresh(db_video)
     return db_video
 
+@router.get("/{video_id}/media-url")
+def get_video_media_url(
+    video_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    video = get_user_video(video_id, current_user.id, db)
+    from app.services import object_storage
+    if not object_storage.is_remote(video.storage_path):
+        return {"direct": False}
+    return {"direct": True, "url": object_storage.url(video.storage_path)}
+
+
 @router.get("/{video_id}/media")
 def get_video_media(
     video_id: int,
@@ -517,6 +530,9 @@ def select_moment(
         and abs(existing.start_time - start_time) < 0.01
         and abs(existing.end_time - end_time) < 0.01
         and (existing.edit_options or {}).get("caption_style") == request.caption_style
+        and (existing.edit_options or {}).get("translate_language", "none") == request.translate_language
+        and (existing.edit_options or {}).get("caption_language", "original") == request.caption_language
+        and bool((existing.edit_options or {}).get("dub_voice", False)) == request.dub_voice
     ):
         db.commit()
         return existing
@@ -538,8 +554,9 @@ def select_moment(
         "selected_moment": dict(moment),
         "transcript_snapshot": transcript_snapshot,
         "caption_style": request.caption_style,
-        "caption_language": "original",
-        "translate_language": "none",
+        "caption_language": request.caption_language,
+        "translate_language": request.translate_language,
+        "dub_voice": request.dub_voice,
         "music_preset": "none",
         "music_style": "none",
         "framing_mode": "fit_blur",

@@ -45,6 +45,9 @@ class ClipCreate(BaseModel):
 class SelectMomentRequest(BaseModel):
     moment_id: int = Field(ge=0, le=4)
     caption_style: Literal["pop", "karaoke", "minimalist", "boxed", "neon", "standard", "none"] = "pop"
+    translate_language: str = Field(default="none", min_length=2, max_length=64)
+    caption_language: Literal["original", "translated", "none"] = "original"
+    dub_voice: bool = False
 
 class HighlightAnalysisRequest(BaseModel):
     length: float = Field(default=30.0, ge=10.0, le=60.0, description="Target maximum duration for suggested moments")

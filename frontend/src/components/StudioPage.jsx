@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import {
-  Plus, UploadCloud, Video, Sparkles, Play,
-  Download, LogOut, Scissors, RefreshCw, Wand2, Loader,
+  Plus, UploadCloud, Video, Sparkles, Play, ArrowLeft,
+  Download, LogOut, RefreshCw, Wand2, Loader,
   CheckCircle2, Film, Clock, XCircle, Trash2, AlertTriangle
 } from 'lucide-react';
 import { api } from '../api/client';
 import { useAuth } from '../context/AuthContext';
+import harvestLogo from '../Untitled Design.png';
 
 export default function StudioPage() {
   const { user, logout } = useAuth();
@@ -25,15 +26,19 @@ export default function StudioPage() {
   const [videos, setVideos] = useState([]);
   const [selectedVideo, setSelectedVideo] = useState(null);
   const [clips, setClips] = useState([]);
+  const [clipsVideoId, setClipsVideoId] = useState(null);
   const [selectedClip, setSelectedClip] = useState(null);
   const [selectedMomentId, setSelectedMomentId] = useState(null);
   const [clipLength, setClipLength] = useState(30);
   const [momentAudioUrls, setMomentAudioUrls] = useState([]);
   const [clipPlaybackError, setClipPlaybackError] = useState(false);
   const [clipMediaUrl, setClipMediaUrl] = useState('');
+  const [clipMediaClipId, setClipMediaClipId] = useState(null);
+  const [sourceVideoUrl, setSourceVideoUrl] = useState('');
   const [captionStyle, setCaptionStyle] = useState('pop');
   const [outputLanguage, setOutputLanguage] = useState('original');
   const [dubVoice, setDubVoice] = useState(false);
+  const generatedOutputRef = useRef(null);
 
   useEffect(() => {
     setClipPlaybackError(false);
@@ -71,14 +76,44 @@ export default function StudioPage() {
 
   useEffect(() => {
     let currentUrl = '';
+    let active = true;
     setClipMediaUrl('');
+    setClipMediaClipId(null);
     if (!selectedClip?.id || selectedClip.status !== 'completed' || !selectedClip.storage_path) return undefined;
     api.getClipMedia(selectedClip.id).then((url) => {
+      if (!active) {
+        URL.revokeObjectURL(url);
+        return;
+      }
       currentUrl = url;
       setClipMediaUrl(url);
-    }).catch(() => setClipPlaybackError(true));
-    return () => { if (currentUrl) URL.revokeObjectURL(currentUrl); };
+      setClipMediaClipId(selectedClip.id);
+    }).catch(() => {
+      if (active) setClipPlaybackError(true);
+    });
+    return () => {
+      active = false;
+      if (currentUrl) URL.revokeObjectURL(currentUrl);
+    };
   }, [selectedClip?.id, selectedClip?.status, selectedClip?.storage_path]);
+
+  useEffect(() => {
+    let active = true;
+    let media = null;
+    setSourceVideoUrl('');
+    if (!selectedVideo?.id) return undefined;
+    api.getVideoMedia(selectedVideo.id).then((result) => {
+      media = result;
+      if (active) setSourceVideoUrl(result.url);
+      else if (result.objectUrl) URL.revokeObjectURL(result.url);
+    }).catch((error) => {
+      if (active) console.error('Source video preview failed to load:', error);
+    });
+    return () => {
+      active = false;
+      if (media?.objectUrl) URL.revokeObjectURL(media.url);
+    };
+  }, [selectedVideo?.id]);
 
   // Upload State
   const [isUploading, setIsUploading] = useState(false);
@@ -102,6 +137,12 @@ export default function StudioPage() {
   // Deletion State — confirm-before-delete dialogs
   const [confirmDialog, setConfirmDialog] = useState(null); // { type, id, label }
   const [deleteLoading, setDeleteLoading] = useState(false);
+  const selectedVideoRef = useRef(selectedVideo);
+  selectedVideoRef.current = selectedVideo;
+  const visibleClips = clipsVideoId === selectedVideo?.id ? clips : [];
+  const visibleSelectedClip = visibleClips.find((clip) => clip.id === selectedClip?.id) || null;
+  const hasAnalyzedMoments = selectedVideo?.highlight_status === 'completed'
+    && (selectedVideo?.highlights?.clips || []).length >= 5;
 
 
   // 1. Load Projects on Mount
@@ -122,33 +163,35 @@ export default function StudioPage() {
   }, [loadProjects]);
 
   // 2. Load Videos when activeProjectId changes
-  const loadVideos = useCallback(async () => {
+  const loadVideos = useCallback(async (preferredVideoId = null) => {
     if (!activeProjectId) {
       setVideos([]);
       setSelectedVideo(null);
+      setClips([]);
+      setClipsVideoId(null);
+      setSelectedClip(null);
       return;
     }
     try {
       const allVideos = await api.getVideos(activeProjectId);
       setVideos(allVideos || []);
-      if (allVideos && allVideos.length > 0) {
-        setSelectedVideo((prev) => {
-          if (prev) {
-            const updated = allVideos.find((v) => v.id === prev.id);
-            return updated || allVideos[0];
-          }
-          return allVideos[0];
-        });
-      } else {
-        setSelectedVideo(null);
-        setClips([]);
-      }
+      // Opening or switching projects should land on the upload screen.
+      // Select a video automatically only when the user just uploaded it.
+      const preferred = preferredVideoId == null ? null : allVideos?.find((v) => v.id === preferredVideoId);
+      setSelectedVideo((previous) => preferred || (previous && allVideos?.find((v) => v.id === previous.id)) || null);
+      setClips([]);
+      setClipsVideoId(null);
+      setSelectedClip(null);
     } catch (err) {
       console.error('Failed to load videos:', err);
     }
   }, [activeProjectId]);
 
   useEffect(() => {
+    setSelectedVideo(null);
+    setClips([]);
+    setClipsVideoId(null);
+    setSelectedClip(null);
     loadVideos();
   }, [loadVideos]);
 
@@ -156,15 +199,19 @@ export default function StudioPage() {
   const loadClips = useCallback(async () => {
     if (!selectedVideo) {
       setClips([]);
+      setClipsVideoId(null);
       setSelectedClip(null);
       return;
     }
     try {
+      const requestedVideoId = selectedVideo.id;
       // Load both clips and master variations
       const [clipList, varList] = await Promise.all([
-        api.getClips(selectedVideo.id).catch(() => []),
-        api.getVariations(selectedVideo.id).catch(() => []),
+        api.getClips(requestedVideoId).catch(() => []),
+        api.getVariations(requestedVideoId).catch(() => []),
       ]);
+      // Ignore late responses from a video the user has since switched away from.
+      if (selectedVideoRef.current?.id !== requestedVideoId) return;
 
       // Deduplicate by ID and priority
       const combined = [...(varList || []), ...(clipList || [])];
@@ -178,6 +225,7 @@ export default function StudioPage() {
       }
 
       setClips(uniqueClips);
+      setClipsVideoId(requestedVideoId);
       if (uniqueClips.length > 0) {
         const selectedMomentClip = uniqueClips.find((clip) => clip.edit_options?.workflow === 'selected_moment_v1');
         setSelectedClip((prev) => {
@@ -201,6 +249,12 @@ export default function StudioPage() {
   }, [loadClips]);
 
   useEffect(() => {
+    if (visibleSelectedClip?.status === 'completed' && visibleSelectedClip?.edit_options?.workflow === 'selected_moment_v1') {
+      generatedOutputRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }, [visibleSelectedClip?.id, visibleSelectedClip?.status]);
+
+  useEffect(() => {
     if (!selectedVideo?.id || !selectedClip || !['pending', 'rendering'].includes(selectedClip.status)) return undefined;
     let active = true;
     const refresh = async () => {
@@ -208,6 +262,7 @@ export default function StudioPage() {
         const latest = await api.getClips(selectedVideo.id);
         if (!active) return;
         setClips(latest || []);
+        setClipsVideoId(selectedVideo.id);
         const updated = (latest || []).find((clip) => clip.id === selectedClip.id);
         if (updated) {
           setSelectedClip(updated);
@@ -317,11 +372,19 @@ export default function StudioPage() {
         }
       });
 
-      // Reload project footage
-      await loadVideos();
-
       if (uploadedVideo && uploadedVideo.id) {
+        if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+        if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
+        setIsAnalyzing(false);
+        setClips([]);
+        setClipsVideoId(null);
+        setSelectedClip(null);
+        setSelectedMomentId(null);
+        setClipMediaUrl('');
+        setClipMediaClipId(null);
+        setClipPlaybackError(false);
         setSelectedVideo(uploadedVideo);
+        await loadVideos(uploadedVideo.id);
         setActionMessage('Video uploaded. Choose a short length, then analyze to find five moments.');
       }
     } catch (err) {
@@ -364,13 +427,17 @@ export default function StudioPage() {
   const handleAnalyzeMoments = async () => {
     if (!selectedVideo) return;
     setActionLoading(true);
-    setActionMessage('Queueing transcription and analysis. Existing transcript and analysis are reused when available.');
+    setIsAnalyzing(true);
+    setElapsedSeconds(0);
+    setPipelineStatus({ stage: 'queued', stage_label: 'Starting video analysis…' });
+    setActionMessage('');
     try {
       const processingVideo = await api.extractHighlights(selectedVideo.id, clipLength);
       setSelectedVideo(processingVideo);
       startStatusPolling(selectedVideo.id);
     } catch (error) {
       setActionLoading(false);
+      setIsAnalyzing(false);
       setActionMessage(error.response?.data?.detail || error.message || 'Could not queue moment analysis.');
     }
   };
@@ -380,7 +447,11 @@ export default function StudioPage() {
     setActionLoading(true);
     setActionMessage('Queueing a new vertical video from the selected time range, with its original audio.');
     try {
-      const clip = await api.selectMoment(selectedVideo.id, selectedMomentId, captionStyle);
+      const clip = await api.selectMoment(selectedVideo.id, selectedMomentId, captionStyle, {
+        translateLanguage: outputLanguage === 'original' ? 'none' : outputLanguage,
+        captionLanguage: outputLanguage === 'original' ? 'original' : 'translated',
+        dubVoice,
+      });
       setSelectedClip(clip);
       setClips((items) => [clip, ...items.filter((item) => item.id !== clip.id)]);
       setActionMessage('This moment is rendering. You can select another audio moment and queue another video.');
@@ -390,6 +461,21 @@ export default function StudioPage() {
       setActionLoading(false);
       setActionMessage(error.response?.data?.detail || error.message || 'Could not queue the selected moment.');
     }
+  };
+
+  const handleBackToProject = () => {
+    if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+    if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
+    setIsAnalyzing(false);
+    setActionLoading(false);
+    setSelectedVideo(null);
+    setSelectedClip(null);
+    setSelectedMomentId(null);
+    setClips([]);
+    setClipsVideoId(null);
+    setClipMediaUrl('');
+    setClipMediaClipId(null);
+    setActionMessage('');
   };
 
   const handleCaptionRerender = async () => {
@@ -550,6 +636,7 @@ export default function StudioPage() {
         await api.deleteVideo(confirmDialog.id);
         setSelectedVideo(null);
         setClips([]);
+        setClipsVideoId(null);
         setSelectedClip(null);
         await loadVideos();
         setActionMessage('Video deleted.');
@@ -558,6 +645,7 @@ export default function StudioPage() {
         setActiveProjectId(null);
         setSelectedVideo(null);
         setClips([]);
+        setClipsVideoId(null);
         setSelectedClip(null);
         await loadProjects();
         setActionMessage('Project deleted.');
@@ -631,20 +719,7 @@ export default function StudioPage() {
               color: '#16181d',
             }}
           >
-            <div
-              style={{
-                width: 30,
-                height: 30,
-                borderRadius: '6px',
-                backgroundColor: '#16181d',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                color: '#ffffff',
-              }}
-            >
-              <Scissors size={16} />
-            </div>
+            <img src={harvestLogo} alt="Harvest AI logo" style={{ width: 42, height: 42, objectFit: 'contain', borderRadius: '6px' }} />
             <span
               style={{
                 fontSize: '1.25rem',
@@ -662,7 +737,7 @@ export default function StudioPage() {
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             <select
               value={activeProjectId || ''}
-              onChange={(e) => setActiveProjectId(Number(e.target.value))}
+              onChange={(e) => setActiveProjectId(e.target.value ? Number(e.target.value) : null)}
               style={{
                 backgroundColor: '#ffffff',
                 color: '#16181d',
@@ -675,6 +750,7 @@ export default function StudioPage() {
                 cursor: 'pointer',
               }}
             >
+              {projects.length === 0 && <option value="">No projects yet</option>}
               {projects.map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.title || p.name || `Project #${p.id}`}
@@ -778,13 +854,13 @@ export default function StudioPage() {
               style={{ display: 'none' }}
             />
             <button
-              disabled={isUploading}
-              onClick={() => fileInputRef.current?.click()}
+              disabled={isUploading || !activeProjectId}
+              onClick={() => activeProjectId ? fileInputRef.current?.click() : setShowNewProjectModal(true)}
               style={{
                 width: '100%',
                 padding: '0.75rem',
                 borderRadius: '6px',
-                backgroundColor: isUploading ? '#5b616b' : '#1f6f4a',
+                backgroundColor: isUploading || !activeProjectId ? '#7a808a' : '#1f6f4a',
                 color: '#ffffff',
                 border: 'none',
                 display: 'flex',
@@ -793,12 +869,12 @@ export default function StudioPage() {
                 gap: '0.5rem',
                 fontSize: '0.9rem',
                 fontWeight: 600,
-                cursor: isUploading ? 'not-allowed' : 'pointer',
+                cursor: isUploading || !activeProjectId ? 'not-allowed' : 'pointer',
                 transition: 'background-color 0.15s ease',
               }}
             >
               <UploadCloud size={18} />
-              {isUploading ? `Uploading ${uploadProgress}%…` : 'Upload Video File'}
+              {isUploading ? `Uploading ${uploadProgress}%…` : activeProjectId ? 'Upload Video File' : 'Create a Project First'}
             </button>
 
             {uploadError && (
@@ -825,7 +901,7 @@ export default function StudioPage() {
 
             {videos.length === 0 ? (
               <div style={{ padding: '2.5rem 1rem', textAlign: 'center', color: '#5b616b', fontSize: '0.875rem' }}>
-                No videos uploaded yet.<br />Click Upload above to begin.
+                {activeProjectId ? <>No videos in this project yet.<br />Upload one to get started.</> : <>Create a project before uploading videos.</>}
               </div>
             ) : (
               videos.map((vid) => {
@@ -837,6 +913,18 @@ export default function StudioPage() {
                   <div
                     key={vid.id}
                     onClick={() => {
+                      if (selectedVideo?.id !== vid.id) {
+                        if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+                        if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
+                        setIsAnalyzing(false);
+                        setClips([]);
+                        setClipsVideoId(null);
+                        setSelectedClip(null);
+                        setSelectedMomentId(null);
+                        setClipMediaUrl('');
+                        setClipMediaClipId(null);
+                        setClipPlaybackError(false);
+                      }
                       setSelectedVideo(vid);
                       if (vid.status === 'processing') {
                         startStatusPolling(vid.id);
@@ -947,7 +1035,7 @@ export default function StudioPage() {
         {/* Center & Right Column: Pipeline Stage & Clip Player */}
         <main style={{ flex: 1, display: 'flex', flexDirection: 'column', backgroundColor: '#fafaf8', overflowY: 'auto' }}>
           {selectedVideo ? (
-            selectedClip && ['pending', 'rendering'].includes(selectedClip.status) ? (
+            visibleSelectedClip && ['pending', 'rendering'].includes(visibleSelectedClip.status) ? (
               <div
                 role="status"
                 aria-live="polite"
@@ -967,13 +1055,31 @@ export default function StudioPage() {
                   gap: '0.7rem',
                 }}
               >
+                <button
+                  onClick={handleBackToProject}
+                  style={{ position: 'absolute', top: '1rem', left: '1rem', display: 'inline-flex', alignItems: 'center', gap: '0.45rem', padding: '0.55rem 0.8rem', border: '1px solid #e6e6e1', borderRadius: '6px', background: '#fff', color: '#16181d', fontWeight: 600, cursor: 'pointer' }}
+                >
+                  <ArrowLeft size={15} /> Back to project
+                </button>
                 <Loader size={30} className="render-loading-spinner" color="#1f6f4a" />
                 <div style={{ fontWeight: 700, fontSize: '1.05rem' }}>Rendering your short…</div>
                 <div style={{ fontSize: '0.9rem', color: '#5b616b' }}>Your video will appear when it’s ready.</div>
               </div>
             ) : (
             <div style={{ padding: '2rem', display: 'flex', flexDirection: 'column', gap: '1.5rem', maxWidth: '1200px', width: '100%', boxSizing: 'border-box', margin: '0 auto' }}>
-              {/* Pipeline Actions Bar */}
+              <button
+                onClick={handleBackToProject}
+                style={{ alignSelf: 'flex-start', display: 'inline-flex', alignItems: 'center', gap: '0.45rem', padding: '0.55rem 0.8rem', border: '1px solid #e6e6e1', borderRadius: '6px', background: '#fff', color: '#16181d', fontWeight: 600, cursor: 'pointer' }}
+              >
+                <ArrowLeft size={15} /> Back to project
+              </button>
+              {isAnalyzing ? (
+              <div style={{ background: '#fff', border: '1px solid #e6e6e1', borderRadius: '8px', padding: '1.25rem 1.5rem' }}>
+                <div style={{ color: '#7a808a', fontSize: '0.78rem', fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: '0.35rem' }}>Step 2 of 3 · Analyze</div>
+                <h2 style={{ margin: '0 0 0.3rem', fontFamily: '"Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif', color: '#16181d' }}>{selectedVideo.original_filename || `Video #${selectedVideo.id}`}</h2>
+                <p style={{ margin: 0, color: '#5b616b', fontSize: '0.9rem' }}>{pipelineStatus?.stage_label || 'Analyzing your video and finding five moments…'}</p>
+              </div>
+              ) : hasAnalyzedMoments ? (
               <div
                 style={{
                   backgroundColor: '#ffffff',
@@ -989,6 +1095,7 @@ export default function StudioPage() {
                 }}
               >
                 <div>
+                  <div style={{ color: '#7a808a', fontSize: '0.75rem', fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: '0.25rem' }}>Step 3 of 3 · Choose a moment</div>
                   <h2
                     style={{
                       fontSize: '1.25rem',
@@ -1001,71 +1108,82 @@ export default function StudioPage() {
                   >
                     {selectedVideo.original_filename || `Video #${selectedVideo.id}`}
                   </h2>
-                  <p style={{ fontSize: '0.85rem', color: '#5b616b', margin: 0 }}>
-                    Status: <strong style={{ color: '#16181d' }}>{selectedVideo.status}</strong> • Transcription:{' '}
-                    <strong style={{ color: '#16181d' }}>{selectedVideo.transcription_status || 'idle'}</strong>
-                  </p>
+                  <p style={{ fontSize: '0.85rem', color: '#5b616b', margin: 0 }}>Choose one of the five moments below, then render your short.</p>
                 </div>
 
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap' }}>
                   <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem', color: '#5b616b' }}>
                     Caption style
-                    <select value={captionStyle} onChange={(event) => setCaptionStyle(event.target.value)} disabled={actionLoading || isAnalyzing} style={{ padding: '0.55rem', border: '1px solid #e6e6e1', borderRadius: '6px', background: '#fff', color: '#16181d' }}>
-                      <option value="pop">Viral Pop</option>
-                      <option value="karaoke">Karaoke</option>
-                      <option value="minimalist">Minimal</option>
-                      <option value="boxed">Boxed</option>
-                      <option value="neon">Neon</option>
+                    <select value={captionStyle} onChange={(event) => setCaptionStyle(event.target.value)} disabled={actionLoading} style={{ padding: '0.55rem', border: '1px solid #e6e6e1', borderRadius: '6px', background: '#fff', color: '#16181d' }}>
+                      <option value="pop">Viral Pop</option><option value="karaoke">Karaoke</option><option value="minimalist">Minimal</option><option value="boxed">Boxed</option><option value="neon">Neon</option>
                     </select>
                   </label>
-                  {selectedMomentId == null && (
-                    <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem', color: '#5b616b' }}>
-                      Short length
-                      <select value={clipLength} onChange={(event) => { setClipLength(Number(event.target.value)); setSelectedMomentId(null); }} disabled={actionLoading || isAnalyzing} style={{ padding: '0.55rem', border: '1px solid #e6e6e1', borderRadius: '6px', background: '#fff', color: '#16181d' }}>
-                        <option value={15}>15 seconds</option>
-                        <option value={30}>30 seconds</option>
-                        <option value={45}>45 seconds</option>
-                        <option value={60}>60 seconds</option>
-                      </select>
-                    </label>
-                  )}
-                  {selectedClip?.edit_options?.workflow === 'selected_moment_v1' &&
-                    selectedClip.edit_options.caption_style !== captionStyle && (
-                    <button
-                      disabled={actionLoading || isAnalyzing || ['pending', 'rendering'].includes(selectedClip.status)}
-                      onClick={handleCaptionRerender}
-                      style={{ padding: '0.65rem 0.9rem', borderRadius: '6px', background: '#fff', border: '1px solid #e6e6e1', color: '#16181d', fontSize: '0.825rem', fontWeight: 600, cursor: actionLoading ? 'not-allowed' : 'pointer' }}
-                    >
-                      Apply Caption Style
-                    </button>
+                  {visibleSelectedClip?.edit_options?.workflow === 'selected_moment_v1' && visibleSelectedClip.edit_options.caption_style !== captionStyle && (
+                    <button disabled={actionLoading || ['pending', 'rendering'].includes(visibleSelectedClip.status)} onClick={handleCaptionRerender} style={{ padding: '0.65rem 0.9rem', borderRadius: '6px', background: '#fff', border: '1px solid #e6e6e1', color: '#16181d', fontSize: '0.825rem', fontWeight: 600, cursor: actionLoading ? 'not-allowed' : 'pointer' }}>Apply Caption Style</button>
                   )}
                   <button
-                    disabled={actionLoading || isAnalyzing || (selectedMomentId != null && clips.some((clip) =>
-                      clip.edit_options?.workflow === 'selected_moment_v1'
-                      && clip.edit_options?.selected_moment_id === selectedMomentId
-                      && ['pending', 'rendering'].includes(clip.status)))}
-                    onClick={selectedMomentId == null ? handleAnalyzeMoments : handleRenderSelectedMoment}
-                    style={{
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: '0.45rem',
-                      padding: '0.65rem 1.15rem',
-                      borderRadius: '6px',
-                      backgroundColor: (actionLoading || isAnalyzing) ? '#5b616b' : '#1f6f4a',
-                      color: '#ffffff',
-                      border: 'none',
-                      fontSize: '0.875rem',
-                      fontWeight: 600,
-                      cursor: (actionLoading || isAnalyzing) ? 'not-allowed' : 'pointer',
-                      transition: 'background-color 0.15s ease',
-                    }}
+                    disabled={actionLoading || selectedMomentId == null || visibleClips.some((clip) => clip.edit_options?.workflow === 'selected_moment_v1' && clip.edit_options?.selected_moment_id === selectedMomentId && ['pending', 'rendering'].includes(clip.status))}
+                    onClick={handleRenderSelectedMoment}
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: '0.45rem', padding: '0.65rem 1.15rem', borderRadius: '6px', backgroundColor: actionLoading ? '#5b616b' : '#1f6f4a', color: '#fff', border: 'none', fontSize: '0.875rem', fontWeight: 600, cursor: actionLoading ? 'not-allowed' : 'pointer' }}
                   >
-                    <Wand2 size={15} /> {selectedMomentId != null ? 'Render 1 Selected Moment' : ((selectedVideo.highlights?.clips || []).length ? 'Reanalyze 5 Moments' : 'Analyze 5 Moments')}
+                    <Wand2 size={15} /> Render Selected Moment
                   </button>
                 </div>
               </div>
+              ) : (
+                <section style={{ background: '#fff', border: '1px solid #e6e6e1', borderRadius: '10px', padding: '1.5rem', boxShadow: '0 1px 3px rgba(0,0,0,.04)' }}>
+                  <div style={{ color: '#7a808a', fontSize: '0.75rem', fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: '0.35rem' }}>Step 1 of 3 · Set up your short</div>
+                  <h2 style={{ margin: '0 0 0.3rem', fontSize: '1.3rem', fontFamily: '"Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif', color: '#16181d' }}>{selectedVideo.original_filename || `Video #${selectedVideo.id}`}</h2>
+                  <p style={{ margin: '0 0 1.25rem', color: '#5b616b', fontSize: '0.875rem' }}>Choose your video length and language options. We’ll analyze the source and find five moments to turn into a short.</p>
+                  {actionMessage && <p style={{ margin: '-0.7rem 0 1rem', color: '#b91c1c', fontSize: '0.85rem' }}>{actionMessage}</p>}
 
-              {actionMessage && (
+                  <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.4fr) minmax(280px, 0.9fr)', gap: '1.25rem', alignItems: 'start' }}>
+                    <div style={{ background: '#111318', borderRadius: '8px', overflow: 'hidden', aspectRatio: '16/9', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      {sourceVideoUrl ? <video key={selectedVideo.id} src={sourceVideoUrl} controls playsInline style={{ width: '100%', height: '100%', objectFit: 'contain' }} /> : <div style={{ color: '#fff', fontSize: '0.9rem' }}><Loader size={18} className="render-loading-spinner" /> Loading source video…</div>}
+                    </div>
+
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.9rem' }}>
+                      <label style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', color: '#5b616b', fontSize: '0.83rem', fontWeight: 600 }}>
+                        Short length
+                        <select value={clipLength} onChange={(event) => setClipLength(Number(event.target.value))} disabled={actionLoading} style={{ padding: '0.65rem', border: '1px solid #e6e6e1', borderRadius: '6px', background: '#fff', color: '#16181d' }}>
+                          <option value={15}>15 seconds</option><option value={30}>30 seconds</option><option value={45}>45 seconds</option><option value={60}>60 seconds</option>
+                        </select>
+                      </label>
+                      <label style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', color: '#5b616b', fontSize: '0.83rem', fontWeight: 600 }}>
+                        Caption style
+                        <select value={captionStyle} onChange={(event) => setCaptionStyle(event.target.value)} disabled={actionLoading} style={{ padding: '0.65rem', border: '1px solid #e6e6e1', borderRadius: '6px', background: '#fff', color: '#16181d' }}>
+                          <option value="pop">Viral Pop</option><option value="karaoke">Karaoke</option><option value="minimalist">Minimal</option><option value="boxed">Boxed</option><option value="neon">Neon</option>
+                        </select>
+                      </label>
+                      <label style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', color: '#5b616b', fontSize: '0.83rem', fontWeight: 600 }}>
+                        Caption translation
+                        <select value={outputLanguage === 'original' ? 'original' : 'translated'} onChange={(event) => setOutputLanguage(event.target.value === 'original' ? 'original' : (outputLanguage === 'original' ? 'English' : outputLanguage))} disabled={actionLoading} style={{ padding: '0.65rem', border: '1px solid #e6e6e1', borderRadius: '6px', background: '#fff', color: '#16181d' }}>
+                          <option value="original">Keep original language</option><option value="translated">Translate to…</option>
+                        </select>
+                        {outputLanguage !== 'original' && <>
+                          <input list="translation-language-options" value={outputLanguage} onChange={(event) => setOutputLanguage(event.target.value)} disabled={actionLoading} placeholder="Type any language or ISO code" aria-label="Translation language" style={{ padding: '0.65rem', border: '1px solid #e6e6e1', borderRadius: '6px', background: '#fff', color: '#16181d' }} />
+                          <datalist id="translation-language-options">
+                            {['English','Hindi','Tamil','Telugu','Kannada','Malayalam','Bengali','Marathi','Gujarati','Punjabi','Urdu','Arabic','Chinese','Japanese','Korean','Spanish','French','German','Italian','Portuguese','Russian','Ukrainian','Dutch','Swedish','Norwegian','Danish','Finnish','Polish','Turkish','Greek','Hebrew','Thai','Vietnamese','Indonesian','Malay','Filipino','Swahili','Persian','Nepali','Sinhala'].map((language) => <option key={language} value={language} />)}
+                          </datalist>
+                        </>}
+                      </label>
+                      <label style={{ display: 'flex', alignItems: 'flex-start', gap: '0.6rem', padding: '0.75rem', border: '1px solid #e6e6e1', borderRadius: '6px', color: '#16181d', cursor: outputLanguage === 'original' ? 'not-allowed' : 'pointer', opacity: outputLanguage === 'original' ? 0.6 : 1 }}>
+                        <input type="checkbox" checked={dubVoice} disabled={actionLoading || outputLanguage === 'original'} onChange={(event) => setDubVoice(event.target.checked)} style={{ marginTop: '0.2rem' }} />
+                        <span><strong style={{ display: 'block', fontSize: '0.85rem' }}>Dub the voice</strong><small style={{ color: '#5b616b', lineHeight: 1.4 }}>Create translated speech in the selected caption language.</small></span>
+                      </label>
+                      <button
+                        disabled={actionLoading || isAnalyzing}
+                        onClick={handleAnalyzeMoments}
+                        style={{ display: 'inline-flex', justifyContent: 'center', alignItems: 'center', gap: '0.5rem', width: '100%', padding: '0.8rem 1rem', border: 0, borderRadius: '6px', background: actionLoading ? '#7a808a' : '#1f6f4a', color: '#fff', fontSize: '0.9rem', fontWeight: 700, cursor: actionLoading ? 'wait' : 'pointer' }}
+                      >
+                        <Wand2 size={16} /> Analyze and Find 5 Moments
+                      </button>
+                    </div>
+                  </div>
+                </section>
+              )}
+
+              {actionMessage && !isAnalyzing && hasAnalyzedMoments && (
                 <div
                   style={{
                     padding: '0.75rem 1rem',
@@ -1084,7 +1202,7 @@ export default function StudioPage() {
                 </div>
               )}
 
-              {(selectedVideo.highlights?.clips || []).length > 0 && (
+              {hasAnalyzedMoments && !isAnalyzing && (
                 <section style={{ background: '#fff', border: '1px solid #e6e6e1', borderRadius: '8px', padding: '1.25rem' }}>
                   <h3 style={{ margin: '0 0 0.35rem', color: '#16181d' }}>Top Moments from This Video</h3>
                   <p style={{ margin: '0 0 1rem', color: '#5b616b', fontSize: '0.85rem' }}>Preview the source audio for each exact timestamp, select one moment, then render a single short.</p>
@@ -1094,7 +1212,7 @@ export default function StudioPage() {
                         <label style={{ display: 'flex', alignItems: 'flex-start', gap: '0.5rem', cursor: 'pointer' }}>
                           <input type="radio" name={`moment-${selectedVideo.id}`} checked={selectedMomentId === index} onChange={() => {
                             setSelectedMomentId(index);
-                            const existingMomentClip = clips.find((clip) => clip.edit_options?.workflow === 'selected_moment_v1'
+                            const existingMomentClip = visibleClips.find((clip) => clip.edit_options?.workflow === 'selected_moment_v1'
                               && clip.edit_options?.selected_moment_id === index);
                             setSelectedClip(existingMomentClip || null);
                           }} />
@@ -1359,8 +1477,9 @@ export default function StudioPage() {
                 </div>
               ) : null}
 
-              {/* ── Main Content: Clips Showcase & Player (Always shown or updated once ready) ── */}
-              <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.35fr) minmax(300px, 360px)', gap: '1.5rem', alignItems: 'start' }}>
+              {/* ── Main Content: Clips Showcase & Player ── */}
+              {hasAnalyzedMoments && !isAnalyzing && (
+              <div ref={generatedOutputRef} style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.35fr) minmax(300px, 360px)', gap: '1.5rem', alignItems: 'start', scrollMarginTop: '1rem' }}>
                 {/* Generated Clips Grid */}
                 <div
                   style={{
@@ -1381,7 +1500,7 @@ export default function StudioPage() {
                         color: '#16181d',
                       }}
                     >
-                      Generated Clips ({clips.length})
+                      Generated Clips ({visibleClips.length})
                     </h3>
                     <button
                       onClick={loadClips}
@@ -1392,7 +1511,7 @@ export default function StudioPage() {
                     </button>
                   </div>
 
-                  {clips.length === 0 ? (
+                  {visibleClips.length === 0 ? (
                     <div
                       style={{
                         padding: '3.5rem 1.5rem',
@@ -1412,8 +1531,8 @@ export default function StudioPage() {
                     </div>
                   ) : (
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: '1rem' }}>
-                      {clips.map((clip) => {
-                        const isSelected = selectedClip?.id === clip.id;
+                      {visibleClips.map((clip) => {
+                        const isSelected = visibleSelectedClip?.id === clip.id;
                         return (
                           <div
                             key={clip.id}
@@ -1513,7 +1632,7 @@ export default function StudioPage() {
                     9:16 Short Preview
                   </h3>
 
-                  {selectedClip?.status === 'completed' && selectedClip.storage_path ? (
+                  {visibleSelectedClip?.status === 'completed' && visibleSelectedClip.storage_path ? (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
                       <div
                         style={{
@@ -1529,8 +1648,8 @@ export default function StudioPage() {
                         }}
                       >
                         <video
-                          key={selectedClip.storage_path}
-                          src={clipMediaUrl}
+                          key={visibleSelectedClip.storage_path}
+                          src={clipMediaClipId === visibleSelectedClip.id ? clipMediaUrl : ''}
                           controls
                           onError={() => setClipPlaybackError(true)}
                           style={{ width: '100%', height: '100%', objectFit: 'contain' }}
@@ -1660,9 +1779,10 @@ export default function StudioPage() {
                   )}
                 </div>
               </div>
+              )}
             </div>
             )
-          ) : (
+          ) : !activeProjectId ? (
             <div
               style={{
                 display: 'flex',
@@ -1677,34 +1797,94 @@ export default function StudioPage() {
             >
               <div
                 style={{
-                  width: 52,
-                  height: 52,
-                  borderRadius: '8px',
-                  backgroundColor: '#ffffff',
-                  border: '1px solid #e6e6e1',
+                  width: 64,
+                  height: 64,
+                  borderRadius: '12px',
+                  backgroundColor: '#f2faf5',
+                  border: '1px solid #d5eadd',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  color: '#16181d',
-                  marginBottom: '1rem',
+                  color: '#1f6f4a',
+                  marginBottom: '1.1rem',
                 }}
               >
-                <Video size={24} />
+                <Plus size={30} />
               </div>
               <h3
                 style={{
-                  fontSize: '1.35rem',
+                  fontSize: '1.55rem',
                   fontFamily: '"Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif',
                   fontWeight: 700,
                   color: '#16181d',
                   margin: '0 0 0.5rem',
                 }}
               >
-                Select or Upload a Video
+                Create a project first
               </h3>
-              <p style={{ maxWidth: '420px', fontSize: '0.925rem', margin: 0, color: '#5b616b', lineHeight: 1.6 }}>
-                Choose a video from the project footage sidebar or upload a recording. Preview five timestamped moments, choose one, and render a single 9:16 short with its original audio.
+              <p style={{ maxWidth: '470px', fontSize: '0.95rem', margin: '0 0 1.35rem', color: '#5b616b', lineHeight: 1.65 }}>
+                Projects keep your source videos and generated shorts organized. Create a project first, then upload a video into it to begin.
               </p>
+              <button
+                onClick={() => setShowNewProjectModal(true)}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem', padding: '0.75rem 1.15rem', border: 0, borderRadius: '6px', background: '#1f6f4a', color: '#fff', fontSize: '0.9rem', fontWeight: 650, cursor: 'pointer' }}
+              >
+                <Plus size={17} /> Create Your First Project
+              </button>
+            </div>
+          ) : (
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                flex: 1,
+                minHeight: 'calc(100vh - 90px)',
+                padding: '2rem',
+                textAlign: 'center',
+                color: '#5b616b',
+              }}
+            >
+              <div
+                onClick={() => !isUploading && fileInputRef.current?.click()}
+                onKeyDown={(event) => {
+                  if ((event.key === 'Enter' || event.key === ' ') && !isUploading) {
+                    event.preventDefault();
+                    fileInputRef.current?.click();
+                  }
+                }}
+                role="button"
+                tabIndex={isUploading ? -1 : 0}
+                aria-label="Choose a source video to upload"
+                style={{
+                  width: 'min(100%, 620px)',
+                  boxSizing: 'border-box',
+                  padding: '3.5rem 2rem',
+                  borderRadius: '14px',
+                  border: '2px dashed #c8d8ce',
+                  backgroundColor: '#ffffff',
+                  cursor: isUploading ? 'wait' : 'pointer',
+                  boxShadow: '0 4px 20px rgba(22, 24, 29, 0.04)',
+                }}
+              >
+                <UploadCloud size={42} color="#1f6f4a" style={{ marginBottom: '0.8rem' }} />
+                <h3 style={{ margin: '0 0 0.55rem', fontSize: '1.45rem', fontFamily: '"Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif', color: '#16181d' }}>
+                  {isUploading ? `Uploading video${uploadProgress ? ` · ${uploadProgress}%` : '…'}` : videos.length ? 'Upload another video' : 'Upload your first video'}
+                </h3>
+                <p style={{ maxWidth: '430px', margin: '0 auto 1.2rem', fontSize: '0.925rem', lineHeight: 1.6 }}>
+                  {videos.length
+                    ? 'Add a source video to this project. It will appear in the footage list on the left.'
+                    : 'Choose a source video for this project. It will appear in the footage list on the left, where you can select it for analysis.'}
+                </p>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.45rem', padding: '0.7rem 1.05rem', borderRadius: '6px', background: isUploading ? '#7a808a' : '#1f6f4a', color: '#fff', fontSize: '0.9rem', fontWeight: 650 }}>
+                  {isUploading ? <Loader size={16} /> : <UploadCloud size={16} />}
+                  {isUploading ? `Uploading ${uploadProgress}%…` : 'Choose Video File'}
+                </span>
+                <div style={{ marginTop: '0.9rem', fontSize: '0.78rem', color: '#7a808a' }}>MP4, MOV, MKV, or WebM</div>
+                {uploadError && <div style={{ marginTop: '0.85rem', color: '#b91c1c', fontSize: '0.85rem' }}>{uploadError}</div>}
+              </div>
+              {videos.length > 0 && <p style={{ marginTop: '1rem', fontSize: '0.85rem' }}>Or choose an existing video from the left sidebar.</p>}
             </div>
           )}
         </main>

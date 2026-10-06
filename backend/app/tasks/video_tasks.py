@@ -477,6 +477,16 @@ def extract_top5_highlights_task(video_id: int, target_length: float = 30.0):
         os.makedirs(previews_dir, exist_ok=True)
 
         vid_dur = float(video.duration or 0.0)
+        requested_duration = max(1.0, float(target_length))
+
+        def fit_requested_duration(start: float, end: float) -> tuple[float, float]:
+            """Keep the suggested moment's center while honoring the chosen duration."""
+            available = vid_dur if vid_dur > 0 else max(end, start + requested_duration)
+            duration = min(requested_duration, available)
+            center = (start + end) / 2.0
+            fitted_start = max(0.0, min(center - duration / 2.0, available - duration))
+            return fitted_start, fitted_start + duration
+
         formatted_clips = []
 
         transcript_segments = [
@@ -495,15 +505,11 @@ def extract_top5_highlights_task(video_id: int, target_length: float = 30.0):
                 continue
             if vid_dur > 0:
                 end = min(end, vid_dur)
-            if transcript_segments:
-                overlap = [s for s in transcript_segments if s["end"] > start and s["start"] < end]
-                if not overlap:
-                    continue
-                start, end = float(overlap[0]["start"]), float(overlap[-1]["end"])
+            if transcript_segments and not any(s["end"] > start and s["start"] < end for s in transcript_segments):
+                continue
             if end <= start:
                 continue
-            if end - start > target_length:
-                end = start + target_length
+            start, end = fit_requested_duration(start, end)
             if any(abs(float(item["start_time"]) - start) < 1 for item in normalized_clips):
                 continue
             normalized_clips.append({**candidate, "start_time": start, "end_time": end})
@@ -512,18 +518,14 @@ def extract_top5_highlights_task(video_id: int, target_length: float = 30.0):
         # the timestamped transcript (or evenly spaced windows for silent footage).
         if len(raw_clips) < 5:
             duration_for_windows = vid_dur or (float(transcript_segments[-1]["end"]) if transcript_segments else 0)
-            window = (
-                duration_for_windows / 5 if 0 < duration_for_windows <= 15
-                else min(45.0, duration_for_windows / 2)
-            ) if duration_for_windows > 0 else 15.0
+            window = min(requested_duration, duration_for_windows) if duration_for_windows > 0 else requested_duration
             step = max(1.0, (duration_for_windows - window) / 4) if duration_for_windows > window else 0
             for index in range(5):
                 st = index * step
                 en = min(duration_for_windows, st + window) if duration_for_windows else st + window
-                if transcript_segments:
-                    overlap = [s for s in transcript_segments if s["end"] > st and s["start"] < en]
-                    if overlap:
-                        st, en = float(overlap[0]["start"]), float(overlap[-1]["end"])
+                if transcript_segments and not any(s["end"] > st and s["start"] < en for s in transcript_segments):
+                    continue
+                st, en = fit_requested_duration(st, en)
                 if not any(abs(float(c.get("start_time", -100)) - st) < 1.0 for c in raw_clips):
                     raw_clips.append({
                         "start_time": st, "end_time": en,
@@ -537,17 +539,9 @@ def extract_top5_highlights_task(video_id: int, target_length: float = 30.0):
         for idx, c in enumerate(raw_clips[:5]):
             st = max(0.0, float(c.get("start_time", 0.0)))
             en = float(c.get("end_time", st + 45.0))
-            if transcript_segments:
-                matching = [s for s in transcript_segments if s["end"] > st and s["start"] < en]
-                if not matching:
-                    continue
-                st = float(matching[0]["start"])
-                en = float(matching[-1]["end"])
             if vid_dur > 0 and en > vid_dur:
                 en = vid_dur
-            # Strictly enforce max 60s duration for Shorts
-            if en - st > target_length:
-                en = st + target_length
+            st, en = fit_requested_duration(st, en)
             if en <= st:
                 en = st + 15.0
 

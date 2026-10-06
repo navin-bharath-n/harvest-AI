@@ -134,6 +134,16 @@ export const api = {
     return URL.createObjectURL(await response.blob());
   },
 
+  getVideoMedia: async (videoId) => {
+    const metadata = await client.get(`/videos/${videoId}/media-url`);
+    if (metadata.data?.direct && metadata.data.url) {
+      return { url: metadata.data.url, objectUrl: false };
+    }
+    const response = await authFetch(`/videos/${videoId}/media`);
+    if (!response.ok) throw new Error(`Unable to load source video (${response.status})`);
+    return { url: URL.createObjectURL(await response.blob()), objectUrl: true };
+  },
+
   // Upload a video
   uploadVideo: async (projectId, file, onUploadProgress) => {
     const formData = new FormData();
@@ -173,10 +183,13 @@ export const api = {
     return response.data;
   },
 
-  selectMoment: async (videoId, momentId, captionStyle) => {
+  selectMoment: async (videoId, momentId, captionStyle, options = {}) => {
     const response = await client.post(`/videos/${videoId}/select-moment`, {
       moment_id: momentId,
       caption_style: captionStyle,
+      translate_language: options.translateLanguage || 'none',
+      caption_language: options.captionLanguage || 'original',
+      dub_voice: Boolean(options.dubVoice),
     });
     return response.data;
   },

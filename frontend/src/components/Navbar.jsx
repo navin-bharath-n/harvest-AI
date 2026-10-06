@@ -1,7 +1,8 @@
 import React from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Scissors, LogIn, LayoutDashboard, LogOut } from 'lucide-react';
+import { LogIn, LayoutDashboard, LogOut } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import harvestLogo from '../Untitled Design.png';
 
 export default function Navbar() {
   const { user, isAuthenticated, logout } = useAuth();
@@ -33,20 +34,7 @@ export default function Navbar() {
           color: '#16181d',
         }}
       >
-        <div
-          style={{
-            width: 30,
-            height: 30,
-            borderRadius: '6px',
-            backgroundColor: '#16181d',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            color: '#ffffff',
-          }}
-        >
-          <Scissors size={16} />
-        </div>
+        <img src={harvestLogo} alt="Harvest AI logo" style={{ width: 40, height: 40, objectFit: 'contain', borderRadius: '6px' }} />
         <span
           style={{
             fontSize: '1.25rem',
