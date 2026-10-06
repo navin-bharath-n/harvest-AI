@@ -169,6 +169,15 @@ def url(storage_path: str) -> str:
     )
 
 
+def open_read(storage_path: str):
+    """Open a remote object body for same-origin API streaming to browsers."""
+    parsed = _parse(storage_path)
+    if not parsed:
+        raise ValueError("A remote storage path is required")
+    provider, bucket, key = parsed
+    return _client_for(provider).get_object(Bucket=bucket, Key=key)
+
+
 def delete(storage_path: str) -> None:
     parsed = _parse(storage_path)
     if parsed:

@@ -281,7 +281,7 @@ def detect_highlights_task(video_id: int):
         db.close()
 
 @celery_app.task(ignore_result=True)
-def extract_top5_highlights_task(video_id: int):
+def extract_top5_highlights_task(video_id: int, target_length: float = 30.0):
     """
     Lightweight, low-memory AI highlight extraction task:
     1. Extracts fast 64k mono MP3 audio using FFmpeg (takes ~1s, <20MB RAM)
@@ -357,7 +357,10 @@ def extract_top5_highlights_task(video_id: int):
         except Exception as probe_err:
             logger.warning(f"ffprobe audio check failed for video {video_id}: {probe_err}. Assuming no audio.")
 
-        # 3. Extract fast 64k mono MP3 audio (only if audio stream exists)
+        if not has_audio:
+            raise RuntimeError("This video has no audio track. Upload a video with audio to analyze spoken content.")
+
+        # 3. Extract fast 64k mono MP3 audio
         audio_path = os.path.join(assets_dir, f"{base_name}_audio.mp3")
         if has_audio:
             if not os.path.exists(audio_path) or os.path.getsize(audio_path) == 0:
@@ -412,11 +415,15 @@ def extract_top5_highlights_task(video_id: int):
                         )
                         raise  # propagate so the task marks the video as FAILED
 
-            video.audio_path = audio_path
+            from app.services import object_storage
+            if object_storage.enabled():
+                audio_storage_path = object_storage.upload_file(
+                    audio_path, f"audio/video_{video_id}/source-audio.mp3", "audio/mpeg"
+                )
+                video.audio_path = audio_storage_path
+            else:
+                video.audio_path = _safe_relpath(audio_path, str(_BACKEND_DIR))
             db.commit()
-        else:
-            logger.info(f"Video {video_id} has no audio stream — skipping audio extraction and transcription.")
-            audio_path = None
 
         # 4. Transcribe (or use empty transcript for audio-less / cached videos)
         if transcript_is_cached:
@@ -460,7 +467,7 @@ def extract_top5_highlights_task(video_id: int):
 
         # 5. Detect Top 5 Highlights with Groq Llama 3.3 (0% server RAM/CPU, takes ~1s)
         logger.info(f"Detecting top 5 highlights with Groq Llama 3.3...")
-        highlights_data = highlight_detection_service.detect(transcript, analysis)
+        highlights_data = highlight_detection_service.detect(transcript, analysis, target_length=target_length)
         raw_clips = highlights_data.get("clips", []) if isinstance(highlights_data, dict) else []
         if not isinstance(raw_clips, list):
             raw_clips = []
@@ -495,8 +502,8 @@ def extract_top5_highlights_task(video_id: int):
                 start, end = float(overlap[0]["start"]), float(overlap[-1]["end"])
             if end <= start:
                 continue
-            if end - start > 60:
-                end = start + 60
+            if end - start > target_length:
+                end = start + target_length
             if any(abs(float(item["start_time"]) - start) < 1 for item in normalized_clips):
                 continue
             normalized_clips.append({**candidate, "start_time": start, "end_time": end})
@@ -539,8 +546,8 @@ def extract_top5_highlights_task(video_id: int):
             if vid_dur > 0 and en > vid_dur:
                 en = vid_dur
             # Strictly enforce max 60s duration for Shorts
-            if en - st > 60.0:
-                en = st + 60.0
+            if en - st > target_length:
+                en = st + target_length
             if en <= st:
                 en = st + 15.0
 
@@ -604,7 +611,7 @@ def extract_top5_highlights_task(video_id: int):
             )
         # Preserve a prior selection when reanalysis is explicitly requested.
         previous_highlights = video.highlights if isinstance(video.highlights, dict) else {}
-        video.highlights = {"clips": formatted_clips}
+        video.highlights = {"clips": formatted_clips, "requested_length": float(target_length)}
         if previous_highlights.get("selected_moment_id") is not None:
             video.highlights["selected_moment_id"] = previous_highlights["selected_moment_id"]
         video.highlight_status = models.HighlightDetectionStatus.COMPLETED

@@ -168,8 +168,8 @@ export const api = {
     return response.data;
   },
 
-  extractHighlights: async (videoId) => {
-    const response = await client.post(`/videos/${videoId}/extract-highlights`);
+  extractHighlights: async (videoId, length = 30) => {
+    const response = await client.post(`/videos/${videoId}/extract-highlights`, { length });
     return response.data;
   },
 

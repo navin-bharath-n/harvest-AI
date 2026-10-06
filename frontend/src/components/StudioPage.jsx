@@ -27,6 +27,7 @@ export default function StudioPage() {
   const [clips, setClips] = useState([]);
   const [selectedClip, setSelectedClip] = useState(null);
   const [selectedMomentId, setSelectedMomentId] = useState(null);
+  const [clipLength, setClipLength] = useState(30);
   const [momentAudioUrls, setMomentAudioUrls] = useState([]);
   const [clipPlaybackError, setClipPlaybackError] = useState(false);
   const [clipMediaUrl, setClipMediaUrl] = useState('');
@@ -71,13 +72,13 @@ export default function StudioPage() {
   useEffect(() => {
     let currentUrl = '';
     setClipMediaUrl('');
-    if (!selectedClip?.id || selectedClip.status === 'failed') return undefined;
+    if (!selectedClip?.id || selectedClip.status !== 'completed' || !selectedClip.storage_path) return undefined;
     api.getClipMedia(selectedClip.id).then((url) => {
       currentUrl = url;
       setClipMediaUrl(url);
     }).catch(() => setClipPlaybackError(true));
     return () => { if (currentUrl) URL.revokeObjectURL(currentUrl); };
-  }, [selectedClip?.id]);
+  }, [selectedClip?.id, selectedClip?.status, selectedClip?.storage_path]);
 
   // Upload State
   const [isUploading, setIsUploading] = useState(false);
@@ -299,7 +300,7 @@ export default function StudioPage() {
     }
   }, [selectedVideo, startStatusPolling]);
 
-  // Handle Video Upload: Immediately upload & automatically launch master generation pipeline!
+  // Upload source media first; the user chooses the target length before analysis.
   const handleFileUpload = async (e) => {
     const file = e.target.files?.[0];
     if (!file || !activeProjectId) return;
@@ -321,16 +322,7 @@ export default function StudioPage() {
 
       if (uploadedVideo && uploadedVideo.id) {
         setSelectedVideo(uploadedVideo);
-        setActionMessage('Video uploaded. Queuing its one-time transcript and moment analysis.');
-        setActionLoading(true);
-        try {
-          const processingVideo = await api.extractHighlights(uploadedVideo.id);
-          setSelectedVideo(processingVideo);
-          startStatusPolling(uploadedVideo.id);
-        } catch (queueError) {
-          setActionLoading(false);
-          setActionMessage(queueError.response?.data?.detail || queueError.message || 'Upload succeeded, but analysis could not be queued.');
-        }
+        setActionMessage('Video uploaded. Choose a short length, then analyze to find five moments.');
       }
     } catch (err) {
       console.error('Upload failed:', err);
@@ -374,7 +366,7 @@ export default function StudioPage() {
     setActionLoading(true);
     setActionMessage('Queueing transcription and analysis. Existing transcript and analysis are reused when available.');
     try {
-      const processingVideo = await api.extractHighlights(selectedVideo.id);
+      const processingVideo = await api.extractHighlights(selectedVideo.id, clipLength);
       setSelectedVideo(processingVideo);
       startStatusPolling(selectedVideo.id);
     } catch (error) {
@@ -999,6 +991,17 @@ export default function StudioPage() {
                       <option value="neon">Neon</option>
                     </select>
                   </label>
+                  {selectedMomentId == null && (
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem', color: '#5b616b' }}>
+                      Short length
+                      <select value={clipLength} onChange={(event) => { setClipLength(Number(event.target.value)); setSelectedMomentId(null); }} disabled={actionLoading || isAnalyzing} style={{ padding: '0.55rem', border: '1px solid #e6e6e1', borderRadius: '6px', background: '#fff', color: '#16181d' }}>
+                        <option value={15}>15 seconds</option>
+                        <option value={30}>30 seconds</option>
+                        <option value={45}>45 seconds</option>
+                        <option value={60}>60 seconds</option>
+                      </select>
+                    </label>
+                  )}
                   {selectedClip?.edit_options?.workflow === 'selected_moment_v1' &&
                     selectedClip.edit_options.caption_style !== captionStyle && (
                     <button
@@ -1010,7 +1013,7 @@ export default function StudioPage() {
                     </button>
                   )}
                   <button
-                    disabled={actionLoading || isAnalyzing || (selectedMomentId == null && selectedVideo.highlight_status === 'completed' && (selectedVideo.highlights?.clips || []).length >= 5)}
+                    disabled={actionLoading || isAnalyzing}
                     onClick={selectedMomentId == null ? handleAnalyzeMoments : handleRenderSelectedMoment}
                     style={{
                       display: 'inline-flex',
@@ -1027,7 +1030,7 @@ export default function StudioPage() {
                       transition: 'background-color 0.15s ease',
                     }}
                   >
-                    <Wand2 size={15} /> {selectedMomentId != null ? 'Render 1 Selected Moment' : ((selectedVideo.highlights?.clips || []).length ? 'Select a Moment' : 'Analyze 5 Moments')}
+                    <Wand2 size={15} /> {selectedMomentId != null ? 'Render 1 Selected Moment' : ((selectedVideo.highlights?.clips || []).length ? 'Reanalyze 5 Moments' : 'Analyze 5 Moments')}
                   </button>
                 </div>
               </div>

@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from sqlalchemy.orm import Session
 from typing import List, Optional
 import shutil
@@ -286,6 +286,7 @@ async def upload_video(
 @router.post("/{video_id}/extract-highlights", response_model=schemas.Video)
 def extract_highlights(
     video_id: int,
+    request: schemas.HighlightAnalysisRequest,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
@@ -295,8 +296,14 @@ def extract_highlights(
         db_video.highlight_status == models.HighlightDetectionStatus.COMPLETED
         and isinstance(db_video.highlights, dict)
         and len(db_video.highlights.get("clips") or []) >= 5
+        and db_video.highlights.get("requested_length") == request.length
     ):
         return db_video
+
+    if isinstance(db_video.highlights, dict):
+        prior_highlights = dict(db_video.highlights)
+        prior_highlights.pop("selected_moment_id", None)
+        db_video.highlights = prior_highlights
 
     db_video.status = models.VideoStatus.PROCESSING
     if not (db_video.transcription_status == models.TranscriptionStatus.COMPLETED and db_video.transcript):
@@ -309,7 +316,7 @@ def extract_highlights(
 
     from app.tasks.video_tasks import extract_top5_highlights_task
     try:
-        dispatch_required_queue(extract_top5_highlights_task, db_video.id)
+        dispatch_required_queue(extract_top5_highlights_task, db_video.id, request.length)
     except HTTPException:
         # A job that never reached Celery is not completed. Report failure so
         # the UI offers a retry and never presents stale completion state.
@@ -375,7 +382,26 @@ def get_clip_media(
         raise HTTPException(status_code=404, detail="Clip media not found")
     from app.services import object_storage
     if object_storage.is_remote(clip.storage_path):
-        return RedirectResponse(object_storage.url(clip.storage_path))
+        try:
+            remote_object = object_storage.open_read(clip.storage_path)
+        except Exception as exc:
+            logger.exception("Unable to open stored clip %s", clip_id)
+            raise HTTPException(status_code=502, detail="Stored clip could not be loaded") from exc
+        headers = {}
+        if remote_object.get("ContentLength") is not None:
+            headers["Content-Length"] = str(remote_object["ContentLength"])
+        def stream_remote_clip():
+            body = remote_object["Body"]
+            try:
+                yield from body.iter_chunks(chunk_size=1024 * 1024)
+            finally:
+                body.close()
+
+        return StreamingResponse(
+            stream_remote_clip(),
+            media_type=remote_object.get("ContentType") or "video/mp4",
+            headers=headers,
+        )
     path = _resolve_path(clip.storage_path)
     if not os.path.isfile(path):
         raise HTTPException(status_code=404, detail="Clip media not found")

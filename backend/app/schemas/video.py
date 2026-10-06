@@ -46,6 +46,9 @@ class SelectMomentRequest(BaseModel):
     moment_id: int = Field(ge=0, le=4)
     caption_style: Literal["pop", "karaoke", "minimalist", "boxed", "neon", "standard", "none"] = "pop"
 
+class HighlightAnalysisRequest(BaseModel):
+    length: float = Field(default=30.0, ge=10.0, le=60.0, description="Target maximum duration for suggested moments")
+
 class CaptionStyleUpdate(BaseModel):
     caption_style: Literal["pop", "karaoke", "minimalist", "boxed", "neon", "standard", "none"]
 

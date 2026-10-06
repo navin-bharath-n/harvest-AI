@@ -35,7 +35,7 @@ class HighlightDetectionService:
             self.model = "llama-3.3-70b-versatile"
             self.provider = "none"
 
-    def detect(self, transcript: list, content_analysis: dict) -> dict:
+    def detect(self, transcript: list, content_analysis: dict, target_length: float = 30.0) -> dict:
         """
         Analyzes a video transcript and content insights to generate Top 5 highlight clips.
         Transcript is expected to be a list of dicts: [{'start': float, 'end': float, 'text': str}]
@@ -86,7 +86,7 @@ CRITICAL RULES FOR CLIP SELECTION:
    - 30% Hook (How strong is the first 3 seconds of the clip at grabbing attention?)
    - 20% Retention (How well does the clip maintain interest throughout?)
    - 10% Emotion (Does it evoke laughter, surprise, curiosity, or empathy?)
-3. Each clip should ideally be between 15 and 60 seconds long.
+3. Each clip must be no longer than {target_length:.0f} seconds. Aim for about {target_length:.0f} seconds when the source has enough complete speech.
 4. You MUST output EXACTLY 5 clips.
 
 You MUST output exactly and ONLY valid JSON matching this schema, with no markdown formatting around it:
