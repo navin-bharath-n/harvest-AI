@@ -140,7 +140,7 @@ export default function PrivacyPolicyPage() {
             <ul style={{ paddingLeft: '1.4rem', lineHeight: 1.8, color: '#5b616b' }}>
               <li><strong>Account Credentials:</strong> Full name, email address, and salted Bcrypt password hash for authentication and workspace isolation.</li>
               <li><strong>Media &amp; Content:</strong> Videos you upload, extracted audio streams, generated speech transcripts, and processed short video variations.</li>
-              <li><strong>Third-Party Social Tokens:</strong> When you connect YouTube, TikTok, or Instagram accounts for publishing, we store encrypted API tokens exclusively to publish clips upon your manual request.</li>
+              <li><strong>Third-Party Social Tokens:</strong> When you connect YouTube, Facebook, or Instagram accounts for publishing, we store API tokens to publish clips upon your manual request.</li>
               <li><strong>System Logs:</strong> Server operational logs (timestamps, API status codes) for reliability and security audit purposes.</li>
             </ul>
           </section>

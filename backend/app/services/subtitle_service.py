@@ -1,6 +1,8 @@
 import os
 import subprocess
 import logging
+import re
+import math
 from typing import List, Dict
 
 logger = logging.getLogger(__name__)
@@ -29,6 +31,41 @@ class SubtitleService:
             return False
         return True
 
+    def clean_transcript_words(self, words: List[Dict]) -> List[Dict]:
+        """Drop malformed timestamps and near-identical overlapping STT duplicates."""
+        parsed = []
+        for item in words or []:
+            if not isinstance(item, dict):
+                continue
+            text = re.sub(r"\s+", " ", str(item.get("text", ""))).strip()
+            try:
+                start, end = float(item.get("start")), float(item.get("end"))
+            except (TypeError, ValueError):
+                continue
+            if not text or not math.isfinite(start) or not math.isfinite(end) or start < 0 or end <= start:
+                continue
+            if not re.sub(r"[^\w]+", "", text.casefold(), flags=re.UNICODE):
+                continue
+            entry = {**item, "start": start, "end": end, "text": text}
+            parsed.append(entry)
+
+        cleaned = []
+        for entry in sorted(parsed, key=lambda item: (item["start"], item["end"])):
+            normalized = re.sub(r"[^\w]+", "", entry["text"].casefold(), flags=re.UNICODE)
+            if cleaned:
+                previous = cleaned[-1]
+                previous_normalized = re.sub(r"[^\w]+", "", previous["text"].casefold(), flags=re.UNICODE)
+                same_timing_duplicate = (
+                    normalized == previous_normalized
+                    and entry["start"] <= previous["end"] + 0.03
+                    and entry["end"] <= previous["end"] + 0.08
+                    and abs(entry["start"] - previous["start"]) <= 0.12
+                )
+                if same_timing_duplicate:
+                    continue
+            cleaned.append(entry)
+        return cleaned
+
     def group_words_into_lines(self, words: List[Dict], max_words: int = 5, max_duration: float = 2.5) -> List[Dict]:
         """
         Group word-level timestamps into short, punchy sentence chunks for mobile shorts.
@@ -36,6 +73,7 @@ class SubtitleService:
         - Splits at large silences (gaps of > 0.6s between words)
         - Keeps chunks small (3-5 words) for maximum visual impact and clean rendering
         """
+        words = self.clean_transcript_words(words)
         lines = []
         current_line_words = []
         current_start = 0.0

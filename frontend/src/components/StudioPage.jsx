@@ -38,6 +38,7 @@ export default function StudioPage() {
   const [captionStyle, setCaptionStyle] = useState('pop');
   const [outputLanguage, setOutputLanguage] = useState('original');
   const [dubVoice, setDubVoice] = useState(false);
+  const [speakerGender, setSpeakerGender] = useState('female');
   const generatedOutputRef = useRef(null);
 
   useEffect(() => {
@@ -133,6 +134,87 @@ export default function StudioPage() {
   // Publishing State
   const [publishing, setPublishing] = useState(false);
   const [publishStatus, setPublishStatus] = useState('');
+  const [socialConnections, setSocialConnections] = useState([]);
+  const oauthPopupRef = useRef(null);
+  const pendingOAuthPublishRef = useRef(null);
+  const socialConnectionsRef = useRef([]);
+  socialConnectionsRef.current = socialConnections;
+
+  const refreshSocialConnections = useCallback(async () => {
+    if (!user?.id) return [];
+    const connections = await api.getUserConnections(user.id);
+    setSocialConnections(connections || []);
+    return connections || [];
+  }, [user?.id]);
+
+  useEffect(() => {
+    refreshSocialConnections().catch((error) => {
+      console.warn('Could not load social account connections:', error);
+    });
+  }, [refreshSocialConnections]);
+
+  const publishClipToPlatform = async (clipId, platform) => {
+    setPublishing(true);
+    setPublishStatus(`Sending video to ${platform}…`);
+    try {
+      await api.publishClip(
+        clipId,
+        [platform],
+        selectedClip?.id === clipId ? (selectedClip.title || 'Short Clip') : 'Short Clip',
+        'Generated with Harvest',
+        'public',
+        {}
+      );
+
+      // The API queues publishing in Celery. Report the actual result from the
+      // clip record instead of treating a successfully queued task as success.
+      for (let attempt = 0; attempt < 60; attempt += 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 2000));
+        const updatedClip = await api.getClip(clipId);
+        const result = updatedClip?.published_urls?.[platform];
+        if (typeof result === 'string' && result) {
+          if (result.startsWith('error:')) throw new Error(result.slice(6).trim());
+          setPublishStatus(`Published to ${platform}: ${result}`);
+          return;
+        }
+      }
+      setPublishStatus(`Publishing to ${platform} is still processing. Check the clip again shortly.`);
+    } catch (err) {
+      console.error('Social publish error:', err);
+      setPublishStatus(`Publishing failed: ${err.response?.data?.detail || err.message}`);
+    } finally {
+      setPublishing(false);
+    }
+  };
+
+  useEffect(() => {
+    const handleOAuthMessage = async (event) => {
+      if (event.origin !== api.getSocialOAuthOrigin() || event.source !== oauthPopupRef.current) return;
+      oauthPopupRef.current = null;
+      if (event.data?.type === 'HARVEST_AUTH_FAILURE') {
+        pendingOAuthPublishRef.current = null;
+        setPublishStatus(`Account connection failed: ${event.data.error || 'Please try again.'}`);
+        return;
+      }
+      if (event.data?.type !== 'HARVEST_AUTH_SUCCESS') return;
+
+      const pending = pendingOAuthPublishRef.current;
+      pendingOAuthPublishRef.current = null;
+      try {
+        await refreshSocialConnections();
+        if (pending && pending.platform === event.data.platform) {
+          setPublishStatus(`${event.data.platform} connected. Starting upload…`);
+          await publishClipToPlatform(pending.clipId, pending.platform);
+        } else {
+          setPublishStatus(`${event.data.platform} account connected.`);
+        }
+      } catch (error) {
+        setPublishStatus(`Account connected, but publishing could not start: ${error.message}`);
+      }
+    };
+    window.addEventListener('message', handleOAuthMessage);
+    return () => window.removeEventListener('message', handleOAuthMessage);
+  }, [refreshSocialConnections]);
 
   // Deletion State — confirm-before-delete dialogs
   const [confirmDialog, setConfirmDialog] = useState(null); // { type, id, label }
@@ -451,6 +533,7 @@ export default function StudioPage() {
         translateLanguage: outputLanguage === 'original' ? 'none' : outputLanguage,
         captionLanguage: outputLanguage === 'original' ? 'original' : 'translated',
         dubVoice,
+        speakerGender,
       });
       setSelectedClip(clip);
       setClips((items) => [clip, ...items.filter((item) => item.id !== clip.id)]);
@@ -596,29 +679,27 @@ export default function StudioPage() {
     }
   };
 
-  // Handle Social Publishing
-  const handlePublishClip = async (platform) => {
-    if (!selectedClip) return;
-    setPublishing(true);
-    setPublishStatus(`Publishing to ${platform}…`);
-
-    try {
-      await api.publishClip(
-        selectedClip.id,
-        [platform],
-        selectedClip.title || 'Short Clip',
-        'Generated with Harvest',
-        'public',
-        {}
-      );
-      setPublishStatus(`Successfully published to ${platform}!`);
-      setTimeout(() => setPublishStatus(''), 4000);
-    } catch (err) {
-      console.error('Social publish error:', err);
-      setPublishStatus(`Publishing failed: ${err.response?.data?.detail || err.message}`);
-    } finally {
-      setPublishing(false);
+  // Connect an account on first use, then publish the selected clip.
+  const handlePublishClip = (platform) => {
+    if (!selectedClip || !user?.id || publishing) return;
+    const isConnected = socialConnectionsRef.current.some((connection) => connection.platform === platform);
+    if (isConnected) {
+      publishClipToPlatform(selectedClip.id, platform);
+      return;
     }
+
+    const popup = window.open(
+      api.getSocialLoginUrl(platform, user.id),
+      `harvest-${platform}-oauth`,
+      'popup=yes,width=620,height=760,resizable=yes,scrollbars=yes'
+    );
+    if (!popup) {
+      setPublishStatus('Your browser blocked the sign-in window. Allow popups for this site and try again.');
+      return;
+    }
+    pendingOAuthPublishRef.current = { clipId: selectedClip.id, platform };
+    oauthPopupRef.current = popup;
+    setPublishStatus(`Connect your ${platform} account in the sign-in window. Publishing will start when you finish.`);
   };
 
   // Confirm-and-execute deletion
@@ -1118,6 +1199,12 @@ export default function StudioPage() {
                       <option value="pop">Viral Pop</option><option value="karaoke">Karaoke</option><option value="minimalist">Minimal</option><option value="boxed">Boxed</option><option value="neon">Neon</option>
                     </select>
                   </label>
+                  {dubVoice && <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem', color: '#5b616b' }}>
+                    Dub voice
+                    <select value={speakerGender} onChange={(event) => setSpeakerGender(event.target.value)} disabled={actionLoading} style={{ padding: '0.55rem', border: '1px solid #e6e6e1', borderRadius: '6px', background: '#fff', color: '#16181d' }}>
+                      <option value="female">Female</option><option value="male">Male</option>
+                    </select>
+                  </label>}
                   {visibleSelectedClip?.edit_options?.workflow === 'selected_moment_v1' && visibleSelectedClip.edit_options.caption_style !== captionStyle && (
                     <button disabled={actionLoading || ['pending', 'rendering'].includes(visibleSelectedClip.status)} onClick={handleCaptionRerender} style={{ padding: '0.65rem 0.9rem', borderRadius: '6px', background: '#fff', border: '1px solid #e6e6e1', color: '#16181d', fontSize: '0.825rem', fontWeight: 600, cursor: actionLoading ? 'not-allowed' : 'pointer' }}>Apply Caption Style</button>
                   )}
@@ -1171,6 +1258,12 @@ export default function StudioPage() {
                         <input type="checkbox" checked={dubVoice} disabled={actionLoading || outputLanguage === 'original'} onChange={(event) => setDubVoice(event.target.checked)} style={{ marginTop: '0.2rem' }} />
                         <span><strong style={{ display: 'block', fontSize: '0.85rem' }}>Dub the voice</strong><small style={{ color: '#5b616b', lineHeight: 1.4 }}>Create translated speech in the selected caption language.</small></span>
                       </label>
+                      {dubVoice && <label style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', color: '#5b616b', fontSize: '0.83rem', fontWeight: 600 }}>
+                        Dub voice
+                        <select value={speakerGender} onChange={(event) => setSpeakerGender(event.target.value)} disabled={actionLoading} style={{ padding: '0.65rem', border: '1px solid #e6e6e1', borderRadius: '6px', background: '#fff', color: '#16181d' }}>
+                          <option value="female">Female voice</option><option value="male">Male voice</option>
+                        </select>
+                      </label>}
                       <button
                         disabled={actionLoading || isAnalyzing}
                         onClick={handleAnalyzeMoments}
@@ -1701,7 +1794,7 @@ export default function StudioPage() {
                         </div>
                         <div style={{ display: 'flex', gap: '0.5rem' }}>
                           <button
-                            disabled={publishing}
+                            disabled={publishing || !visibleSelectedClip}
                             onClick={() => handlePublishClip('youtube')}
                             style={{
                               flex: 1,
@@ -1712,14 +1805,14 @@ export default function StudioPage() {
                               border: '1px solid #e6e6e1',
                               fontSize: '0.8rem',
                               fontWeight: 600,
-                              cursor: publishing ? 'not-allowed' : 'pointer',
+                              cursor: publishing || !visibleSelectedClip ? 'not-allowed' : 'pointer',
                             }}
                           >
-                            YouTube
+                            {socialConnections.some((connection) => connection.platform === 'youtube') ? 'YouTube · Connected' : 'YouTube'}
                           </button>
                           <button
-                            disabled={publishing}
-                            onClick={() => handlePublishClip('tiktok')}
+                            disabled={publishing || !visibleSelectedClip}
+                            onClick={() => handlePublishClip('facebook')}
                             style={{
                               flex: 1,
                               padding: '0.55rem',
@@ -1729,13 +1822,13 @@ export default function StudioPage() {
                               border: '1px solid #e6e6e1',
                               fontSize: '0.8rem',
                               fontWeight: 600,
-                              cursor: publishing ? 'not-allowed' : 'pointer',
+                              cursor: publishing || !visibleSelectedClip ? 'not-allowed' : 'pointer',
                             }}
                           >
-                            TikTok
+                            {socialConnections.some((connection) => connection.platform === 'facebook') ? 'Facebook · Connected' : 'Facebook'}
                           </button>
                           <button
-                            disabled={publishing}
+                            disabled={publishing || !visibleSelectedClip}
                             onClick={() => handlePublishClip('instagram')}
                             style={{
                               flex: 1,
@@ -1746,10 +1839,10 @@ export default function StudioPage() {
                               border: '1px solid #e6e6e1',
                               fontSize: '0.8rem',
                               fontWeight: 600,
-                              cursor: publishing ? 'not-allowed' : 'pointer',
+                              cursor: publishing || !visibleSelectedClip ? 'not-allowed' : 'pointer',
                             }}
                           >
-                            Instagram
+                            {socialConnections.some((connection) => connection.platform === 'instagram') ? 'Instagram · Connected' : 'Instagram'}
                           </button>
                         </div>
 

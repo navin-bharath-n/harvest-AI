@@ -533,6 +533,7 @@ def select_moment(
         and (existing.edit_options or {}).get("translate_language", "none") == request.translate_language
         and (existing.edit_options or {}).get("caption_language", "original") == request.caption_language
         and bool((existing.edit_options or {}).get("dub_voice", False)) == request.dub_voice
+        and (existing.edit_options or {}).get("speaker_gender", "female") == request.speaker_gender
     ):
         db.commit()
         return existing
@@ -557,6 +558,7 @@ def select_moment(
         "caption_language": request.caption_language,
         "translate_language": request.translate_language,
         "dub_voice": request.dub_voice,
+        "speaker_gender": request.speaker_gender,
         "music_preset": "none",
         "music_style": "none",
         "framing_mode": "fit_blur",

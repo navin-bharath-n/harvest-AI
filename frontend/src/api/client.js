@@ -190,6 +190,7 @@ export const api = {
       translate_language: options.translateLanguage || 'none',
       caption_language: options.captionLanguage || 'original',
       dub_voice: Boolean(options.dubVoice),
+      speaker_gender: options.speakerGender || 'female',
     });
     return response.data;
   },
@@ -280,6 +281,20 @@ export const api = {
     }
     const response = await client.get(`/users/${targetUserId}/connections`);
     return response.data;
+  },
+
+  // Build the backend OAuth URL for a social account connection.
+  getSocialLoginUrl: (platform, userId) => {
+    const baseUrl = API_BASE_URL.startsWith('http')
+      ? API_BASE_URL
+      : `${window.location.origin}${API_BASE_URL.startsWith('/') ? '' : '/'}${API_BASE_URL}`;
+    return `${baseUrl}/users/auth/${encodeURIComponent(platform)}/login?user_id=${encodeURIComponent(userId)}`;
+  },
+  getSocialOAuthOrigin: () => {
+    const baseUrl = API_BASE_URL.startsWith('http')
+      ? API_BASE_URL
+      : `${window.location.origin}${API_BASE_URL.startsWith('/') ? '' : '/'}${API_BASE_URL}`;
+    return new URL(baseUrl).origin;
   },
 
   // Get details of a single clip

@@ -46,6 +46,63 @@ def _resolve_video_path(storage_path: str) -> str:
         return os.path.abspath(candidate_clips)
     return candidate_rel
 
+
+def _resolve_or_extract_video_audio(video: models.Video, video_path: str, db) -> str:
+    """Resolve cached/local/R2 source audio, rebuilding it from the video when missing."""
+    from app.services import object_storage
+
+    if video.audio_path:
+        try:
+            resolved = _resolve_video_path(video.audio_path)
+            if os.path.isfile(resolved) and os.path.getsize(resolved) > 0:
+                return resolved
+            logger.warning(
+                "Stored audio for video %s is unavailable at %s; extracting it again from the source video",
+                video.id,
+                video.audio_path,
+            )
+        except Exception as error:
+            logger.warning(
+                "Could not fetch stored audio for video %s (%s); rebuilding from the source video",
+                video.id,
+                error,
+            )
+
+    if not os.path.isfile(video_path):
+        raise FileNotFoundError(f"Source video is unavailable; cannot rebuild audio for video {video.id}")
+
+    audio_dir = os.path.join(str(_BACKEND_DIR), "uploads", "audio")
+    os.makedirs(audio_dir, exist_ok=True)
+    audio_path = os.path.join(audio_dir, f"video_{video.id}_source.mp3")
+    command = [
+        "ffmpeg", "-y", "-nostdin", "-loglevel", "error",
+        "-i", video_path, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "64k",
+        "-threads", "1", audio_path,
+    ]
+    try:
+        import subprocess
+        subprocess.run(command, check=True, capture_output=True, timeout=300)
+    except Exception as error:
+        try:
+            if os.path.exists(audio_path):
+                os.remove(audio_path)
+        except OSError:
+            pass
+        raise RuntimeError(f"Could not extract source audio for video {video.id}: {error}") from error
+
+    if not os.path.isfile(audio_path) or os.path.getsize(audio_path) == 0:
+        raise RuntimeError(f"FFmpeg produced no source audio for video {video.id}")
+
+    if object_storage.enabled():
+        video.audio_path = object_storage.upload_file(
+            audio_path, f"audio/video_{video.id}/source-audio.mp3", "audio/mpeg"
+        )
+    else:
+        video.audio_path = _safe_relpath(audio_path, str(_BACKEND_DIR))
+    db.commit()
+    logger.info("Recovered source audio for video %s at %s", video.id, video.audio_path)
+    return audio_path
+
 @celery_app.task(ignore_result=True)
 def process_video_task(video_id: int):
     logger.info(f"Starting to process video {video_id}")
@@ -881,34 +938,28 @@ def render_clip_task(clip_id: int):
         # Dub voice if requested
         dubbed_audio_path = None
         speaker_gender = edit_options.get("speaker_gender", "female")
-        if dub_voice and translate_lang != "none" and video.audio_path:
+        if dub_voice and translate_lang != "none":
             logger.info(f"Voice dubbing requested to language: {translate_lang} (Gender: {speaker_gender})")
             from app.services.voice_service import voice_service
 
-            # Resolve absolute path to original audio
-            if os.path.isabs(video.audio_path):
-                abs_audio_path = video.audio_path
-            else:
-                abs_audio_path = os.path.join(os.path.dirname(video_path), os.path.basename(video.audio_path))
-
-            if os.path.exists(abs_audio_path):
-                try:
-                    dubbed_audio_path = f"{variation_base}_dubbed.wav"
-                    voice_service.dub_voice(
-                        original_audio_path=abs_audio_path,
-                        transcript_words=absolute_words,
-                        target_lang=translate_lang,
-                        start_time=clip.start_time,
-                        end_time=clip.end_time,
-                        output_path=dubbed_audio_path,
-                        mix_mode=dub_mix_mode,
-                        speaker_gender=speaker_gender,
-                        pretranslated_lines=shifted_words
-                    )
-                    logger.info("Successfully generated dubbed audio track.")
-                except Exception as de:
-                    logger.error(f"Voice dubbing failed: {de}", exc_info=True)
-                    dubbed_audio_path = None
+            abs_audio_path = _resolve_or_extract_video_audio(video, video_path, db)
+            try:
+                dubbed_audio_path = f"{variation_base}_dubbed.wav"
+                voice_service.dub_voice(
+                    original_audio_path=abs_audio_path,
+                    transcript_words=absolute_words,
+                    target_lang=translate_lang,
+                    start_time=clip.start_time,
+                    end_time=clip.end_time,
+                    output_path=dubbed_audio_path,
+                    mix_mode=dub_mix_mode,
+                    speaker_gender=speaker_gender,
+                    pretranslated_lines=shifted_words
+                )
+                logger.info("Successfully generated dubbed audio track.")
+            except Exception as de:
+                logger.error(f"Voice dubbing failed: {de}", exc_info=True)
+                raise RuntimeError("Dubbed audio could not be generated; refusing to render with incorrect audio") from de
 
         # 5. Generate subtitles ASS file
         caption_preset = instructions.get("caption_style", "standard")
@@ -1015,6 +1066,7 @@ def render_clip_task(clip_id: int):
                 shutil.move(temp_dubbed_video, temp_video_source)
             except Exception as me:
                 logger.error(f"Muxing dubbed audio failed: {me}")
+                raise RuntimeError("Could not add dubbed speech to the rendered video") from me
             finally:
                 if os.path.exists(dubbed_audio_path):
                     try:
@@ -1318,10 +1370,21 @@ def publish_video_task(clip_id: int, config: dict):
         description = config.get("description", "")
         privacy = config.get("privacy", "public")
 
-        # Resolve absolute path to video
-        _app_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        # Resolve local and remote (including Cloudflare R2) clip storage paths.
         if clip.storage_path:
-            video_path = os.path.join(_app_dir, clip.storage_path) if not os.path.isabs(clip.storage_path) else clip.storage_path
+            try:
+                video_path = _resolve_video_path(clip.storage_path)
+            except Exception as storage_error:
+                logger.exception("Could not retrieve clip %s for publishing", clip_id)
+                publish_error = f"error: Could not retrieve the rendered video: {storage_error}"
+                clip.published_urls = {
+                    **(clip.published_urls or {}),
+                    **{platform: publish_error for platform in platforms},
+                }
+                from sqlalchemy.orm.attributes import flag_modified
+                flag_modified(clip, "published_urls")
+                db.commit()
+                return
         else:
             logger.error(f"Clip {clip_id} has no storage path, cannot publish")
             return

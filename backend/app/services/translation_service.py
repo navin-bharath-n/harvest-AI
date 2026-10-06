@@ -59,6 +59,27 @@ LANGUAGE_NAMES = {
     "gu": "Gujarati",
 }
 
+@lru_cache(maxsize=1)
+def _google_language_maps():
+    """Load deep-translator's bundled language catalogue once (no network lookup)."""
+    try:
+        languages = GoogleTranslator(source="auto", target="en").get_supported_languages(as_dict=True)
+        name_to_code = {str(name).casefold(): str(code).casefold() for name, code in languages.items()}
+        code_to_name = {code: name for name, code in name_to_code.items()}
+        return name_to_code, code_to_name
+    except Exception as error:
+        logger.warning("Could not load translation language catalogue: %s", error)
+        return {}, {}
+
+def _normalize_target_language(language: str) -> str:
+    normalized = (language or "none").strip().casefold()
+    if normalized in {"none", "original", ""}:
+        return normalized or "none"
+    name_to_code, code_to_name = _google_language_maps()
+    if normalized in code_to_name:
+        return normalized
+    return name_to_code.get(normalized, normalized)
+
 # In-memory session cache for batch translations to avoid redundant network calls
 _TRANSLATION_MEM_CACHE: Dict[str, str] = {}
 
@@ -115,6 +136,8 @@ def _translate_single_chunk_llm(client, provider, chunk: List[str], target_name:
         f"Translate each sentence into {target_name}.",
         f"Output must be a strictly valid JSON array of strings containing EXACTLY {len(chunk)} items.",
         "Translate the meaning faithfully, then phrase it as natural, idiomatic speech that sounds good when read aloud.",
+        "Translate the complete thought, not word by word. Use natural everyday phrasing a native speaker would actually say, with a smooth spoken rhythm.",
+        "Do not copy awkward source-language word order, repeat words, add filler, or make the result sound like a literal subtitle translation.",
         "Keep each phrase concise enough for a short-video caption and comfortable to speak in the original time window.",
         "Preserve names, facts, intent, and tone. Do not add information, exaggerate, or omit important meaning.",
         "Maintain the exact order corresponding to each input sentence.",
@@ -265,7 +288,8 @@ def _translate_batch_llm(texts: List[str], target_lang: str) -> Optional[List[st
         return None
 
     tl_clean = target_lang.lower().strip()
-    target_name = LANGUAGE_NAMES.get(tl_clean, target_lang)
+    _, code_to_name = _google_language_maps()
+    target_name = LANGUAGE_NAMES.get(tl_clean, code_to_name.get(tl_clean, target_lang))
 
     chunk_size = 15
     chunks = [texts[i:i + chunk_size] for i in range(0, len(texts), chunk_size)]
@@ -356,7 +380,7 @@ def batch_translate_texts(texts: List[str], target_lang: str) -> List[str]:
     if not texts:
         return []
 
-    norm_target = (target_lang or "none").strip().lower()
+    norm_target = _normalize_target_language(target_lang)
     if norm_target in ["none", "original", ""]:
         return texts
 
@@ -381,22 +405,21 @@ def batch_translate_texts(texts: List[str], target_lang: str) -> List[str]:
     if not to_translate_texts:
         return [res if res is not None else "" for res in final_results]
 
-    # 1. High-speed direct Google GTX translation (0.3s-0.8s, zero rate limits, full romanization)
+    # Prefer contextual, natural-sounding phrasing when a cloud LLM is configured.
     translated_texts = None
     try:
-        translated_texts = _translate_batch_gtx(to_translate_texts, norm_target)
-    except Exception as gtx_err:
-        logger.warning(f"GTX batch translation failed: {gtx_err}")
+        translated_texts = _translate_batch_llm(to_translate_texts, norm_target)
+    except Exception as e:
+        logger.warning(f"LLM batch translation failed: {e}")
 
-    # 2. Cloud LLM batch translation fallback
+    # Fast Google GTX translation when the configured LLM is unavailable.
     if not translated_texts or len(translated_texts) != len(to_translate_texts):
-        logger.info("Attempting Cloud LLM batch translation fallback...")
         try:
-            translated_texts = _translate_batch_llm(to_translate_texts, norm_target)
-        except Exception as e:
-            logger.warning(f"LLM batch translation error: {e}")
+            translated_texts = _translate_batch_gtx(to_translate_texts, norm_target)
+        except Exception as gtx_err:
+            logger.warning(f"GTX batch translation failed: {gtx_err}")
 
-    # 3. Google Translate scraper fallback
+    # Google Translate scraper fallback
     if not translated_texts or len(translated_texts) != len(to_translate_texts):
         logger.info(f"Using paced deep-translator Google Translate batch for {len(to_translate_texts)} texts to '{norm_target}'...")
         try:
@@ -482,4 +505,4 @@ def translate_and_distribute_words(shifted_words: List[Dict], target_lang: str) 
             "text": t_text
         })
 
-    return translated_words
+    return subtitle_service.clean_transcript_words(translated_words)

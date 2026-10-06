@@ -48,6 +48,7 @@ class SelectMomentRequest(BaseModel):
     translate_language: str = Field(default="none", min_length=2, max_length=64)
     caption_language: Literal["original", "translated", "none"] = "original"
     dub_voice: bool = False
+    speaker_gender: Literal["female", "male"] = "female"
 
 class HighlightAnalysisRequest(BaseModel):
     length: float = Field(default=30.0, ge=10.0, le=60.0, description="Target maximum duration for suggested moments")

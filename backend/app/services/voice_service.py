@@ -10,6 +10,18 @@ from gtts import gTTS
 
 logger = logging.getLogger(__name__)
 
+LANGUAGE_CODE_ALIASES = {
+    "english": "en", "hindi": "hi", "tamil": "ta", "telugu": "te", "kannada": "kn",
+    "malayalam": "ml", "bengali": "bn", "marathi": "mr", "gujarati": "gu", "punjabi": "pa",
+    "urdu": "ur", "arabic": "ar", "chinese": "zh", "japanese": "ja", "korean": "ko",
+    "spanish": "es", "french": "fr", "german": "de", "italian": "it", "portuguese": "pt",
+    "russian": "ru", "ukrainian": "uk", "dutch": "nl", "swedish": "sv", "norwegian": "no",
+    "danish": "da", "finnish": "fi", "polish": "pl", "turkish": "tr", "greek": "el",
+    "hebrew": "he", "thai": "th", "vietnamese": "vi", "indonesian": "id", "malay": "ms",
+    "filipino": "fil", "swahili": "sw", "persian": "fa", "nepali": "ne", "sinhala": "si",
+}
+_EDGE_VOICE_CACHE = None
+
 # 5 Distinct Voice Actor Profiles per Language for Male and Female Dubbing
 MULTI_VOICE_PRESETS = {
     # English (5 Diverse Studio Voices)
@@ -127,6 +139,7 @@ class VoiceService:
             return output_path
 
         lang_norm = (language or "en").lower().strip()
+        lang_norm = LANGUAGE_CODE_ALIASES.get(lang_norm, lang_norm)
         base_lang = lang_norm.split("-")[0]
         gender_raw = (speaker_gender or "female").lower()
 
@@ -140,7 +153,7 @@ class VoiceService:
 
         # Resolve voice persona preset for this variation index (0 to 4)
         preset_idx = max(0, variation_index - 1) % 5
-        presets = MULTI_VOICE_PRESETS.get((base_lang, target_gender)) or MULTI_VOICE_PRESETS.get(("en", target_gender))
+        presets = MULTI_VOICE_PRESETS.get((base_lang, target_gender))
         
         if presets and len(presets) > 0:
             preset = presets[preset_idx % len(presets)]
@@ -149,7 +162,7 @@ class VoiceService:
             pitch_str = preset.get("pitch", "+0Hz")
             persona_name = preset.get("name", f"{target_gender.capitalize()} Voice {preset_idx+1}")
         else:
-            voice_name = "en-US-ChristopherNeural" if target_gender == "male" else "en-US-JennyNeural"
+            voice_name = None
             rate_str = "+0%"
             pitch_str = "+0Hz"
             persona_name = f"{target_gender.capitalize()} Voice"
@@ -157,6 +170,22 @@ class VoiceService:
         # 1. Primary Engine: Edge-TTS Neural Studio with Persona Pitch/Rate
         try:
             import edge_tts
+
+            if not voice_name:
+                global _EDGE_VOICE_CACHE
+                if _EDGE_VOICE_CACHE is None:
+                    _EDGE_VOICE_CACHE = asyncio.run(edge_tts.list_voices())
+                matching = [
+                    voice for voice in _EDGE_VOICE_CACHE
+                    if str(voice.get("Locale", "")).lower().startswith(base_lang + "-")
+                    and str(voice.get("Gender", "")).lower() == target_gender
+                ]
+                if matching:
+                    chosen = matching[preset_idx % len(matching)]
+                    voice_name = chosen.get("ShortName")
+                    persona_name = chosen.get("FriendlyName") or persona_name
+                else:
+                    voice_name = "en-US-ChristopherNeural" if target_gender == "male" else "en-US-JennyNeural"
 
             logger.info(f"[Var {variation_index}] Generating Neural Voiceover: '{persona_name}' ({voice_name}) Rate={rate_str} Pitch={pitch_str} for lang '{lang_norm}'...")
             
@@ -202,7 +231,7 @@ class VoiceService:
                     "pa": "pa-IN", "ur": "ur-PK", "vi": "vi-VN", "th": "th-TH",
                     "id": "id-ID", "zh-cn": "cmn-CN"
                 }
-                lang_code = lang_code_map.get(lang_norm, "en-US")
+                lang_code = lang_code_map.get(lang_norm, lang_code_map.get(base_lang, f"{base_lang}-{base_lang.upper()}"))
                 voice = texttospeech.VoiceSelectionParams(language_code=lang_code, ssml_gender=ssml_gender)
                 audio_config = texttospeech.AudioConfig(audio_encoding=texttospeech.AudioEncoding.MP3)
 
@@ -289,10 +318,7 @@ class VoiceService:
             return output_path
         except Exception as e:
             logger.error(f"All TTS generation methods failed: {e}")
-            # Generate silence as safety net
-            cmd = ["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono", "-t", "1.0", output_path]
-            subprocess.run(cmd, capture_output=True, check=True)
-            return output_path
+            raise RuntimeError(f"Could not synthesize dubbed speech in '{lang_norm}'") from e
 
     def get_audio_duration(self, audio_path: str) -> float:
         try:
@@ -441,6 +467,9 @@ class VoiceService:
             line_texts = [" ".join([w["text"].strip() for w in line["words"]]).strip() for line in lines]
             from app.services.translation_service import batch_translate_texts
             translated_line_texts = batch_translate_texts(line_texts, target_lang)
+
+        if not lines or not any(str(text).strip() for text in translated_line_texts):
+            raise RuntimeError("No clean translated speech was available to dub")
         
         processed_segments = []
         original_slice = None
