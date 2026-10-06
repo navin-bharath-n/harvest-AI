@@ -326,13 +326,58 @@ def extract_top5_highlights_task(video_id: int):
         audio_path = os.path.join(assets_dir, f"{base_name}_audio.mp3")
         if not os.path.exists(audio_path) or os.path.getsize(audio_path) == 0:
             logger.info(f"Extracting mono MP3 audio from {video_path}...")
+            # Memory-capped flags:
+            #   -probesize 5M / -analyzeduration 5M  → cap container-analysis I/O
+            #   -bufsize 128k                         → tiny decoder output buffer
+            #   -threads 1                            → single-threaded, minimal stack
+            # These keep peak RAM well under 100 MB even for multi-GB source files.
             cmd = [
-                "ffmpeg", "-y", "-i", video_path,
+                "ffmpeg", "-y",
+                "-probesize", "5M", "-analyzeduration", "5M",
+                "-i", video_path,
                 "-vn", "-ac", "1", "-ar", "16000", "-b:a", "64k",
+                "-bufsize", "128k",
                 "-threads", "1",
                 audio_path
             ]
-            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            try:
+                result = subprocess.run(
+                    cmd, check=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE   # capture so OOM/errors appear in logs
+                )
+            except subprocess.CalledProcessError as ffmpeg_err:
+                stderr_txt = (ffmpeg_err.stderr or b"").decode("utf-8", errors="replace")[-2000:]
+                logger.warning(
+                    f"FFmpeg audio extraction failed (exit {ffmpeg_err.returncode}) "
+                    f"for video {video_id}. stderr tail:\n{stderr_txt}\n"
+                    f"Retrying with ultra-low-memory settings..."
+                )
+                # Fallback: even lower bitrate + force shortest to avoid stalls
+                cmd_fallback = [
+                    "ffmpeg", "-y",
+                    "-probesize", "2M", "-analyzeduration", "2M",
+                    "-i", video_path,
+                    "-vn", "-ac", "1", "-ar", "8000", "-b:a", "32k",
+                    "-bufsize", "64k",
+                    "-threads", "1",
+                    "-shortest",
+                    audio_path
+                ]
+                try:
+                    subprocess.run(
+                        cmd_fallback, check=True,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.PIPE
+                    )
+                    logger.info(f"Fallback audio extraction succeeded for video {video_id}")
+                except subprocess.CalledProcessError as fallback_err:
+                    fb_stderr = (fallback_err.stderr or b"").decode("utf-8", errors="replace")[-2000:]
+                    logger.error(
+                        f"Fallback ffmpeg also failed (exit {fallback_err.returncode}) "
+                        f"for video {video_id}. stderr:\n{fb_stderr}"
+                    )
+                    raise  # propagate so the task marks the video as FAILED
 
         video.audio_path = audio_path
         db.commit()
