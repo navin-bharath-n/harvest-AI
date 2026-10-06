@@ -10,6 +10,20 @@ logger = logging.getLogger(__name__)
 # Absolute path to the backend directory — anchors all relative upload paths
 _BACKEND_DIR = Path(__file__).resolve().parent.parent.parent  # backend/
 
+def _safe_relpath(path: str, start: str) -> str:
+    """Like os.path.relpath but never raises ValueError on Windows cross-drive paths.
+
+    On Windows, os.path.relpath('C:\\foo', 'D:\\bar') raises ValueError because
+    you cannot express a relative path between two different drive letters.
+    In that case we fall back to the absolute path (forward-slash normalised) so
+    the stored storage_path is still a valid, usable string.
+    """
+    try:
+        return os.path.relpath(path, start).replace("\\", "/")
+    except ValueError:
+        # Different drives on Windows — store the absolute path instead
+        return path.replace("\\", "/")
+
 def _resolve_video_path(storage_path: str) -> str:
     """Robust cross-platform path resolver for local Windows and cloud Linux (Docker/Render)."""
     if not storage_path:
@@ -706,15 +720,18 @@ def render_clip_task(clip_id: int):
         clip.status = models.ClipStatus.RENDERING
         db.commit()
 
-        # Ensure clips directory exists
-        clips_dir = os.path.join(os.path.dirname(video_path), "clips")
+        # Always write clip output to _BACKEND_DIR/uploads/clips/ so the output
+        # is guaranteed to be on the same drive as _BACKEND_DIR, avoiding the
+        # Windows cross-drive ValueError from os.path.relpath (e.g. source video
+        # cached in C:\Temp\... while backend lives on D:\...).
+        clips_dir = os.path.join(str(_BACKEND_DIR), "uploads", "clips")
         os.makedirs(clips_dir, exist_ok=True)
 
         output_filename = f"clip_{uuid.uuid4().hex[:8]}.mp4"
         output_path = os.path.join(clips_dir, output_filename)
 
-        # Compute path relative to backend/ directory so it yields "uploads/clips/..."
-        relative_path = os.path.relpath(output_path, str(_BACKEND_DIR)).replace("\\", "/")
+        # Compute path relative to backend/ directory → "uploads/clips/<file>.mp4"
+        relative_path = _safe_relpath(output_path, str(_BACKEND_DIR))
 
         prompt = edit_options.get("prompt")
         instructions = {}
