@@ -578,8 +578,13 @@ def extract_top5_highlights_task(video_id: int):
                 preview_storage_path = object_storage.upload_file(
                     preview_filepath, f"previews/video_{video_id}/{preview_filename}", "audio/mpeg"
                 )
+                # Remove local preview file — it's now in R2
+                try:
+                    os.remove(preview_filepath)
+                except Exception:
+                    pass
             else:
-                preview_storage_path = os.path.relpath(preview_filepath, str(_BACKEND_DIR)).replace("\\", "/")
+                preview_storage_path = _safe_relpath(preview_filepath, str(_BACKEND_DIR))
 
             formatted_clips.append({
                 "id": idx + 1,
@@ -1057,13 +1062,21 @@ def render_clip_task(clip_id: int):
         from app.services import object_storage
         previous_storage_path = clip.storage_path
         if object_storage.enabled():
-            clip.storage_path = object_storage.upload_file(
+            r2_path = object_storage.upload_file(
                 output_path, f"clips/{os.path.basename(output_path)}", "video/mp4"
             )
+            clip.storage_path = r2_path
+            # video.short_path should also point to R2 so clip-media redirects correctly
+            video.short_path = r2_path
+            # Remove local rendered file — it's safely in R2 now
+            try:
+                os.remove(output_path)
+            except Exception as rm_err:
+                logger.warning(f"Could not remove local clip file after R2 upload: {rm_err}")
         else:
             clip.storage_path = relative_path
+            video.short_path = relative_path
         clip.status = models.ClipStatus.COMPLETED
-        video.short_path = relative_path
         db.commit()
         if previous_storage_path and previous_storage_path != clip.storage_path:
             try:
@@ -1075,7 +1088,7 @@ def render_clip_task(clip_id: int):
                         os.remove(old_path)
             except Exception as cleanup_error:
                 logger.warning("Could not remove prior clip output %s: %s", previous_storage_path, cleanup_error)
-        logger.info(f"Successfully rendered clip {clip_id} to {relative_path}")
+        logger.info(f"Successfully rendered clip {clip_id} to {clip.storage_path}")
 
     except Exception as e:
         logger.error(f"Error rendering clip {clip_id}: {e}")
@@ -1146,16 +1159,21 @@ def generate_master_shorts_task(
         ).all()
         for old_clip in old_variations:
             if old_clip.storage_path:
-                old_file = _resolve_video_path(old_clip.storage_path)
-                if os.path.exists(old_file):
-                    try:
-                        os.remove(old_file)
-                    except Exception:
-                        pass
+                try:
+                    from app.services import object_storage as _os
+                    if _os.is_remote(old_clip.storage_path):
+                        _os.delete(old_clip.storage_path)
+                    else:
+                        old_file = _resolve_video_path(old_clip.storage_path)
+                        if os.path.exists(old_file):
+                            os.remove(old_file)
+                except Exception:
+                    pass
             db.delete(old_clip)
         db.commit()
 
-        clips_dir = os.path.join(os.path.dirname(video_path), "clips")
+        # Always anchor to _BACKEND_DIR/uploads/clips/ to avoid cross-drive issues on Windows
+        clips_dir = os.path.join(str(_BACKEND_DIR), "uploads", "clips")
         os.makedirs(clips_dir, exist_ok=True)
 
         saved_paths = set()
@@ -1179,11 +1197,15 @@ def generate_master_shorts_task(
             shutil.copy2(src_path, final_path)
 
             from app.services import object_storage
-            rel_path = (
-                object_storage.upload_file(final_path, f"clips/{output_filename}", "video/mp4")
-                if object_storage.enabled()
-                else os.path.relpath(final_path, str(_BACKEND_DIR)).replace("\\", "/")
-            )
+            if object_storage.enabled():
+                rel_path = object_storage.upload_file(final_path, f"clips/{output_filename}", "video/mp4")
+                # Delete local copy — safely stored in R2
+                try:
+                    os.remove(final_path)
+                except Exception:
+                    pass
+            else:
+                rel_path = _safe_relpath(final_path, str(_BACKEND_DIR))
 
             db_clip = models.Clip(
                 video_id=video_id,
