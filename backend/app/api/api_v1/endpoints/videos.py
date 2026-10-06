@@ -12,6 +12,7 @@ from app import models, schemas
 from app.tasks.video_tasks import process_video_task
 
 import pathlib as _pathlib
+from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor
 
 logger = logging.getLogger(__name__)
@@ -78,6 +79,26 @@ def get_user_clip(clip_id: int, user_id: int, db: Session) -> models.Clip:
     if not clip:
         raise HTTPException(status_code=404, detail="Clip not found")
     return clip
+
+
+def _mark_stale_clip_failed(clip: models.Clip, max_age: timedelta = timedelta(minutes=5)) -> bool:
+    """Make interrupted renders retryable after a worker or API process restart."""
+    if clip.status not in (models.ClipStatus.PENDING, models.ClipStatus.RENDERING):
+        return False
+    options = clip.edit_options or {}
+    queued_at = options.get("render_queued_at")
+    try:
+        queued_at = datetime.fromisoformat(queued_at) if queued_at else clip.created_at
+    except (TypeError, ValueError):
+        queued_at = clip.created_at
+    if not queued_at:
+        return False
+    if queued_at.tzinfo is None:
+        queued_at = queued_at.replace(tzinfo=timezone.utc)
+    if datetime.now(timezone.utc) - queued_at <= max_age:
+        return False
+    clip.status = models.ClipStatus.FAILED
+    return True
 
 def dispatch_task(celery_task, *args, **kwargs):
     """
@@ -475,6 +496,8 @@ def select_moment(
     ), None)
     previous_clip_state = None
     if existing:
+        if _mark_stale_clip_failed(existing):
+            db.commit()
         previous_clip_state = {
             "title": existing.title,
             "start_time": existing.start_time,
@@ -507,6 +530,7 @@ def select_moment(
             transcript_snapshot.append(word)
     edit_options = {
         "workflow": "selected_moment_v1",
+        "render_queued_at": datetime.now(timezone.utc).isoformat(),
         "selected_moment_id": request.moment_id,
         "selected_moment": dict(moment),
         "transcript_snapshot": transcript_snapshot,
@@ -573,6 +597,7 @@ def update_selected_clip_caption(
     if options.get("caption_style") == request.caption_style and clip.status == models.ClipStatus.COMPLETED:
         return clip
     options["caption_style"] = request.caption_style
+    options["render_queued_at"] = datetime.now(timezone.utc).isoformat()
     clip.edit_options = options
     clip.status = models.ClipStatus.PENDING
     db.commit()
@@ -732,6 +757,11 @@ def get_clips(
 ):
     db_video = get_user_video(video_id, current_user.id, db)
     clips = db.query(models.Clip).filter(models.Clip.video_id == video_id).all()
+    stale_clips_updated = False
+    for clip in clips:
+        stale_clips_updated = _mark_stale_clip_failed(clip) or stale_clips_updated
+    if stale_clips_updated:
+        db.commit()
     from app.services import object_storage
     # Annotate each clip with whether its media file physically exists on this server
     for c in clips:

@@ -5,6 +5,11 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+# Smaller vertical output keeps the filter graph within the memory limits of
+# the single-process fallback used when no Celery worker is available.
+OUTPUT_WIDTH = 720
+OUTPUT_HEIGHT = 1280
+
 def escape_ffmpeg_filter_path(path: str) -> str:
     """Escapes file paths for FFmpeg filter syntax."""
     abs_p = os.path.abspath(path).replace('\\', '/')
@@ -22,10 +27,9 @@ class ClipRenderingService:
         subtitle_path: str = None
     ):
         """
-        Renders a high-quality vertical 1080x1920 Short from start_time to end_time.
+        Renders a vertical 720x1280 Short from start_time to end_time.
         Uses pure native FFmpeg filters with zero Python frame-piping overhead:
-        - Extremely low RAM (~30-50MB max)
-        - Sub-second execution with hardware/SIMD acceleration
+        - Reduced memory and CPU use on small cloud instances
         - Zero deadlock risk
         - Multi-tier automatic fallbacks so rendering never fails
         """
@@ -64,22 +68,21 @@ class ClipRenderingService:
             base_filter = (
                 f"[0:v]crop=w='min(iw,{crop_w})':h='min(ih,{crop_h})':"
                 f"x='max(0,min(iw-ow,{crop_x}))':y='max(0,min(ih-oh,{crop_y}))',"
-                f"scale=1080:1920[vf]"
+                f"scale={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}[vf]"
             )
         elif framing_mode == "fit_black":
             base_filter = (
-                "[0:v]scale=1080:1920:force_original_aspect_ratio=decrease,"
-                "pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black[vf]"
+                f"[0:v]scale={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}:force_original_aspect_ratio=decrease,"
+                f"pad={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}:(ow-iw)/2:(oh-ih)/2:black[vf]"
             )
         else:
-            # High-quality Frosted Ambient Blur (Default)
-            # Optimization: Downscale blurred background to 216x384 before boxblur, then upscale.
-            # Renders 25x faster with 95% less RAM/CPU and identical visual aesthetics.
+            # Frosted ambient blur with a low-resolution background branch to
+            # limit filter memory while keeping the original image legible.
             base_filter = (
                 "[0:v]split=2[bgi][fgi];"
-                "[bgi]scale=216:384:force_original_aspect_ratio=increase,crop=216:384,"
-                "boxblur=8:1,scale=1080:1920,eq=brightness=-0.35:contrast=0.95[bg];"
-                "[fgi]scale=1080:1920:force_original_aspect_ratio=decrease[fg];"
+                "[bgi]scale=144:256:force_original_aspect_ratio=increase,crop=144:256,"
+                f"boxblur=8:1,scale={OUTPUT_WIDTH}:{OUTPUT_HEIGHT},eq=brightness=-0.35:contrast=0.95[bg];"
+                f"[fgi]scale={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}:force_original_aspect_ratio=decrease[fg];"
                 "[bg][fg]overlay=(W-w)/2:(H-h)/2[vf]"
             )
 
@@ -87,6 +90,8 @@ class ClipRenderingService:
             return [
                 "ffmpeg", "-y",
                 "-threads", "1",
+                "-filter_threads", "1",
+                "-filter_complex_threads", "1",
                 "-ss", str(start_time),
                 "-t", str(duration),
                 "-i", video_path,
@@ -95,8 +100,9 @@ class ClipRenderingService:
                 "-map", "0:a:0?",
                 "-c:v", "libx264",
                 "-threads:v", "1",
-                "-preset", "veryfast",
+                "-preset", "ultrafast",
                 "-crf", "20",
+                "-r", "30",
                 "-c:a", "aac",
                 "-b:a", "192k",
                 "-movflags", "+faststart",
@@ -136,8 +142,8 @@ class ClipRenderingService:
 
         # Tier 3: Universal Fallback to Fit Blur
         fallback_filter = (
-            "[0:v]scale=1080:1920:force_original_aspect_ratio=decrease,"
-            "pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black[vf]"
+            f"[0:v]scale={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}:force_original_aspect_ratio=decrease,"
+            f"pad={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}:(ow-iw)/2:(oh-ih)/2:black[vf]"
         )
         cmd_fallback = _build_cmd(fallback_filter, "[vf]")
         try:
@@ -155,7 +161,7 @@ class ClipRenderingService:
             "-ss", str(start_time),
             "-t", str(duration),
             "-i", video_path,
-            "-c:v", "libx264", "-preset", "ultrafast",
+            "-c:v", "libx264", "-threads", "1", "-preset", "ultrafast", "-r", "30",
             "-c:a", "aac",
             "-movflags", "+faststart",
             output_path
