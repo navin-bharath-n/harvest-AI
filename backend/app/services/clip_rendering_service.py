@@ -10,6 +10,11 @@ logger = logging.getLogger(__name__)
 OUTPUT_WIDTH = 720
 OUTPUT_HEIGHT = 1280
 
+
+def _render_timeout(duration: float, seconds_per_video_second: float, minimum: int = 90) -> int:
+    """Give longer clips more time on low-CPU hosts without waiting forever."""
+    return min(600, max(minimum, int(duration * seconds_per_video_second)))
+
 def escape_ffmpeg_filter_path(path: str) -> str:
     """Escapes file paths for FFmpeg filter syntax."""
     abs_p = os.path.abspath(path).replace('\\', '/')
@@ -114,9 +119,13 @@ class ClipRenderingService:
         if has_sub:
             filter_complex = base_filter + f";[vf]subtitles=filename='{escaped_sub}'[vo]"
             cmd = _build_cmd(filter_complex, "[vo]")
-            logger.info(f"Rendering vertical clip with subtitles via FFmpeg. Duration: {duration:.1f}s")
+            subtitle_timeout = _render_timeout(duration, 10, minimum=180)
+            logger.info(
+                "Rendering vertical clip with subtitles via FFmpeg. "
+                f"Duration: {duration:.1f}s; timeout: {subtitle_timeout}s"
+            )
             try:
-                res = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+                res = subprocess.run(cmd, capture_output=True, text=True, timeout=subtitle_timeout)
                 if res.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
                     logger.info(f"Successfully rendered clip to {output_path}")
                     return output_path
@@ -128,9 +137,13 @@ class ClipRenderingService:
 
         # Tier 2: Render without subtitles
         cmd_clean = _build_cmd(base_filter, "[vf]")
-        logger.info(f"Rendering vertical clip without subtitles via FFmpeg. Duration: {duration:.1f}s")
+        base_timeout = _render_timeout(duration, 8, minimum=180)
+        logger.info(
+            "Rendering vertical clip without subtitles via FFmpeg. "
+            f"Duration: {duration:.1f}s; timeout: {base_timeout}s"
+        )
         try:
-            res = subprocess.run(cmd_clean, capture_output=True, text=True, timeout=180)
+            res = subprocess.run(cmd_clean, capture_output=True, text=True, timeout=base_timeout)
             if res.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
                 logger.info(f"Successfully rendered clip to {output_path}")
                 return output_path
@@ -147,7 +160,12 @@ class ClipRenderingService:
         )
         cmd_fallback = _build_cmd(fallback_filter, "[vf]")
         try:
-            res = subprocess.run(cmd_fallback, capture_output=True, text=True, timeout=120)
+            res = subprocess.run(
+                cmd_fallback,
+                capture_output=True,
+                text=True,
+                timeout=_render_timeout(duration, 5, minimum=120),
+            )
             if res.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
                 logger.info(f"Successfully rendered fallback clip to {output_path}")
                 return output_path
@@ -166,7 +184,11 @@ class ClipRenderingService:
             "-movflags", "+faststart",
             output_path
         ]
-        subprocess.run(emergency_cmd, check=True, timeout=90)
+        subprocess.run(
+            emergency_cmd,
+            check=True,
+            timeout=_render_timeout(duration, 3, minimum=90),
+        )
         return output_path
 
 clip_rendering_service = ClipRenderingService()

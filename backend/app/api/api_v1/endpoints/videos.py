@@ -490,9 +490,12 @@ def select_moment(
     db_video_moments = dict(old_highlights)
     db_video_moments["selected_moment_id"] = request.moment_id
     video.highlights = db_video_moments
+    # Keep one independently rendered clip per analyzed moment. Reusing the
+    # latest selected-moment clip here overwrote the previous audio selection.
     existing = next((
         clip for clip in reversed(video.clips)
         if (clip.edit_options or {}).get("workflow") == "selected_moment_v1"
+        and (clip.edit_options or {}).get("selected_moment_id") == request.moment_id
     ), None)
     previous_clip_state = None
     if existing:

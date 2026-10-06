@@ -1335,4 +1335,11 @@ input:focus:not(:focus-visible) {
     scroll-behavior: auto !important;
   }
 }
+@keyframes render-loading-spin {
+  to { transform: rotate(360deg); }
+}
+
+.render-loading-spinner {
+  animation: render-loading-spin 1s linear infinite;
+}
 

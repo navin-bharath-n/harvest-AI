@@ -378,11 +378,13 @@ export default function StudioPage() {
   const handleRenderSelectedMoment = async () => {
     if (!selectedVideo || selectedMomentId == null) return;
     setActionLoading(true);
-    setActionMessage('Queueing one vertical video from the selected time range, with the original audio.');
+    setActionMessage('Queueing a new vertical video from the selected time range, with its original audio.');
     try {
       const clip = await api.selectMoment(selectedVideo.id, selectedMomentId, captionStyle);
       setSelectedClip(clip);
       setClips((items) => [clip, ...items.filter((item) => item.id !== clip.id)]);
+      setActionMessage('This moment is rendering. You can select another audio moment and queue another video.');
+      setActionLoading(false);
       await loadVideos();
     } catch (error) {
       setActionLoading(false);
@@ -945,6 +947,31 @@ export default function StudioPage() {
         {/* Center & Right Column: Pipeline Stage & Clip Player */}
         <main style={{ flex: 1, display: 'flex', flexDirection: 'column', backgroundColor: '#fafaf8', overflowY: 'auto' }}>
           {selectedVideo ? (
+            selectedClip && ['pending', 'rendering'].includes(selectedClip.status) ? (
+              <div
+                role="status"
+                aria-live="polite"
+                style={{
+                  flex: 1,
+                  height: 'calc(100vh - 84px)',
+                  minHeight: '320px',
+                  width: '100%',
+                  boxSizing: 'border-box',
+                  position: 'relative',
+                  backgroundColor: '#fafaf8',
+                  color: '#16181d',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '0.7rem',
+                }}
+              >
+                <Loader size={30} className="render-loading-spinner" color="#1f6f4a" />
+                <div style={{ fontWeight: 700, fontSize: '1.05rem' }}>Rendering your short…</div>
+                <div style={{ fontSize: '0.9rem', color: '#5b616b' }}>Your video will appear when it’s ready.</div>
+              </div>
+            ) : (
             <div style={{ padding: '2rem', display: 'flex', flexDirection: 'column', gap: '1.5rem', maxWidth: '1200px', width: '100%', boxSizing: 'border-box', margin: '0 auto' }}>
               {/* Pipeline Actions Bar */}
               <div
@@ -1013,7 +1040,10 @@ export default function StudioPage() {
                     </button>
                   )}
                   <button
-                    disabled={actionLoading || isAnalyzing}
+                    disabled={actionLoading || isAnalyzing || (selectedMomentId != null && clips.some((clip) =>
+                      clip.edit_options?.workflow === 'selected_moment_v1'
+                      && clip.edit_options?.selected_moment_id === selectedMomentId
+                      && ['pending', 'rendering'].includes(clip.status)))}
                     onClick={selectedMomentId == null ? handleAnalyzeMoments : handleRenderSelectedMoment}
                     style={{
                       display: 'inline-flex',
@@ -1062,7 +1092,12 @@ export default function StudioPage() {
                     {selectedVideo.highlights.clips.slice(0, 5).map((moment, index) => (
                       <div key={`${selectedVideo.id}-moment-${index}`} style={{ border: selectedMomentId === index ? '1px solid #1f6f4a' : '1px solid #e6e6e1', borderRadius: '6px', padding: '0.8rem', background: selectedMomentId === index ? '#f2faf5' : '#fff' }}>
                         <label style={{ display: 'flex', alignItems: 'flex-start', gap: '0.5rem', cursor: 'pointer' }}>
-                          <input type="radio" name={`moment-${selectedVideo.id}`} checked={selectedMomentId === index} onChange={() => setSelectedMomentId(index)} />
+                          <input type="radio" name={`moment-${selectedVideo.id}`} checked={selectedMomentId === index} onChange={() => {
+                            setSelectedMomentId(index);
+                            const existingMomentClip = clips.find((clip) => clip.edit_options?.workflow === 'selected_moment_v1'
+                              && clip.edit_options?.selected_moment_id === index);
+                            setSelectedClip(existingMomentClip || null);
+                          }} />
                           <span>
                             <strong style={{ display: 'block', color: '#16181d', fontSize: '0.9rem' }}>{moment.title || `Moment ${index + 1}`}</strong>
                             <small style={{ color: '#5b616b' }}>{Number(moment.start_time).toFixed(1)}s–{Number(moment.end_time).toFixed(1)}s · {moment.duration}s</small>
@@ -1478,7 +1513,7 @@ export default function StudioPage() {
                     9:16 Short Preview
                   </h3>
 
-                  {selectedClip && selectedClip.storage_path ? (
+                  {selectedClip?.status === 'completed' && selectedClip.storage_path ? (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
                       <div
                         style={{
@@ -1626,6 +1661,7 @@ export default function StudioPage() {
                 </div>
               </div>
             </div>
+            )
           ) : (
             <div
               style={{
