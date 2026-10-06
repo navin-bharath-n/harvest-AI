@@ -322,75 +322,103 @@ def extract_top5_highlights_task(video_id: int):
         assets_dir = os.path.join(os.path.dirname(video_path), base_name)
         os.makedirs(assets_dir, exist_ok=True)
 
-        # 2. Extract fast 64k mono MP3 audio (lightweight, ~5-10MB max, perfect for Groq Whisper)
+        # 2. Detect whether the video actually has an audio stream before trying to extract.
+        #    ffmpeg -vn on a video-only file gives "Output file does not contain any stream"
+        #    (EINVAL, exit 4294967274 on Windows / 234 on Linux) — guard against this first.
+        has_audio = False
+        try:
+            probe_result = subprocess.run(
+                [
+                    "ffprobe", "-v", "error",
+                    "-select_streams", "a:0",
+                    "-show_entries", "stream=codec_type",
+                    "-of", "default=noprint_wrappers=1:nokey=1",
+                    video_path,
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                timeout=15,
+            )
+            has_audio = bool(probe_result.stdout.strip())
+        except Exception as probe_err:
+            logger.warning(f"ffprobe audio check failed for video {video_id}: {probe_err}. Assuming no audio.")
+
+        # 3. Extract fast 64k mono MP3 audio (only if audio stream exists)
         audio_path = os.path.join(assets_dir, f"{base_name}_audio.mp3")
-        if not os.path.exists(audio_path) or os.path.getsize(audio_path) == 0:
-            logger.info(f"Extracting mono MP3 audio from {video_path}...")
-            # Memory-capped flags:
-            #   -probesize 5M / -analyzeduration 5M  → cap container-analysis I/O
-            #   -bufsize 128k                         → tiny decoder output buffer
-            #   -threads 1                            → single-threaded, minimal stack
-            # These keep peak RAM well under 100 MB even for multi-GB source files.
-            cmd = [
-                "ffmpeg", "-y",
-                "-probesize", "5M", "-analyzeduration", "5M",
-                "-i", video_path,
-                "-vn", "-ac", "1", "-ar", "16000", "-b:a", "64k",
-                "-bufsize", "128k",
-                "-threads", "1",
-                audio_path
-            ]
-            try:
-                result = subprocess.run(
-                    cmd, check=True,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.PIPE   # capture so OOM/errors appear in logs
-                )
-            except subprocess.CalledProcessError as ffmpeg_err:
-                stderr_txt = (ffmpeg_err.stderr or b"").decode("utf-8", errors="replace")[-2000:]
-                logger.warning(
-                    f"FFmpeg audio extraction failed (exit {ffmpeg_err.returncode}) "
-                    f"for video {video_id}. stderr tail:\n{stderr_txt}\n"
-                    f"Retrying with ultra-low-memory settings..."
-                )
-                # Fallback: even lower bitrate + force shortest to avoid stalls
-                cmd_fallback = [
+        if has_audio:
+            if not os.path.exists(audio_path) or os.path.getsize(audio_path) == 0:
+                logger.info(f"Extracting mono MP3 audio from {video_path}...")
+                # Memory-capped flags:
+                #   -probesize 5M / -analyzeduration 5M  → cap container-analysis I/O
+                #   -bufsize 128k                         → tiny decoder output buffer
+                #   -threads 1                            → single-threaded, minimal stack
+                cmd = [
                     "ffmpeg", "-y",
-                    "-probesize", "2M", "-analyzeduration", "2M",
+                    "-probesize", "5M", "-analyzeduration", "5M",
                     "-i", video_path,
-                    "-vn", "-ac", "1", "-ar", "8000", "-b:a", "32k",
-                    "-bufsize", "64k",
+                    "-vn", "-ac", "1", "-ar", "16000", "-b:a", "64k",
+                    "-bufsize", "128k",
                     "-threads", "1",
-                    "-shortest",
-                    audio_path
+                    audio_path,
                 ]
                 try:
                     subprocess.run(
-                        cmd_fallback, check=True,
+                        cmd, check=True,
                         stdout=subprocess.DEVNULL,
-                        stderr=subprocess.PIPE
+                        stderr=subprocess.PIPE,
                     )
-                    logger.info(f"Fallback audio extraction succeeded for video {video_id}")
-                except subprocess.CalledProcessError as fallback_err:
-                    fb_stderr = (fallback_err.stderr or b"").decode("utf-8", errors="replace")[-2000:]
-                    logger.error(
-                        f"Fallback ffmpeg also failed (exit {fallback_err.returncode}) "
-                        f"for video {video_id}. stderr:\n{fb_stderr}"
+                except subprocess.CalledProcessError as ffmpeg_err:
+                    stderr_txt = (ffmpeg_err.stderr or b"").decode("utf-8", errors="replace")[-2000:]
+                    logger.warning(
+                        f"FFmpeg audio extraction failed (exit {ffmpeg_err.returncode}) "
+                        f"for video {video_id}. stderr tail:\n{stderr_txt}\n"
+                        f"Retrying with ultra-low-memory settings..."
                     )
-                    raise  # propagate so the task marks the video as FAILED
+                    cmd_fallback = [
+                        "ffmpeg", "-y",
+                        "-probesize", "2M", "-analyzeduration", "2M",
+                        "-i", video_path,
+                        "-vn", "-ac", "1", "-ar", "8000", "-b:a", "32k",
+                        "-bufsize", "64k",
+                        "-threads", "1",
+                        audio_path,
+                    ]
+                    try:
+                        subprocess.run(
+                            cmd_fallback, check=True,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.PIPE,
+                        )
+                        logger.info(f"Fallback audio extraction succeeded for video {video_id}")
+                    except subprocess.CalledProcessError as fallback_err:
+                        fb_stderr = (fallback_err.stderr or b"").decode("utf-8", errors="replace")[-2000:]
+                        logger.error(
+                            f"Fallback ffmpeg also failed (exit {fallback_err.returncode}) "
+                            f"for video {video_id}. stderr:\n{fb_stderr}"
+                        )
+                        raise  # propagate so the task marks the video as FAILED
 
-        video.audio_path = audio_path
-        db.commit()
+            video.audio_path = audio_path
+            db.commit()
+        else:
+            logger.info(f"Video {video_id} has no audio stream — skipping audio extraction and transcription.")
+            audio_path = None
 
-        # Reuse completed transcript and analysis across retries and render revisions.
+        # 4. Transcribe (or use empty transcript for audio-less / cached videos)
         if transcript_is_cached:
             transcript = video.transcript
             logger.info("Reusing stored transcript for video %s", video_id)
-        else:
+        elif has_audio and audio_path:
             logger.info("Transcribing source audio for video %s", video_id)
             transcript = transcription_service.transcribe(audio_path)
             if not isinstance(transcript, list) or not transcript:
                 raise RuntimeError("Transcription completed without timestamped segments")
+            video.transcript = transcript
+        else:
+            # No audio stream — proceed with empty transcript so highlight detection
+            # still runs on video metadata (duration, resolution, etc.)
+            logger.info(f"Using empty transcript for audio-less video {video_id}")
+            transcript = []
             video.transcript = transcript
         video.transcription_status = models.TranscriptionStatus.COMPLETED
         if not analysis_is_cached:
