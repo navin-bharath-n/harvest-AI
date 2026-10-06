@@ -123,20 +123,44 @@ def dispatch_task(celery_task, *args, **kwargs):
     _fallback_executor.submit(task_fn, *args, **kwargs)
 
 def dispatch_required_queue(celery_task, *args):
-    """Queue CPU-heavy workflow work in Redis/Celery; never run it in the API process."""
-    from app.core.celery_app import celery_app
+    """Queue CPU-heavy workflow work preferring Redis/Celery.
+
+    Falls back to the bounded thread-pool executor when Celery is unavailable
+    (e.g. no Redis configured in dev / single-container deployments) so that
+    video processing always works regardless of infrastructure.
+    """
     from app.core.config import settings
+    task_fn = getattr(celery_task, "run", celery_task)
+    task_name = getattr(celery_task, "__name__", str(celery_task))
+
+    # Try Celery first — check broker reachability with a short ping
+    use_celery = False
     broker_is_local = "localhost" in settings.CELERY_BROKER_URL or "127.0.0.1" in settings.CELERY_BROKER_URL
-    cloud_env = bool(os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RENDER") or os.environ.get("PORT"))
-    if cloud_env and broker_is_local:
-        raise HTTPException(status_code=503, detail="Video processing queue is not configured. Set CELERY_BROKER_URL to Redis.")
     try:
-        # Enqueue directly. Jobs can wait in Redis while the worker starts or
-        # finishes an earlier job; the request must never run video work inline.
-        celery_task.apply_async(args=list(args), queue="aishorts-queue")
-    except Exception as exc:
-        logger.error("Could not enqueue heavy video job: %s", exc)
-        raise HTTPException(status_code=503, detail="Video processing could not reach Redis. Check CELERY_BROKER_URL and try again.") from exc
+        from app.core.celery_app import celery_app
+        # Skip the ping round-trip when we already know the broker is external
+        if not broker_is_local:
+            workers = celery_app.control.ping(timeout=0.5)
+            use_celery = bool(workers)
+        else:
+            # Local broker — still try; ping quickly to see if a worker is up
+            workers = celery_app.control.ping(timeout=0.25)
+            use_celery = bool(workers)
+    except Exception as ping_err:
+        logger.debug(f"Celery ping failed for {task_name} ({ping_err}). Will fall back to thread executor.")
+
+    if use_celery:
+        try:
+            celery_task.apply_async(args=list(args), queue="aishorts-queue")
+            logger.info(f"Dispatched heavy task {task_name} to Celery queue 'aishorts-queue'")
+            return
+        except Exception as exc:
+            logger.warning(f"Celery enqueue failed for {task_name} ({exc}). Falling back to thread executor.")
+
+    # Fallback: run in the bounded background thread-pool so the API process
+    # never blocks but also never spawns an unbounded number of workers.
+    logger.info(f"Executing heavy task {task_name} in background thread executor (no Celery worker available).")
+    _fallback_executor.submit(task_fn, *args)
 
 # Absolute path so uploads always land in backend/uploads/ regardless of launch CWD
 _BACKEND_DIR = _pathlib.Path(__file__).resolve().parent.parent.parent.parent.parent  # backend/
@@ -993,13 +1017,37 @@ def cancel_generation(
     except Exception as e:
         logger.warning(f"Error revoking Celery tasks for video {video_id}: {e}")
 
-    db_video.status = models.VideoStatus.FAILED
-    db_video.transcription_status = models.TranscriptionStatus.NONE
-    db_video.analysis_status = models.ContentAnalysisStatus.NONE
-    db_video.highlight_status = models.HighlightDetectionStatus.NONE
-    db_video.crop_status = models.CropStatus.NONE
-    db.commit()
-    db.refresh(db_video)
+    # Use direct SQL UPDATE to avoid StaleDataError when a concurrent Celery worker
+    # has modified the row between the time we loaded the ORM object and now.
+    try:
+        db.expire(db_video)  # discard cached state so SQLAlchemy re-reads from DB
+        db_video = db.query(models.Video).filter(models.Video.id == video_id).with_for_update().first()
+        if db_video:
+            db_video.status = models.VideoStatus.FAILED
+            db_video.transcription_status = models.TranscriptionStatus.NONE
+            db_video.analysis_status = models.ContentAnalysisStatus.NONE
+            db_video.highlight_status = models.HighlightDetectionStatus.NONE
+            db_video.crop_status = models.CropStatus.NONE
+            db.commit()
+            db.refresh(db_video)
+    except Exception as e:
+        db.rollback()
+        # Fall back to a raw UPDATE that bypasses ORM optimistic concurrency checks
+        logger.warning(f"ORM commit failed for cancel_generation (video {video_id}), falling back to direct SQL UPDATE: {e}")
+        from sqlalchemy import update as sql_update
+        db.execute(
+            sql_update(models.Video)
+            .where(models.Video.id == video_id)
+            .values(
+                status=models.VideoStatus.FAILED,
+                transcription_status=models.TranscriptionStatus.NONE,
+                analysis_status=models.ContentAnalysisStatus.NONE,
+                highlight_status=models.HighlightDetectionStatus.NONE,
+                crop_status=models.CropStatus.NONE,
+            )
+            .execution_options(synchronize_session="fetch")
+        )
+        db.commit()
 
     return {"success": True, "message": "Video generation cancelled successfully."}
 
