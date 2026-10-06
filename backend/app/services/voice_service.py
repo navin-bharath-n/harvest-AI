@@ -383,7 +383,7 @@ class VoiceService:
         ]
         subprocess.run(cmd, capture_output=True, check=True)
 
-    def dub_voice(self, original_audio_path: str, transcript_words: List[Dict], target_lang: str, start_time: float, end_time: float, output_path: str, mix_mode: str = "replace", speaker_gender: str = "female", variation_index: int = 1) -> str:
+    def dub_voice(self, original_audio_path: str, transcript_words: List[Dict], target_lang: str, start_time: float, end_time: float, output_path: str, mix_mode: str = "replace", speaker_gender: str = "female", variation_index: int = 1, pretranslated_lines: List[Dict] = None) -> str:
         """
         Dubs/translates the voice of a clip with Edge-TTS studio neural models.
         Applies a distinct voice actor persona for each of the 5 variations based on variation_index.
@@ -421,13 +421,26 @@ class VoiceService:
             ]
             subprocess.run(cmd_silence, capture_output=True, check=True)
         
-        # 2. Group words into lines
-        lines = subtitle_service.group_words_into_lines(transcript_words)
-        
-        # Batch-translate all lines upfront in a single call to eliminate rate limits
-        line_texts = [" ".join([w["text"].strip() for w in line["words"]]).strip() for line in lines]
-        from app.services.translation_service import batch_translate_texts
-        translated_line_texts = batch_translate_texts(line_texts, target_lang)
+        # Use the very same translated caption phrases when provided, so the dub
+        # wording cannot drift from the text burned into the video.
+        if pretranslated_lines is not None:
+            lines = [
+                {
+                    "start": start_time + float(line.get("start", 0.0)),
+                    "end": start_time + float(line.get("end", 0.0)),
+                    "text": str(line.get("text", "")).strip(),
+                }
+                for line in pretranslated_lines
+                if str(line.get("text", "")).strip()
+            ]
+            line_texts = [line["text"] for line in lines]
+            translated_line_texts = line_texts
+        else:
+            # Backwards-compatible path for callers that have not prepared translated captions.
+            lines = subtitle_service.group_words_into_lines(transcript_words)
+            line_texts = [" ".join([w["text"].strip() for w in line["words"]]).strip() for line in lines]
+            from app.services.translation_service import batch_translate_texts
+            translated_line_texts = batch_translate_texts(line_texts, target_lang)
         
         processed_segments = []
         original_slice = None

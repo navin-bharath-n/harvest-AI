@@ -26,11 +26,58 @@ export default function StudioPage() {
   const [selectedVideo, setSelectedVideo] = useState(null);
   const [clips, setClips] = useState([]);
   const [selectedClip, setSelectedClip] = useState(null);
+  const [selectedMomentId, setSelectedMomentId] = useState(null);
+  const [momentAudioUrls, setMomentAudioUrls] = useState([]);
   const [clipPlaybackError, setClipPlaybackError] = useState(false);
+  const [clipMediaUrl, setClipMediaUrl] = useState('');
+  const [captionStyle, setCaptionStyle] = useState('pop');
+  const [outputLanguage, setOutputLanguage] = useState('original');
+  const [dubVoice, setDubVoice] = useState(false);
 
   useEffect(() => {
     setClipPlaybackError(false);
   }, [selectedClip]);
+
+  useEffect(() => {
+    if (selectedClip?.edit_options?.caption_style) {
+      setCaptionStyle(selectedClip.edit_options.caption_style);
+    }
+  }, [selectedClip?.id]);
+
+  useEffect(() => {
+    const moments = selectedVideo?.highlights?.clips || [];
+    setSelectedMomentId(selectedVideo?.highlights?.selected_moment_id ?? null);
+    let urls = [];
+    let cancelled = false;
+    if (selectedVideo?.id && moments.length) {
+      Promise.all(moments.slice(0, 5).map((_, index) => api.getMomentAudio(selectedVideo.id, index).catch(() => '')))
+        .then((loaded) => {
+          if (cancelled) {
+            loaded.forEach((url) => url && URL.revokeObjectURL(url));
+            return;
+          }
+          urls = loaded;
+          setMomentAudioUrls(loaded);
+        });
+    } else {
+      setMomentAudioUrls([]);
+    }
+    return () => {
+      cancelled = true;
+      urls.forEach((url) => url && URL.revokeObjectURL(url));
+    };
+  }, [selectedVideo?.id, selectedVideo?.highlights]);
+
+  useEffect(() => {
+    let currentUrl = '';
+    setClipMediaUrl('');
+    if (!selectedClip?.id || selectedClip.status === 'failed') return undefined;
+    api.getClipMedia(selectedClip.id).then((url) => {
+      currentUrl = url;
+      setClipMediaUrl(url);
+    }).catch(() => setClipPlaybackError(true));
+    return () => { if (currentUrl) URL.revokeObjectURL(currentUrl); };
+  }, [selectedClip?.id]);
 
   // Upload State
   const [isUploading, setIsUploading] = useState(false);
@@ -55,7 +102,6 @@ export default function StudioPage() {
   const [confirmDialog, setConfirmDialog] = useState(null); // { type, id, label }
   const [deleteLoading, setDeleteLoading] = useState(false);
 
-  const SERVER_URL = (import.meta.env.VITE_SERVER_URL || '').replace(/\/$/, '');
 
   // 1. Load Projects on Mount
   const loadProjects = useCallback(async () => {
@@ -132,7 +178,9 @@ export default function StudioPage() {
 
       setClips(uniqueClips);
       if (uniqueClips.length > 0) {
+        const selectedMomentClip = uniqueClips.find((clip) => clip.edit_options?.workflow === 'selected_moment_v1');
         setSelectedClip((prev) => {
+          if (selectedMomentClip) return selectedMomentClip;
           if (prev) {
             const found = uniqueClips.find((c) => c.id === prev.id);
             return found || uniqueClips[0];
@@ -150,6 +198,34 @@ export default function StudioPage() {
   useEffect(() => {
     loadClips();
   }, [loadClips]);
+
+  useEffect(() => {
+    if (!selectedVideo?.id || !selectedClip || !['pending', 'rendering'].includes(selectedClip.status)) return undefined;
+    let active = true;
+    const refresh = async () => {
+      try {
+        const latest = await api.getClips(selectedVideo.id);
+        if (!active) return;
+        setClips(latest || []);
+        const updated = (latest || []).find((clip) => clip.id === selectedClip.id);
+        if (updated) {
+          setSelectedClip(updated);
+          if (updated.status === 'completed') {
+            setActionLoading(false);
+            setActionMessage('The selected moment is ready. Its source audio and chosen caption style are saved.');
+          } else if (updated.status === 'failed') {
+            setActionLoading(false);
+            setActionMessage('Rendering failed. Your selected moment and transcript are saved; retry after checking the worker logs.');
+          }
+        }
+      } catch (error) {
+        console.error('Clip render status check failed:', error);
+      }
+    };
+    const timer = setInterval(refresh, 2000);
+    refresh();
+    return () => { active = false; clearInterval(timer); };
+  }, [selectedVideo?.id, selectedClip?.id, selectedClip?.status]);
 
   // Clean up polling & timers on unmount
   useEffect(() => {
@@ -182,15 +258,19 @@ export default function StudioPage() {
         // Fetch any ready clips
         await loadClips();
 
-        const isDone = statusData?.is_done || statusData?.is_complete || (statusData?.variations_ready >= 5);
         const isFailed = statusData?.stage === 'failed' || statusData?.video_status === 'failed';
+        const momentsReady = statusData?.video_status === 'completed' &&
+          statusData?.highlight_status === 'completed' && (statusData?.moments_ready || 0) >= 5;
+        const isDone = !isFailed && (momentsReady || (
+          statusData?.video_status === 'completed' && (statusData?.is_done || statusData?.is_complete)
+        ));
 
         if (isDone) {
           clearInterval(pollIntervalRef.current);
           clearInterval(timerIntervalRef.current);
           setIsAnalyzing(false);
           setActionLoading(false);
-          setActionMessage('Master AI generation completed! 5 vertical shorts ready.');
+          setActionMessage(momentsReady ? 'Five moments are ready to preview.' : 'Video generation completed.');
           await loadVideos();
           await loadClips();
           setTimeout(() => setActionMessage(''), 5000);
@@ -208,8 +288,8 @@ export default function StudioPage() {
     };
 
     // Run first check immediately, then every 1500ms
-    checkStatus();
     pollIntervalRef.current = setInterval(checkStatus, 1500);
+    checkStatus();
   }, [loadClips, loadVideos]);
 
   // If user selects a video that is currently processing in the background, attach polling automatically
@@ -241,8 +321,16 @@ export default function StudioPage() {
 
       if (uploadedVideo && uploadedVideo.id) {
         setSelectedVideo(uploadedVideo);
-        // Automatically launch master generation pipeline & real-time report!
-        handleRunMasterPipeline(uploadedVideo.id);
+        setActionMessage('Video uploaded. Queuing its one-time transcript and moment analysis.');
+        setActionLoading(true);
+        try {
+          const processingVideo = await api.extractHighlights(uploadedVideo.id);
+          setSelectedVideo(processingVideo);
+          startStatusPolling(uploadedVideo.id);
+        } catch (queueError) {
+          setActionLoading(false);
+          setActionMessage(queueError.response?.data?.detail || queueError.message || 'Upload succeeded, but analysis could not be queued.');
+        }
       }
     } catch (err) {
       console.error('Upload failed:', err);
@@ -264,9 +352,12 @@ export default function StudioPage() {
 
     try {
       await api.masterGenerate(vidId, {
-        preset: 'viral_hook',
-        caption_style: 'kinetic',
-        aspect_ratio: '9:16',
+        caption_style: captionStyle,
+        translate_language: outputLanguage === 'original' ? 'none' : outputLanguage,
+        caption_language: outputLanguage === 'original' ? 'original' : 'translated',
+        dub_voice: dubVoice,
+        length: 60,
+        platform: 'youtube',
       });
       // Start real-time analysis polling
       startStatusPolling(vidId);
@@ -275,6 +366,49 @@ export default function StudioPage() {
       setActionMessage('Master pipeline error: ' + (err.response?.data?.detail || err.message));
       setActionLoading(false);
       setIsAnalyzing(false);
+    }
+  };
+
+  const handleAnalyzeMoments = async () => {
+    if (!selectedVideo) return;
+    setActionLoading(true);
+    setActionMessage('Queueing transcription and analysis. Existing transcript and analysis are reused when available.');
+    try {
+      const processingVideo = await api.extractHighlights(selectedVideo.id);
+      setSelectedVideo(processingVideo);
+      startStatusPolling(selectedVideo.id);
+    } catch (error) {
+      setActionLoading(false);
+      setActionMessage(error.response?.data?.detail || error.message || 'Could not queue moment analysis.');
+    }
+  };
+
+  const handleRenderSelectedMoment = async () => {
+    if (!selectedVideo || selectedMomentId == null) return;
+    setActionLoading(true);
+    setActionMessage('Queueing one vertical video from the selected time range, with the original audio.');
+    try {
+      const clip = await api.selectMoment(selectedVideo.id, selectedMomentId, captionStyle);
+      setSelectedClip(clip);
+      setClips((items) => [clip, ...items.filter((item) => item.id !== clip.id)]);
+      await loadVideos();
+    } catch (error) {
+      setActionLoading(false);
+      setActionMessage(error.response?.data?.detail || error.message || 'Could not queue the selected moment.');
+    }
+  };
+
+  const handleCaptionRerender = async () => {
+    if (!selectedClip) return;
+    setActionLoading(true);
+    setActionMessage('Queueing a caption-only rerender. The saved transcript and selected time range are reused.');
+    try {
+      const updated = await api.rerenderCaption(selectedClip.id, captionStyle);
+      setSelectedClip(updated);
+      setClips((items) => items.map((item) => item.id === updated.id ? updated : item));
+    } catch (error) {
+      setActionLoading(false);
+      setActionMessage(error.response?.data?.detail || error.message || 'Could not queue the caption rerender.');
     }
   };
 
@@ -443,13 +577,6 @@ export default function StudioPage() {
       setDeleteLoading(false);
       setConfirmDialog(null);
     }
-  };
-
-  const formatVideoUrl = (path) => {
-    if (!path) return '';
-    if (path.startsWith('http://') || path.startsWith('https://')) return path;
-    const cleanPath = path.replace(/^\/+/, '');
-    return SERVER_URL ? `${SERVER_URL}/${cleanPath}` : `/${cleanPath}`;
   };
 
   const formatTimer = (totalSeconds) => {
@@ -709,9 +836,9 @@ export default function StudioPage() {
             ) : (
               videos.map((vid) => {
                 const isSelected = selectedVideo?.id === vid.id;
-                const isProcessingThis = (isSelected && isAnalyzing) || vid.status === 'processing';
+                const isProcessingThis = vid.status === 'processing' || vid.status === 'pending';
                 const statusColor =
-                  isProcessingThis ? '#b45309' : (vid.status === 'completed' ? '#1f6f4a' : '#7a808a');
+                  vid.status === 'failed' ? '#c0392b' : isProcessingThis ? '#b45309' : (vid.status === 'completed' ? '#1f6f4a' : '#7a808a');
                 return (
                   <div
                     key={vid.id}
@@ -773,6 +900,26 @@ export default function StudioPage() {
                         </span>
                       </div>
                     </div>
+                    <button
+                      onClick={async (e) => {
+                        e.stopPropagation();
+                        const currentName = vid.original_filename || `Video #${vid.id}`;
+                        const nextName = window.prompt('Name this video', currentName)?.trim();
+                        if (!nextName || nextName === currentName) return;
+                        try {
+                          const renamed = await api.renameVideo(vid.id, nextName);
+                          setVideos((items) => items.map((item) => item.id === vid.id ? renamed : item));
+                          setSelectedVideo((item) => item?.id === vid.id ? renamed : item);
+                        } catch (error) {
+                          setActionMessage(error.response?.data?.detail || 'Could not rename video.');
+                        }
+                      }}
+                      title="Rename this video"
+                      aria-label={`Rename ${vid.original_filename || `video ${vid.id}`}`}
+                      style={{ padding: '0.3rem', border: 0, background: 'transparent', color: '#7a808a', cursor: 'pointer' }}
+                    >
+                      <span style={{ fontSize: '0.75rem', fontWeight: 700 }}>Rename</span>
+                    </button>
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
@@ -842,10 +989,29 @@ export default function StudioPage() {
                 </div>
 
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap' }}>
-                  {/* Master Generate 1-Click */}
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem', color: '#5b616b' }}>
+                    Caption style
+                    <select value={captionStyle} onChange={(event) => setCaptionStyle(event.target.value)} disabled={actionLoading || isAnalyzing} style={{ padding: '0.55rem', border: '1px solid #e6e6e1', borderRadius: '6px', background: '#fff', color: '#16181d' }}>
+                      <option value="pop">Viral Pop</option>
+                      <option value="karaoke">Karaoke</option>
+                      <option value="minimalist">Minimal</option>
+                      <option value="boxed">Boxed</option>
+                      <option value="neon">Neon</option>
+                    </select>
+                  </label>
+                  {selectedClip?.edit_options?.workflow === 'selected_moment_v1' &&
+                    selectedClip.edit_options.caption_style !== captionStyle && (
+                    <button
+                      disabled={actionLoading || isAnalyzing || ['pending', 'rendering'].includes(selectedClip.status)}
+                      onClick={handleCaptionRerender}
+                      style={{ padding: '0.65rem 0.9rem', borderRadius: '6px', background: '#fff', border: '1px solid #e6e6e1', color: '#16181d', fontSize: '0.825rem', fontWeight: 600, cursor: actionLoading ? 'not-allowed' : 'pointer' }}
+                    >
+                      Apply Caption Style
+                    </button>
+                  )}
                   <button
-                    disabled={actionLoading || isAnalyzing}
-                    onClick={() => handleRunMasterPipeline()}
+                    disabled={actionLoading || isAnalyzing || (selectedMomentId == null && selectedVideo.highlight_status === 'completed' && (selectedVideo.highlights?.clips || []).length >= 5)}
+                    onClick={selectedMomentId == null ? handleAnalyzeMoments : handleRenderSelectedMoment}
                     style={{
                       display: 'inline-flex',
                       alignItems: 'center',
@@ -861,57 +1027,7 @@ export default function StudioPage() {
                       transition: 'background-color 0.15s ease',
                     }}
                   >
-                    <Wand2 size={15} /> 1-Click Master Generate
-                  </button>
-
-                  {/* Step by step backend triggers */}
-                  <button
-                    disabled={actionLoading || isAnalyzing}
-                    onClick={handleTranscribe}
-                    style={{
-                      padding: '0.65rem 0.95rem',
-                      borderRadius: '6px',
-                      backgroundColor: '#ffffff',
-                      border: '1px solid #e6e6e1',
-                      color: '#16181d',
-                      fontSize: '0.825rem',
-                      fontWeight: 500,
-                      cursor: (actionLoading || isAnalyzing) ? 'not-allowed' : 'pointer',
-                    }}
-                  >
-                    Transcribe
-                  </button>
-                  <button
-                    disabled={actionLoading || isAnalyzing}
-                    onClick={handleDetectHighlights}
-                    style={{
-                      padding: '0.65rem 0.95rem',
-                      borderRadius: '6px',
-                      backgroundColor: '#ffffff',
-                      border: '1px solid #e6e6e1',
-                      color: '#16181d',
-                      fontSize: '0.825rem',
-                      fontWeight: 500,
-                      cursor: (actionLoading || isAnalyzing) ? 'not-allowed' : 'pointer',
-                    }}
-                  >
-                    Find Hooks
-                  </button>
-                  <button
-                    disabled={actionLoading || isAnalyzing}
-                    onClick={handleSmartCrop}
-                    style={{
-                      padding: '0.65rem 0.95rem',
-                      borderRadius: '6px',
-                      backgroundColor: '#ffffff',
-                      border: '1px solid #e6e6e1',
-                      color: '#16181d',
-                      fontSize: '0.825rem',
-                      fontWeight: 500,
-                      cursor: (actionLoading || isAnalyzing) ? 'not-allowed' : 'pointer',
-                    }}
-                  >
-                    9:16 Reframe
+                    <Wand2 size={15} /> {selectedMomentId != null ? 'Render 1 Selected Moment' : ((selectedVideo.highlights?.clips || []).length ? 'Select a Moment' : 'Analyze 5 Moments')}
                   </button>
                 </div>
               </div>
@@ -933,6 +1049,28 @@ export default function StudioPage() {
                   <Sparkles size={16} color="#1f6f4a" />
                   <span>{actionMessage}</span>
                 </div>
+              )}
+
+              {(selectedVideo.highlights?.clips || []).length > 0 && (
+                <section style={{ background: '#fff', border: '1px solid #e6e6e1', borderRadius: '8px', padding: '1.25rem' }}>
+                  <h3 style={{ margin: '0 0 0.35rem', color: '#16181d' }}>Top Moments from This Video</h3>
+                  <p style={{ margin: '0 0 1rem', color: '#5b616b', fontSize: '0.85rem' }}>Preview the source audio for each exact timestamp, select one moment, then render a single short.</p>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '0.75rem' }}>
+                    {selectedVideo.highlights.clips.slice(0, 5).map((moment, index) => (
+                      <div key={`${selectedVideo.id}-moment-${index}`} style={{ border: selectedMomentId === index ? '1px solid #1f6f4a' : '1px solid #e6e6e1', borderRadius: '6px', padding: '0.8rem', background: selectedMomentId === index ? '#f2faf5' : '#fff' }}>
+                        <label style={{ display: 'flex', alignItems: 'flex-start', gap: '0.5rem', cursor: 'pointer' }}>
+                          <input type="radio" name={`moment-${selectedVideo.id}`} checked={selectedMomentId === index} onChange={() => setSelectedMomentId(index)} />
+                          <span>
+                            <strong style={{ display: 'block', color: '#16181d', fontSize: '0.9rem' }}>{moment.title || `Moment ${index + 1}`}</strong>
+                            <small style={{ color: '#5b616b' }}>{Number(moment.start_time).toFixed(1)}s–{Number(moment.end_time).toFixed(1)}s · {moment.duration}s</small>
+                          </span>
+                        </label>
+                        {moment.reason && <p style={{ fontSize: '0.78rem', color: '#5b616b', margin: '0.55rem 0' }}>{moment.reason}</p>}
+                        {momentAudioUrls[index] ? <audio controls preload="none" src={momentAudioUrls[index]} style={{ width: '100%', height: 34 }} /> : <small style={{ color: '#7a808a' }}>Original audio preview unavailable</small>}
+                      </div>
+                    ))}
+                  </div>
+                </section>
               )}
 
               {/* ── REAL-TIME ANALYSIS & GENERATION REPORT ── */}
@@ -1171,10 +1309,10 @@ export default function StudioPage() {
                             )}
                           </div>
                           <h4 style={{ margin: '0 0 0.25rem', fontSize: '0.95rem', fontWeight: 650, color: '#16181d' }}>
-                            Shorts Rendering ({readyCount}/5)
+                            Selected Moment Render ({readyCount > 0 ? 'ready' : 'waiting'})
                           </h4>
                           <p style={{ margin: 0, fontSize: '0.8rem', color: '#5b616b', lineHeight: 1.5 }}>
-                            Burning synced subtitles and exporting 5 vertical variations
+                            Rendering one selected time range with the original source audio
                           </p>
                         </div>
                       );
@@ -1231,7 +1369,7 @@ export default function StudioPage() {
                       <Sparkles size={22} color="#1f6f4a" style={{ marginBottom: '0.5rem' }} />
                       <p style={{ margin: 0, fontWeight: 600, color: '#16181d' }}>No vertical clips generated yet.</p>
                       <p style={{ fontSize: '0.825rem', color: '#5b616b', marginTop: '0.35rem' }}>
-                        Click &ldquo;1-Click Master Generate&rdquo; above to automatically cut and reframe highlights into 5 vertical shorts.
+                        Analyze the source to preview five timestamped moments, then choose one moment to render as a single short.
                       </p>
                     </div>
                   ) : (
@@ -1354,7 +1492,7 @@ export default function StudioPage() {
                       >
                         <video
                           key={selectedClip.storage_path}
-                          src={formatVideoUrl(selectedClip.storage_path)}
+                          src={clipMediaUrl}
                           controls
                           onError={() => setClipPlaybackError(true)}
                           style={{ width: '100%', height: '100%', objectFit: 'contain' }}
@@ -1373,13 +1511,13 @@ export default function StudioPage() {
                             lineHeight: 1.5,
                           }}
                         >
-                          <strong>Media not found on this server (HTTP 404):</strong> This clip file exists on the machine where it was originally processed, or was cleared after an ephemeral cloud container restart. Click <em>Generate 5 Master Variations</em> below to re-render it directly on this server.
+                          <strong>Media file is unavailable:</strong> The source file may have been removed from this server. Re-upload the source video and render the selected moment again.
                         </div>
                       )}
 
                       {/* Download */}
                       <a
-                        href={formatVideoUrl(selectedClip.storage_path)}
+                        href={clipMediaUrl || undefined}
                         download
                         style={{
                           display: 'inline-flex',
@@ -1526,7 +1664,7 @@ export default function StudioPage() {
                 Select or Upload a Video
               </h3>
               <p style={{ maxWidth: '420px', fontSize: '0.925rem', margin: 0, color: '#5b616b', lineHeight: 1.6 }}>
-                Choose a video from the project footage sidebar or upload new recordings to launch automatic transcription, hook detection, and 9:16 vertical cropping.
+                Choose a video from the project footage sidebar or upload a recording. Preview five timestamped moments, choose one, and render a single 9:16 short with its original audio.
               </p>
             </div>
           )}

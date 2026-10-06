@@ -121,6 +121,19 @@ export const api = {
     return response.data;
   },
 
+  renameVideo: async (videoId, name) => {
+    const body = new FormData();
+    body.append('name', name);
+    const response = await client.patch(`/videos/${videoId}/name`, body);
+    return response.data;
+  },
+
+  getClipMedia: async (clipId) => {
+    const response = await authFetch(`/videos/clip-media/${clipId}`);
+    if (!response.ok) throw new Error(`Unable to load clip (${response.status})`);
+    return URL.createObjectURL(await response.blob());
+  },
+
   // Upload a video
   uploadVideo: async (projectId, file, onUploadProgress) => {
     const formData = new FormData();
@@ -149,9 +162,36 @@ export const api = {
       dub_mix_mode: config.dub_mix_mode || 'replace',
       speaker_gender: config.speaker_gender || 'female',
       framing_mode: config.framing_mode || 'fit_blur',
+      caption_style: config.caption_style || 'pop',
     };
     const response = await client.post(`/videos/${videoId}/master-generate`, payload);
     return response.data;
+  },
+
+  extractHighlights: async (videoId) => {
+    const response = await client.post(`/videos/${videoId}/extract-highlights`);
+    return response.data;
+  },
+
+  selectMoment: async (videoId, momentId, captionStyle) => {
+    const response = await client.post(`/videos/${videoId}/select-moment`, {
+      moment_id: momentId,
+      caption_style: captionStyle,
+    });
+    return response.data;
+  },
+
+  rerenderCaption: async (clipId, captionStyle) => {
+    const response = await client.patch(`/videos/clips/${clipId}/caption`, {
+      caption_style: captionStyle,
+    });
+    return response.data;
+  },
+
+  getMomentAudio: async (videoId, momentId) => {
+    const response = await authFetch(`/videos/${videoId}/moments/${momentId}/audio`);
+    if (!response.ok) throw new Error(`Unable to load moment preview (${response.status})`);
+    return URL.createObjectURL(await response.blob());
   },
 
   // Transcribe audio

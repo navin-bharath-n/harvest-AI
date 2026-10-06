@@ -33,7 +33,6 @@ from app.core.config import settings
 from app.core.logging import setup_logging
 # Import all models so SQLAlchemy can create tables
 from app import models
-from fastapi.staticfiles import StaticFiles
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 import traceback
@@ -391,10 +390,10 @@ else:
 app.add_middleware(CORSMiddleware, **_cors_kwargs)
 app.add_middleware(GZipMiddleware, minimum_size=500)
 
-# Absolute uploads directory (backend/uploads/ - parent of app/)
+# Media is served through authenticated video/clip endpoints. Do not mount the
+# uploads directory as a public static route: it contains user source footage.
 _UPLOADS_DIR = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "uploads"))
 os.makedirs(_UPLOADS_DIR, exist_ok=True)
-app.mount("/uploads", StaticFiles(directory=_UPLOADS_DIR), name="uploads")
 
 # Absolute path for the error log — never relative to CWD
 _BACKEND_DIR_MAIN = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))

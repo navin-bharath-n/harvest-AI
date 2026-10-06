@@ -141,8 +141,11 @@ export function GenerationProvider({ children }) {
         const task = currentTasks[idx];
         if (!status || !task) return;
 
-        if (status.is_done || status.is_complete || (status.variations_ready >= 5)) {
-          // Task is completed!
+        if (status.video_status === 'failed' || status.stage === 'failed') {
+          // Task failed or is idle in DB (not generating)
+          setActiveTasks(prev => prev.filter(t => t.videoId !== task.videoId));
+        } else if (status.video_status === 'completed' && (status.is_done || status.is_complete)) {
+          // Only announce completion after the API confirms both completed status and all outputs.
           setActiveTasks(prev => prev.filter(t => t.videoId !== task.videoId));
           setCompletedTasks(prev => {
             const alreadyNotified = prev.find(c => c.videoId === task.videoId);
@@ -153,8 +156,7 @@ export function GenerationProvider({ children }) {
               completedAt: Date.now()
             }];
           });
-        } else if (status.video_status === 'failed' || (status.video_status === 'completed' && status.stage === 'idle' && (status.variations_ready || 0) === 0)) {
-          // Task failed or is idle in DB (not generating)
+        } else if (status.video_status === 'completed' && status.stage === 'idle' && (status.variations_ready || 0) === 0) {
           setActiveTasks(prev => prev.filter(t => t.videoId !== task.videoId));
         } else {
           // Update progress

@@ -1,4 +1,5 @@
 import json
+import os
 import logging
 from openai import OpenAI
 from app.services.llm_client import safe_chat_completion, parse_json_robust

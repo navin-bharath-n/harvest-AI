@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Literal, Optional
 from pydantic import BaseModel, Field
 from datetime import datetime
 from app.models.video import VideoStatus, TranscriptionStatus, ContentAnalysisStatus, HighlightDetectionStatus, CropStatus
@@ -27,6 +27,7 @@ class MasterGenerateRequest(BaseModel):
     dub_mix_mode: Optional[str] = "replace"
     speaker_gender: Optional[str] = "female"
     framing_mode: Optional[str] = "fit_blur"
+    caption_style: Optional[str] = "pop"
 
 class ClipPublishRequest(BaseModel):
     platforms: list[str]
@@ -40,6 +41,13 @@ class ClipCreate(BaseModel):
     start_time: float
     end_time: float
     edit_options: Optional[dict] = None
+
+class SelectMomentRequest(BaseModel):
+    moment_id: int = Field(ge=0, le=4)
+    caption_style: Literal["pop", "karaoke", "minimalist", "boxed", "neon", "standard", "none"] = "pop"
+
+class CaptionStyleUpdate(BaseModel):
+    caption_style: Literal["pop", "karaoke", "minimalist", "boxed", "neon", "standard", "none"]
 
 class Clip(BaseModel):
     id: int

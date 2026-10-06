@@ -114,7 +114,9 @@ def _translate_single_chunk_llm(client, provider, chunk: List[str], target_name:
     rules = [
         f"Translate each sentence into {target_name}.",
         f"Output must be a strictly valid JSON array of strings containing EXACTLY {len(chunk)} items.",
-        "Keep each translation natural, punchy, conversational, and appropriate for vertical video captions (Reels/Shorts).",
+        "Translate the meaning faithfully, then phrase it as natural, idiomatic speech that sounds good when read aloud.",
+        "Keep each phrase concise enough for a short-video caption and comfortable to speak in the original time window.",
+        "Preserve names, facts, intent, and tone. Do not add information, exaggerate, or omit important meaning.",
         "Maintain the exact order corresponding to each input sentence.",
         "Do not include explanations, notes, or markdown formatting outside the JSON array."
     ]
@@ -445,7 +447,9 @@ def translate_and_distribute_words(shifted_words: List[Dict], target_lang: str) 
     from app.services.subtitle_service import subtitle_service
 
     # 1. Group words into short semantic lines
-    lines = subtitle_service.group_words_into_lines(shifted_words)
+    # Give translation enough surrounding words to preserve a complete thought
+    # and produce a phrase that reads and sounds naturally in the target language.
+    lines = subtitle_service.group_words_into_lines(shifted_words, max_words=8, max_duration=3.5)
     if not lines:
         return shifted_words
 

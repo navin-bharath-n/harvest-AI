@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi.responses import FileResponse, RedirectResponse
 from sqlalchemy.orm import Session
 from typing import List, Optional
 import shutil
@@ -120,6 +121,22 @@ def dispatch_task(celery_task, *args, **kwargs):
 
     logger.info(f"Executing {getattr(celery_task, '__name__', str(celery_task))} in background daemon thread.")
     _fallback_executor.submit(task_fn, *args, **kwargs)
+
+def dispatch_required_queue(celery_task, *args):
+    """Queue CPU-heavy workflow work in Redis/Celery; never run it in the API process."""
+    from app.core.celery_app import celery_app
+    from app.core.config import settings
+    broker_is_local = "localhost" in settings.CELERY_BROKER_URL or "127.0.0.1" in settings.CELERY_BROKER_URL
+    cloud_env = bool(os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RENDER") or os.environ.get("PORT"))
+    if cloud_env and broker_is_local:
+        raise HTTPException(status_code=503, detail="Video processing queue is not configured. Set CELERY_BROKER_URL to Redis.")
+    try:
+        # Enqueue directly. Jobs can wait in Redis while the worker starts or
+        # finishes an earlier job; the request must never run video work inline.
+        celery_task.apply_async(args=list(args), queue="aishorts-queue")
+    except Exception as exc:
+        logger.error("Could not enqueue heavy video job: %s", exc)
+        raise HTTPException(status_code=503, detail="Video processing could not reach Redis. Check CELERY_BROKER_URL and try again.") from exc
 
 # Absolute path so uploads always land in backend/uploads/ regardless of launch CWD
 _BACKEND_DIR = _pathlib.Path(__file__).resolve().parent.parent.parent.parent.parent  # backend/
@@ -250,15 +267,32 @@ def extract_highlights(
 ):
     db_video = get_user_video(video_id, current_user.id, db)
 
+    if (
+        db_video.highlight_status == models.HighlightDetectionStatus.COMPLETED
+        and isinstance(db_video.highlights, dict)
+        and len(db_video.highlights.get("clips") or []) >= 5
+    ):
+        return db_video
+
     db_video.status = models.VideoStatus.PROCESSING
-    db_video.transcription_status = models.TranscriptionStatus.PROCESSING
-    db_video.analysis_status = models.ContentAnalysisStatus.PENDING
+    if not (db_video.transcription_status == models.TranscriptionStatus.COMPLETED and db_video.transcript):
+        db_video.transcription_status = models.TranscriptionStatus.PENDING
+    if not (db_video.analysis_status == models.ContentAnalysisStatus.COMPLETED and db_video.content_analysis):
+        db_video.analysis_status = models.ContentAnalysisStatus.PENDING
     db_video.highlight_status = models.HighlightDetectionStatus.PENDING
     db.commit()
     db.refresh(db_video)
 
     from app.tasks.video_tasks import extract_top5_highlights_task
-    dispatch_task(extract_top5_highlights_task, db_video.id)
+    try:
+        dispatch_required_queue(extract_top5_highlights_task, db_video.id)
+    except HTTPException:
+        # A job that never reached Celery is not completed. Report failure so
+        # the UI offers a retry and never presents stale completion state.
+        db_video.status = models.VideoStatus.FAILED
+        db_video.highlight_status = models.HighlightDetectionStatus.FAILED
+        db.commit()
+        raise
     return db_video
 
 @router.get("/", response_model=List[schemas.Video])
@@ -272,8 +306,236 @@ def read_videos(
     query = db.query(models.Video).join(models.Project).filter(models.Project.owner_id == current_user.id)
     if project_id:
         query = query.filter(models.Video.project_id == project_id)
-    videos = query.offset(skip).limit(limit).all()
+    videos = query.order_by(models.Video.created_at.desc(), models.Video.id.desc()).offset(skip).limit(limit).all()
     return videos
+
+@router.patch("/{video_id}/name", response_model=schemas.Video)
+def rename_video(
+    video_id: int,
+    name: str = Form(...),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    db_video = get_user_video(video_id, current_user.id, db)
+    name = name.strip()
+    if not name or len(name) > 255:
+        raise HTTPException(status_code=400, detail="Name must be between 1 and 255 characters")
+    db_video.original_filename = name
+    db.commit()
+    db.refresh(db_video)
+    return db_video
+
+@router.get("/{video_id}/media")
+def get_video_media(
+    video_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    video = get_user_video(video_id, current_user.id, db)
+    from app.services import object_storage
+    if object_storage.is_remote(video.storage_path):
+        return RedirectResponse(object_storage.url(video.storage_path))
+    path = _resolve_path(video.storage_path)
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="Video media not found")
+    return FileResponse(path, filename=os.path.basename(video.original_filename))
+
+@router.get("/clip-media/{clip_id}")
+def get_clip_media(
+    clip_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    clip = get_user_clip(clip_id, current_user.id, db)
+    if not clip.storage_path:
+        raise HTTPException(status_code=404, detail="Clip media not found")
+    from app.services import object_storage
+    if object_storage.is_remote(clip.storage_path):
+        return RedirectResponse(object_storage.url(clip.storage_path))
+    path = _resolve_path(clip.storage_path)
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="Clip media not found")
+    return FileResponse(path, filename=os.path.basename(path), media_type="video/mp4")
+
+@router.get("/{video_id}/moments/{moment_id}/audio")
+def get_moment_audio(
+    video_id: int,
+    moment_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    video = get_user_video(video_id, current_user.id, db)
+    highlights = video.highlights if isinstance(video.highlights, dict) else {}
+    moments = highlights.get("clips") or []
+    if not isinstance(moments, list) or moment_id < 0 or moment_id >= len(moments):
+        raise HTTPException(status_code=404, detail="Moment preview not found")
+    moment = moments[moment_id]
+    stored_path = moment.get("audio_path") if isinstance(moment, dict) else None
+    if not stored_path:
+        raise HTTPException(status_code=404, detail="Moment preview is unavailable")
+    from app.services import object_storage
+    if object_storage.is_remote(stored_path):
+        path = object_storage.local_path(stored_path)
+    else:
+        path = _resolve_path(stored_path)
+        uploads_root = os.path.realpath(UPLOAD_DIR)
+        try:
+            path_is_private_upload = os.path.commonpath([uploads_root, os.path.realpath(path)]) == uploads_root
+        except ValueError:
+            path_is_private_upload = False
+        if not path_is_private_upload:
+            raise HTTPException(status_code=404, detail="Moment preview not found")
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="Moment preview not found")
+    return FileResponse(path, media_type="audio/mpeg", filename=f"moment-{moment_id + 1}.mp3")
+
+@router.post("/{video_id}/select-moment", response_model=schemas.Clip)
+def select_moment(
+    video_id: int,
+    request: schemas.SelectMomentRequest,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    video = get_user_video(video_id, current_user.id, db)
+    highlights = video.highlights if isinstance(video.highlights, dict) else {}
+    moments = highlights.get("clips") or []
+    if not isinstance(moments, list) or request.moment_id >= len(moments):
+        raise HTTPException(status_code=409, detail="Analyze this source video before selecting a moment")
+    if not video.transcript:
+        raise HTTPException(status_code=409, detail="A timestamped transcript is required before rendering")
+    moment = moments[request.moment_id]
+    if not isinstance(moment, dict):
+        raise HTTPException(status_code=409, detail="The selected moment data is invalid. Reanalyze the source video.")
+    try:
+        start_time, end_time = float(moment.get("start_time", 0)), float(moment.get("end_time", 0))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="The selected moment has invalid source timestamps")
+    duration = float(video.duration or 0)
+    if start_time < 0 or end_time <= start_time or (duration and end_time > duration + 0.1):
+        raise HTTPException(status_code=422, detail="The selected moment has invalid source timestamps")
+
+    old_highlights = dict(video.highlights or {})
+    old_selected_moment_id = old_highlights.get("selected_moment_id")
+    db_video_moments = dict(old_highlights)
+    db_video_moments["selected_moment_id"] = request.moment_id
+    video.highlights = db_video_moments
+    existing = next((
+        clip for clip in reversed(video.clips)
+        if (clip.edit_options or {}).get("workflow") == "selected_moment_v1"
+    ), None)
+    previous_clip_state = None
+    if existing:
+        previous_clip_state = {
+            "title": existing.title,
+            "start_time": existing.start_time,
+            "end_time": existing.end_time,
+            "duration": existing.duration,
+            "edit_options": existing.edit_options,
+            "status": existing.status,
+        }
+    if existing and existing.status in (models.ClipStatus.PENDING, models.ClipStatus.RENDERING):
+        raise HTTPException(status_code=409, detail="The selected moment is already rendering")
+    if (
+        existing
+        and existing.status == models.ClipStatus.COMPLETED
+        and abs(existing.start_time - start_time) < 0.01
+        and abs(existing.end_time - end_time) < 0.01
+        and (existing.edit_options or {}).get("caption_style") == request.caption_style
+    ):
+        db.commit()
+        return existing
+
+    transcript_snapshot = []
+    for word in video.transcript:
+        if not isinstance(word, dict):
+            continue
+        try:
+            word_start, word_end = float(word["start"]), float(word["end"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if word_end > start_time and word_start < end_time:
+            transcript_snapshot.append(word)
+    edit_options = {
+        "workflow": "selected_moment_v1",
+        "selected_moment_id": request.moment_id,
+        "selected_moment": dict(moment),
+        "transcript_snapshot": transcript_snapshot,
+        "caption_style": request.caption_style,
+        "caption_language": "original",
+        "translate_language": "none",
+        "music_preset": "none",
+        "music_style": "none",
+        "framing_mode": "fit_blur",
+    }
+    if existing:
+        existing.title = moment.get("title") or f"Moment {request.moment_id + 1}"
+        existing.start_time = start_time
+        existing.end_time = end_time
+        existing.duration = end_time - start_time
+        existing.edit_options = edit_options
+        existing.status = models.ClipStatus.PENDING
+        clip = existing
+    else:
+        clip = models.Clip(
+            video_id=video.id,
+            title=moment.get("title") or f"Moment {request.moment_id + 1}",
+            start_time=start_time,
+            end_time=end_time,
+            duration=end_time - start_time,
+            status=models.ClipStatus.PENDING,
+            edit_options=edit_options,
+        )
+        db.add(clip)
+    video.status = models.VideoStatus.COMPLETED
+    db.commit()
+    db.refresh(clip)
+    from app.tasks.video_tasks import render_clip_task
+    try:
+        dispatch_required_queue(render_clip_task, clip.id)
+    except HTTPException:
+        if previous_clip_state:
+            for key, value in previous_clip_state.items():
+                setattr(clip, key, value)
+        else:
+            db.delete(clip)
+        restored_highlights = dict(video.highlights or {})
+        restored_highlights["selected_moment_id"] = old_selected_moment_id
+        video.highlights = restored_highlights
+        db.commit()
+        raise
+    return clip
+
+@router.patch("/clips/{clip_id}/caption", response_model=schemas.Clip)
+def update_selected_clip_caption(
+    clip_id: int,
+    request: schemas.CaptionStyleUpdate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    clip = get_user_clip(clip_id, current_user.id, db)
+    options = dict(clip.edit_options or {})
+    previous_options = dict(options)
+    previous_status = clip.status
+    if options.get("workflow") != "selected_moment_v1":
+        raise HTTPException(status_code=400, detail="Only selected-moment clips support caption-only rerendering")
+    if clip.status in (models.ClipStatus.PENDING, models.ClipStatus.RENDERING):
+        raise HTTPException(status_code=409, detail="This clip is already rendering")
+    if options.get("caption_style") == request.caption_style and clip.status == models.ClipStatus.COMPLETED:
+        return clip
+    options["caption_style"] = request.caption_style
+    clip.edit_options = options
+    clip.status = models.ClipStatus.PENDING
+    db.commit()
+    db.refresh(clip)
+    from app.tasks.video_tasks import render_clip_task
+    try:
+        dispatch_required_queue(render_clip_task, clip.id)
+    except HTTPException:
+        clip.edit_options = previous_options
+        clip.status = previous_status
+        db.commit()
+        raise
+    return clip
 
 @router.get("/{video_id}", response_model=schemas.Video)
 def read_single_video(
@@ -424,7 +686,6 @@ def get_clips(
     # Annotate each clip with whether its media file physically exists on this server
     for c in clips:
         if object_storage.is_remote(c.storage_path):
-            c.storage_path = object_storage.url(c.storage_path)
             c.file_exists = True
         elif c.storage_path:
             resolved = _resolve_path(c.storage_path)
@@ -483,6 +744,7 @@ def generate_master_shorts(
         request.speaker_gender,
         request.audio_theme,
         request.framing_mode or "fit_blur",
+        request.caption_style or "pop",
         queue='aishorts-queue'
     )
 
@@ -511,7 +773,6 @@ def get_master_variations(
             seen_titles.add(title_key)
             # Annotate file_exists
             if object_storage.is_remote(c.storage_path):
-                c.storage_path = object_storage.url(c.storage_path)
                 c.file_exists = True
             elif c.storage_path:
                 c.file_exists = os.path.isfile(_resolve_path(c.storage_path))
@@ -562,6 +823,7 @@ def get_video_status(
             "crop_status": "failed",
             "variations_ready": 0,
             "variations_total": TOTAL_VARIATIONS,
+            "moments_ready": len((db_video.highlights or {}).get("clips") or []),
             "is_done": False,
             "is_complete": False,
             "file_missing": True
@@ -625,7 +887,13 @@ def get_video_status(
             stage = "idle"
             stage_label = "Ready to generate"
 
-    is_finished = len(completed_variations) >= TOTAL_VARIATIONS
+    is_finished = (
+        db_video.status == models.VideoStatus.COMPLETED
+        and len(completed_variations) >= TOTAL_VARIATIONS
+    )
+    if db_video.status == models.VideoStatus.FAILED:
+        stage = "failed"
+        stage_label = "Video processing failed. Review the error and try again."
     return {
         "video_id": video_id,
         "original_filename": db_video.original_filename or f"Video {video_id}",
@@ -638,6 +906,7 @@ def get_video_status(
         "crop_status": crop_stat,
         "variations_ready": len(completed_variations),
         "variations_total": TOTAL_VARIATIONS,
+        "moments_ready": len((db_video.highlights or {}).get("clips") or []),
         "is_done": is_finished,
         "is_complete": is_finished,
     }
@@ -867,9 +1136,6 @@ def read_clip(
     current_user: models.User = Depends(get_current_user)
 ):
     db_clip = get_user_clip(clip_id, current_user.id, db)
-    from app.services import object_storage
-    if object_storage.is_remote(db_clip.storage_path):
-        db_clip.storage_path = object_storage.url(db_clip.storage_path)
     return db_clip
 
 @router.post("/clips/{clip_id}/publish")

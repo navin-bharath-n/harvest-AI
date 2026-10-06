@@ -86,7 +86,7 @@ class ClipRenderingService:
         def _build_cmd(f_complex: str, v_map: str) -> list:
             return [
                 "ffmpeg", "-y",
-                "-threads", "2",
+                "-threads", "1",
                 "-ss", str(start_time),
                 "-t", str(duration),
                 "-i", video_path,
@@ -94,6 +94,7 @@ class ClipRenderingService:
                 "-map", v_map,
                 "-map", "0:a:0?",
                 "-c:v", "libx264",
+                "-threads:v", "1",
                 "-preset", "veryfast",
                 "-crf", "20",
                 "-c:a", "aac",

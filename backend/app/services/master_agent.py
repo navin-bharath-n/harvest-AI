@@ -131,6 +131,7 @@ class MasterAIAgent:
         dub_mix_mode: str = "replace",
         speaker_gender: str = "female",
         framing_mode: str = "fit_blur",
+        caption_style: str = "pop",
         on_variation_complete=None
     ) -> List[dict]:
         """
@@ -445,7 +446,7 @@ class MasterAIAgent:
             # Parse instructions with LLM
             instructions = prompt_editing_agent.parse_prompt(persona_prompt)
             # Enforce persona's specific animated caption style and BGM
-            instructions["caption_style"] = persona_info["caption_style"]
+            instructions["caption_style"] = caption_style or persona_info["caption_style"]
             instructions["music_style"] = persona_info.get("music_style", "standard")
             instructions["zooms"] = "none"
             instructions["transition"] = "none"
@@ -526,7 +527,13 @@ class MasterAIAgent:
                 d_mix_mode = instructions.get("dub_mix_mode", dub_mix_mode)
 
                 from app.services.translation_service import translate_and_distribute_words
-                if cap_lang_opt == "none":
+                if d_voice and t_lang != "none":
+                    try:
+                        shifted_words = translate_and_distribute_words(orig_shifted_words, t_lang)
+                    except Exception as te:
+                        logger.warning(f"Caption phrase translation for dubbing failed: {te}")
+                        shifted_words = orig_shifted_words
+                elif cap_lang_opt == "none":
                     shifted_words = []
                 elif cap_lang_opt == "original":
                     pass
@@ -563,7 +570,8 @@ class MasterAIAgent:
                             output_path=dubbed_audio_path,
                             mix_mode=d_mix_mode,
                             speaker_gender=speaker_gender,
-                            variation_index=idx
+                            variation_index=idx,
+                            pretranslated_lines=shifted_words
                         )
                         logger.info(f"Successfully generated dubbed audio track for Variation {idx}.")
                     except Exception as de:
@@ -639,7 +647,7 @@ class MasterAIAgent:
                         }
                     )
 
-                    title = f"Master Variation {idx} - {persona_name}"
+                    title = f"Master Variation {idx} - {persona_name} ({caption_style})"
 
                     var_item = {
                         "path": final_path,

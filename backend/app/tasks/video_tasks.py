@@ -293,8 +293,19 @@ def extract_top5_highlights_task(video_id: int):
             logger.error(f"Video {video_id} not found")
             return
 
+        transcript_is_cached = (
+            video.transcription_status == models.TranscriptionStatus.COMPLETED
+            and isinstance(video.transcript, list)
+            and bool(video.transcript)
+        )
+        analysis_is_cached = (
+            video.analysis_status == models.ContentAnalysisStatus.COMPLETED
+            and isinstance(video.content_analysis, dict)
+            and bool(video.content_analysis)
+        )
         video.status = models.VideoStatus.PROCESSING
-        video.transcription_status = models.TranscriptionStatus.PROCESSING
+        if not transcript_is_cached:
+            video.transcription_status = models.TranscriptionStatus.PROCESSING
         db.commit()
 
         # 1. Resolve video path
@@ -326,12 +337,19 @@ def extract_top5_highlights_task(video_id: int):
         video.audio_path = audio_path
         db.commit()
 
-        # 3. Transcribe with Groq Cloud Whisper (0% server RAM/CPU, takes ~3s)
-        logger.info(f"Transcribing audio with Groq Whisper...")
-        transcript = transcription_service.transcribe(audio_path)
-        video.transcript = transcript
+        # Reuse completed transcript and analysis across retries and render revisions.
+        if transcript_is_cached:
+            transcript = video.transcript
+            logger.info("Reusing stored transcript for video %s", video_id)
+        else:
+            logger.info("Transcribing source audio for video %s", video_id)
+            transcript = transcription_service.transcribe(audio_path)
+            if not isinstance(transcript, list) or not transcript:
+                raise RuntimeError("Transcription completed without timestamped segments")
+            video.transcript = transcript
         video.transcription_status = models.TranscriptionStatus.COMPLETED
-        video.analysis_status = models.ContentAnalysisStatus.PROCESSING
+        if not analysis_is_cached:
+            video.analysis_status = models.ContentAnalysisStatus.PROCESSING
         db.commit()
 
         # 4. Content Understanding with Groq Llama 3.3 (0% server RAM/CPU, takes ~1s)
@@ -341,8 +359,14 @@ def extract_top5_highlights_task(video_id: int):
             "resolution": video.resolution or "1080p",
             "fps": video.fps or 30
         }
-        analysis = content_understanding_service.analyze(transcript, metadata)
-        video.content_analysis = analysis
+        if analysis_is_cached:
+            analysis = video.content_analysis
+            logger.info("Reusing stored content analysis for video %s", video_id)
+        else:
+            analysis = content_understanding_service.analyze(transcript, metadata)
+            if not isinstance(analysis, dict) or not analysis:
+                raise RuntimeError("Content analysis returned no reusable result")
+            video.content_analysis = analysis
         video.analysis_status = models.ContentAnalysisStatus.COMPLETED
         video.highlight_status = models.HighlightDetectionStatus.PROCESSING
         db.commit()
@@ -350,36 +374,81 @@ def extract_top5_highlights_task(video_id: int):
         # 5. Detect Top 5 Highlights with Groq Llama 3.3 (0% server RAM/CPU, takes ~1s)
         logger.info(f"Detecting top 5 highlights with Groq Llama 3.3...")
         highlights_data = highlight_detection_service.detect(transcript, analysis)
-        raw_clips = highlights_data.get("clips", [])
+        raw_clips = highlights_data.get("clips", []) if isinstance(highlights_data, dict) else []
+        if not isinstance(raw_clips, list):
+            raw_clips = []
 
         # 6. Prepare audio previews directory
-        previews_dir = os.path.join(assets_dir, "audio_previews")
+        previews_dir = os.path.join(str(_BACKEND_DIR), "uploads", "previews", f"video_{video_id}")
         os.makedirs(previews_dir, exist_ok=True)
 
         vid_dur = float(video.duration or 0.0)
         formatted_clips = []
 
-        # If LLM returned fewer than 5 or no clips, construct fallback windows
-        if not raw_clips:
-            target_len = min(60.0, vid_dur if vid_dur > 0 else 60.0)
-            step = max(5.0, (vid_dur - target_len) / 4) if vid_dur > target_len else 0
-            for i in range(5):
-                st = round(min(i * step, max(0.0, vid_dur - target_len)), 2)
-                en = round(min(st + target_len, vid_dur if vid_dur > 0 else st + target_len), 2)
-                raw_clips.append({
-                    "start_time": st,
-                    "end_time": en,
-                    "title": f"Highlight Moment {i + 1}",
-                    "reason": "Top visual and audio pacing section",
-                    "viral_score": 85 - i * 3,
-                    "importance_score": 88 - i * 2
-                })
+        transcript_segments = [
+            item for item in transcript
+            if isinstance(item, dict) and isinstance(item.get("start"), (int, float))
+            and isinstance(item.get("end"), (int, float)) and item["end"] > item["start"]
+        ]
+        normalized_clips = []
+        for candidate in raw_clips:
+            if not isinstance(candidate, dict):
+                continue
+            try:
+                start = max(0.0, float(candidate.get("start_time", 0)))
+                end = float(candidate.get("end_time", start + 15))
+            except (TypeError, ValueError):
+                continue
+            if vid_dur > 0:
+                end = min(end, vid_dur)
+            if transcript_segments:
+                overlap = [s for s in transcript_segments if s["end"] > start and s["start"] < end]
+                if not overlap:
+                    continue
+                start, end = float(overlap[0]["start"]), float(overlap[-1]["end"])
+            if end <= start:
+                continue
+            if end - start > 60:
+                end = start + 60
+            if any(abs(float(item["start_time"]) - start) < 1 for item in normalized_clips):
+                continue
+            normalized_clips.append({**candidate, "start_time": start, "end_time": end})
+        raw_clips = normalized_clips
+        # If the model returns fewer than five, fill with distinct windows over
+        # the timestamped transcript (or evenly spaced windows for silent footage).
+        if len(raw_clips) < 5:
+            duration_for_windows = vid_dur or (float(transcript_segments[-1]["end"]) if transcript_segments else 0)
+            window = (
+                duration_for_windows / 5 if 0 < duration_for_windows <= 15
+                else min(45.0, duration_for_windows / 2)
+            ) if duration_for_windows > 0 else 15.0
+            step = max(1.0, (duration_for_windows - window) / 4) if duration_for_windows > window else 0
+            for index in range(5):
+                st = index * step
+                en = min(duration_for_windows, st + window) if duration_for_windows else st + window
+                if transcript_segments:
+                    overlap = [s for s in transcript_segments if s["end"] > st and s["start"] < en]
+                    if overlap:
+                        st, en = float(overlap[0]["start"]), float(overlap[-1]["end"])
+                if not any(abs(float(c.get("start_time", -100)) - st) < 1.0 for c in raw_clips):
+                    raw_clips.append({
+                        "start_time": st, "end_time": en,
+                        "title": f"Highlight Moment {len(raw_clips) + 1}",
+                        "reason": "Suggested from the source timeline",
+                        "viral_score": max(65, 85 - index * 3),
+                        "importance_score": max(65, 88 - index * 2),
+                    })
 
         # Process each clip: ensure max 60s, slice original audio preview snippet
-        uploads_root = str(_BACKEND_DIR / "uploads")
         for idx, c in enumerate(raw_clips[:5]):
             st = max(0.0, float(c.get("start_time", 0.0)))
             en = float(c.get("end_time", st + 45.0))
+            if transcript_segments:
+                matching = [s for s in transcript_segments if s["end"] > st and s["start"] < en]
+                if not matching:
+                    continue
+                st = float(matching[0]["start"])
+                en = float(matching[-1]["end"])
             if vid_dur > 0 and en > vid_dur:
                 en = vid_dur
             # Strictly enforce max 60s duration for Shorts
@@ -392,31 +461,38 @@ def extract_top5_highlights_task(video_id: int):
             st = round(st, 2)
             en = round(en, 2)
 
-            preview_filename = f"preview_clip_{idx + 1}.mp3"
+            preview_filename = f"preview_clip_{idx + 1}_{int(st * 100)}_{int(en * 100)}.mp3"
             preview_filepath = os.path.join(previews_dir, preview_filename)
 
             try:
-                # Fast copy slice of original audio: takes 0.02s with zero re-encoding
-                subprocess.run([
-                    "ffmpeg", "-y", "-ss", str(st), "-to", str(en),
-                    "-i", audio_path, "-c", "copy",
-                    "-threads", "1",
-                    preview_filepath
-                ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                # Render only the selected source-audio range; keep the MP3 lightweight.
+                if not os.path.isfile(preview_filepath) or os.path.getsize(preview_filepath) == 0:
+                    subprocess.run([
+                        "ffmpeg", "-y", "-ss", str(st),
+                        "-i", audio_path, "-t", str(dur), "-c:a", "libmp3lame", "-b:a", "64k",
+                        "-threads", "1",
+                        preview_filepath
+                    ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             except Exception:
                 try:
                     subprocess.run([
-                        "ffmpeg", "-y", "-ss", str(st), "-to", str(en),
-                        "-i", audio_path, "-vn", "-b:a", "64k",
+                        "ffmpeg", "-y", "-ss", str(st),
+                        "-i", audio_path, "-t", str(dur), "-vn", "-b:a", "64k",
                         "-threads", "1",
                         preview_filepath
                     ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 except Exception:
                     pass
+            if not os.path.isfile(preview_filepath) or os.path.getsize(preview_filepath) == 0:
+                raise RuntimeError(f"Could not create source-audio preview for moment {idx + 1}")
 
-            # Relative URL for frontend audio player: /uploads/...
-            rel_path = os.path.relpath(preview_filepath, uploads_root).replace("\\", "/")
-            audio_url = f"/uploads/{rel_path}"
+            from app.services import object_storage
+            if object_storage.enabled():
+                preview_storage_path = object_storage.upload_file(
+                    preview_filepath, f"previews/video_{video_id}/{preview_filename}", "audio/mpeg"
+                )
+            else:
+                preview_storage_path = os.path.relpath(preview_filepath, str(_BACKEND_DIR)).replace("\\", "/")
 
             formatted_clips.append({
                 "id": idx + 1,
@@ -424,13 +500,21 @@ def extract_top5_highlights_task(video_id: int):
                 "start_time": st,
                 "end_time": en,
                 "duration": dur,
-                "viral_score": int(c.get("viral_score", 90 - idx * 4)),
-                "importance_score": int(c.get("importance_score", 88 - idx * 3)),
+                "viral_score": int(c.get("viral_score") or (90 - idx * 4)),
+                "importance_score": int(c.get("importance_score") or (88 - idx * 3)),
                 "reason": c.get("reason", "Engaging hook with great pacing"),
-                "audio_url": audio_url
+                "audio_path": preview_storage_path
             })
 
+        if len(formatted_clips) != 5:
+            raise RuntimeError(
+                f"Moment analysis produced {len(formatted_clips)} usable previews; expected 5"
+            )
+        # Preserve a prior selection when reanalysis is explicitly requested.
+        previous_highlights = video.highlights if isinstance(video.highlights, dict) else {}
         video.highlights = {"clips": formatted_clips}
+        if previous_highlights.get("selected_moment_id") is not None:
+            video.highlights["selected_moment_id"] = previous_highlights["selected_moment_id"]
         video.highlight_status = models.HighlightDetectionStatus.COMPLETED
         video.status = models.VideoStatus.COMPLETED
         db.commit()
@@ -443,6 +527,14 @@ def extract_top5_highlights_task(video_id: int):
         if video:
             video.status = models.VideoStatus.FAILED
             video.highlight_status = models.HighlightDetectionStatus.FAILED
+            video.transcription_status = (
+                models.TranscriptionStatus.COMPLETED if video.transcript
+                else models.TranscriptionStatus.FAILED
+            )
+            video.analysis_status = (
+                models.ContentAnalysisStatus.COMPLETED if video.content_analysis
+                else models.ContentAnalysisStatus.FAILED
+            )
             db.commit()
     finally:
         db.close()
@@ -626,8 +718,13 @@ def render_clip_task(clip_id: int):
                         "text": w["text"]
                     })
         else:
-            full_transcript = video.transcript or []
-            part_words = [w for w in full_transcript if w["start"] >= clip.start_time and w["end"] <= clip.end_time]
+            full_transcript = edit_options.get("transcript_snapshot") or video.transcript or []
+            part_words = [
+                w for w in full_transcript
+                if isinstance(w, dict)
+                and float(w.get("start", clip.start_time)) < clip.end_time
+                and float(w.get("end", clip.start_time)) > clip.start_time
+            ]
             for w in part_words:
                 absolute_words.append({
                     "start": w["start"],
@@ -652,7 +749,13 @@ def render_clip_task(clip_id: int):
         from app.services.translation_service import translate_and_distribute_words
         orig_shifted_words = shifted_words.copy()
 
-        if caption_lang_opt == "none":
+        if dub_voice and translate_lang != "none":
+            try:
+                shifted_words = translate_and_distribute_words(orig_shifted_words, translate_lang)
+            except Exception as te:
+                logger.warning(f"Caption phrase translation for dubbing failed: {te}")
+                shifted_words = orig_shifted_words
+        elif caption_lang_opt == "none":
             shifted_words = []
         elif caption_lang_opt == "original":
             pass
@@ -703,7 +806,8 @@ def render_clip_task(clip_id: int):
                         end_time=clip.end_time,
                         output_path=dubbed_audio_path,
                         mix_mode=dub_mix_mode,
-                        speaker_gender=speaker_gender
+                        speaker_gender=speaker_gender,
+                        pretranslated_lines=shifted_words
                     )
                     logger.info("Successfully generated dubbed audio track.")
                 except Exception as de:
@@ -861,6 +965,7 @@ def render_clip_task(clip_id: int):
                     logger.warning(f"Failed to remove temp file {fpath}: {ex}")
 
         from app.services import object_storage
+        previous_storage_path = clip.storage_path
         if object_storage.enabled():
             clip.storage_path = object_storage.upload_file(
                 output_path, f"clips/{os.path.basename(output_path)}", "video/mp4"
@@ -870,6 +975,16 @@ def render_clip_task(clip_id: int):
         clip.status = models.ClipStatus.COMPLETED
         video.short_path = relative_path
         db.commit()
+        if previous_storage_path and previous_storage_path != clip.storage_path:
+            try:
+                if object_storage.is_remote(previous_storage_path):
+                    object_storage.delete(previous_storage_path)
+                else:
+                    old_path = _resolve_video_path(previous_storage_path)
+                    if os.path.isfile(old_path):
+                        os.remove(old_path)
+            except Exception as cleanup_error:
+                logger.warning("Could not remove prior clip output %s: %s", previous_storage_path, cleanup_error)
         logger.info(f"Successfully rendered clip {clip_id} to {relative_path}")
 
     except Exception as e:
@@ -897,7 +1012,8 @@ def generate_master_shorts_task(
     dub_mix_mode: str = "replace",
     speaker_gender: str = "female",
     audio_theme: str = "auto",
-    framing_mode: str = "fit_blur"
+    framing_mode: str = "fit_blur",
+    caption_style: str = "pop"
 ):
     logger.info(f"Starting master shorts generation for video {video_id}")
     db = SessionLocal()
@@ -926,6 +1042,9 @@ def generate_master_shorts_task(
 
         if not os.path.exists(video_path):
             logger.error(f"Video file not found at {video_path}")
+            from app.models.video import VideoStatus
+            video.status = VideoStatus.FAILED
+            db.commit()
             return
 
         logger.info(f"Processing video at absolute path: {video_path}")
@@ -1032,6 +1151,7 @@ def generate_master_shorts_task(
             dub_mix_mode=dub_mix_mode,
             speaker_gender=speaker_gender,
             framing_mode=framing_mode,
+            caption_style=caption_style,
             on_variation_complete=_save_variation_clip
         )
 
@@ -1046,7 +1166,12 @@ def generate_master_shorts_task(
         video = db.query(models.Video).filter(models.Video.id == video_id).first()
         if video:
             from app.models import VideoStatus, TranscriptionStatus, ContentAnalysisStatus, HighlightDetectionStatus, CropStatus
-            video.status = VideoStatus.COMPLETED
+            ready_count = db.query(models.Clip).filter(
+                models.Clip.video_id == video_id,
+                models.Clip.title.like("%Master Variation%"),
+                models.Clip.status == models.ClipStatus.COMPLETED,
+            ).count()
+            video.status = VideoStatus.COMPLETED if ready_count >= 5 else VideoStatus.FAILED
             video.transcription_status = TranscriptionStatus.COMPLETED
             video.analysis_status = ContentAnalysisStatus.COMPLETED
             video.highlight_status = HighlightDetectionStatus.COMPLETED
