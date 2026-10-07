@@ -57,5 +57,8 @@ backend/gcp-key.json
 !.env.example
 *.env
 
-
-
+# OAuth client secrets & duplicate design assets
+*client_secret*.json
+**/*client_secret*.json
+*.apps.googleusercontent.com.json
+frontend/src/Untitled Design (1).png

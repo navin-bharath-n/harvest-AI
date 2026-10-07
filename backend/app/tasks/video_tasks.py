@@ -535,6 +535,7 @@ def extract_top5_highlights_task(video_id: int, target_length: float = 30.0):
 
         vid_dur = float(video.duration or 0.0)
         requested_duration = max(1.0, float(target_length))
+        minimum_speech_duration = max(0.0, requested_duration - 15.0)
 
         def fit_requested_duration(start: float, end: float) -> tuple[float, float]:
             """Keep the suggested moment's center while honoring the chosen duration."""
@@ -551,6 +552,26 @@ def extract_top5_highlights_task(video_id: int, target_length: float = 30.0):
             if isinstance(item, dict) and isinstance(item.get("start"), (int, float))
             and isinstance(item.get("end"), (int, float)) and item["end"] > item["start"]
         ]
+
+        def finish_on_complete_speech(start: float, end: float) -> tuple[float, float]:
+            """Trim to a detected sentence end when it stays in the selected 15s band."""
+            if not transcript_segments or end - start <= minimum_speech_duration + 0.1:
+                return start, end
+
+            sentence_ends = [
+                float(segment["end"])
+                for segment in transcript_segments
+                if start < float(segment["end"]) <= end
+                and float(segment["end"]) - start > minimum_speech_duration + 0.1
+                and str(segment.get("text", "")).rstrip().endswith((".", "!", "?"))
+            ]
+            if not sentence_ends:
+                return start, end
+
+            # Choose the latest complete phrase before the requested cap. If
+            # transcription has no usable sentence boundary, keep the full clip.
+            return start, max(sentence_ends)
+
         normalized_clips = []
         for candidate in raw_clips:
             if not isinstance(candidate, dict):
@@ -601,6 +622,8 @@ def extract_top5_highlights_task(video_id: int, target_length: float = 30.0):
             st, en = fit_requested_duration(st, en)
             if en <= st:
                 en = st + 15.0
+
+            st, en = finish_on_complete_speech(st, en)
 
             dur = round(en - st, 2)
             st = round(st, 2)

@@ -1343,3 +1343,38 @@ input:focus:not(:focus-visible) {
   animation: render-loading-spin 1s linear infinite;
 }
 
+/* Responsive workspace and touch targets */
+@media (max-width: 900px) {
+  .studio-header { align-items: flex-start !important; gap: 0.75rem; flex-wrap: wrap; }
+  .studio-header-main { flex: 1 1 100%; justify-content: space-between; gap: 0.75rem !important; }
+  .studio-user-tools { margin-left: auto; }
+  .studio-workspace { flex-direction: column; }
+  .studio-sidebar { width: 100% !important; max-height: 320px; border-right: 0 !important; border-bottom: 1px solid #e6e6e1; }
+  .studio-sidebar > div:last-child { min-height: 90px; }
+  .studio-main { min-width: 0; overflow-x: hidden; }
+  .studio-output-grid { grid-template-columns: minmax(0, 1fr) !important; }
+}
+
+@media (max-width: 600px) {
+  html { -webkit-text-size-adjust: 100%; }
+  button, a, select, input, textarea { touch-action: manipulation; }
+  .studio-header { padding: 0.65rem 0.85rem !important; }
+  .studio-header-main { align-items: flex-start !important; flex-direction: column; }
+  .studio-header-main > a { min-height: 44px; }
+  .studio-project-tools { width: 100%; flex-wrap: wrap; }
+  .studio-project-tools select { flex: 1 1 140px; min-height: 44px; min-width: 0; }
+  .studio-project-tools button, .studio-user-tools button { min-height: 44px; }
+  .studio-user-tools { width: 100%; justify-content: space-between; gap: 0.5rem !important; }
+  .studio-user-tools span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .studio-sidebar { max-height: 260px; }
+  .studio-sidebar > div:last-child { min-height: 70px; }
+  .studio-main > * { min-width: 0; }
+  .premium-nav { padding-inline: 1rem; }
+  .premium-hero { padding-inline: 1rem; padding-top: 66px; }
+  .premium-stage, .premium-stage canvas, .premium-scene-fallback { min-height: 320px; }
+  .page-content, .container { padding-inline: 1rem; }
+}
+
+@media (hover: none) and (pointer: coarse) {
+  button, a, select, input[type='checkbox'], input[type='radio'] { min-height: 44px; }
+}

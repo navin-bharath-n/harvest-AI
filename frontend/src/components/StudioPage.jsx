@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate, useLocation, Link } from 'react-router-dom';
 import {
   Plus, UploadCloud, Video, Sparkles, Play, ArrowLeft,
   Download, LogOut, RefreshCw, Wand2, Loader,
@@ -12,6 +12,7 @@ import harvestLogo from '../Untitled Design.png';
 export default function StudioPage() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
 
   // Projects State
   const [projects, setProjects] = useState([]);
@@ -131,96 +132,13 @@ export default function StudioPage() {
   const pollIntervalRef = useRef(null);
   const timerIntervalRef = useRef(null);
 
-  // Publishing State
-  const [publishing, setPublishing] = useState(false);
-  const [publishStatus, setPublishStatus] = useState('');
-  const [socialConnections, setSocialConnections] = useState([]);
-  const oauthPopupRef = useRef(null);
-  const pendingOAuthPublishRef = useRef(null);
-  const socialConnectionsRef = useRef([]);
-  socialConnectionsRef.current = socialConnections;
-
-  const refreshSocialConnections = useCallback(async () => {
-    if (!user?.id) return [];
-    const connections = await api.getUserConnections(user.id);
-    setSocialConnections(connections || []);
-    return connections || [];
-  }, [user?.id]);
-
-  useEffect(() => {
-    refreshSocialConnections().catch((error) => {
-      console.warn('Could not load social account connections:', error);
-    });
-  }, [refreshSocialConnections]);
-
-  const publishClipToPlatform = async (clipId, platform) => {
-    setPublishing(true);
-    setPublishStatus(`Sending video to ${platform}…`);
-    try {
-      await api.publishClip(
-        clipId,
-        [platform],
-        selectedClip?.id === clipId ? (selectedClip.title || 'Short Clip') : 'Short Clip',
-        'Generated with Harvest',
-        'public',
-        {}
-      );
-
-      // The API queues publishing in Celery. Report the actual result from the
-      // clip record instead of treating a successfully queued task as success.
-      for (let attempt = 0; attempt < 60; attempt += 1) {
-        await new Promise((resolve) => window.setTimeout(resolve, 2000));
-        const updatedClip = await api.getClip(clipId);
-        const result = updatedClip?.published_urls?.[platform];
-        if (typeof result === 'string' && result) {
-          if (result.startsWith('error:')) throw new Error(result.slice(6).trim());
-          setPublishStatus(`Published to ${platform}: ${result}`);
-          return;
-        }
-      }
-      setPublishStatus(`Publishing to ${platform} is still processing. Check the clip again shortly.`);
-    } catch (err) {
-      console.error('Social publish error:', err);
-      setPublishStatus(`Publishing failed: ${err.response?.data?.detail || err.message}`);
-    } finally {
-      setPublishing(false);
-    }
-  };
-
-  useEffect(() => {
-    const handleOAuthMessage = async (event) => {
-      if (event.origin !== api.getSocialOAuthOrigin() || event.source !== oauthPopupRef.current) return;
-      oauthPopupRef.current = null;
-      if (event.data?.type === 'HARVEST_AUTH_FAILURE') {
-        pendingOAuthPublishRef.current = null;
-        setPublishStatus(`Account connection failed: ${event.data.error || 'Please try again.'}`);
-        return;
-      }
-      if (event.data?.type !== 'HARVEST_AUTH_SUCCESS') return;
-
-      const pending = pendingOAuthPublishRef.current;
-      pendingOAuthPublishRef.current = null;
-      try {
-        await refreshSocialConnections();
-        if (pending && pending.platform === event.data.platform) {
-          setPublishStatus(`${event.data.platform} connected. Starting upload…`);
-          await publishClipToPlatform(pending.clipId, pending.platform);
-        } else {
-          setPublishStatus(`${event.data.platform} account connected.`);
-        }
-      } catch (error) {
-        setPublishStatus(`Account connected, but publishing could not start: ${error.message}`);
-      }
-    };
-    window.addEventListener('message', handleOAuthMessage);
-    return () => window.removeEventListener('message', handleOAuthMessage);
-  }, [refreshSocialConnections]);
-
   // Deletion State — confirm-before-delete dialogs
   const [confirmDialog, setConfirmDialog] = useState(null); // { type, id, label }
   const [deleteLoading, setDeleteLoading] = useState(false);
   const selectedVideoRef = useRef(selectedVideo);
-  selectedVideoRef.current = selectedVideo;
+  useEffect(() => {
+    selectedVideoRef.current = selectedVideo;
+  }, [selectedVideo]);
   const visibleClips = clipsVideoId === selectedVideo?.id ? clips : [];
   const visibleSelectedClip = visibleClips.find((clip) => clip.id === selectedClip?.id) || null;
   const hasAnalyzedMoments = selectedVideo?.highlight_status === 'completed'
@@ -679,27 +597,11 @@ export default function StudioPage() {
     }
   };
 
-  // Connect an account on first use, then publish the selected clip.
-  const handlePublishClip = (platform) => {
-    if (!selectedClip || !user?.id || publishing) return;
-    const isConnected = socialConnectionsRef.current.some((connection) => connection.platform === platform);
-    if (isConnected) {
-      publishClipToPlatform(selectedClip.id, platform);
-      return;
-    }
-
-    const popup = window.open(
-      api.getSocialLoginUrl(platform, user.id),
-      `harvest-${platform}-oauth`,
-      'popup=yes,width=620,height=760,resizable=yes,scrollbars=yes'
-    );
-    if (!popup) {
-      setPublishStatus('Your browser blocked the sign-in window. Allow popups for this site and try again.');
-      return;
-    }
-    pendingOAuthPublishRef.current = { clipId: selectedClip.id, platform };
-    oauthPopupRef.current = popup;
-    setPublishStatus(`Connect your ${platform} account in the sign-in window. Publishing will start when you finish.`);
+  const openPublishPage = () => {
+    if (!visibleSelectedClip) return;
+    navigate(`/publish?clip_id=${encodeURIComponent(visibleSelectedClip.id)}`, {
+      state: { clip: visibleSelectedClip, returnTo: location.pathname },
+    });
   };
 
   // Confirm-and-execute deletion
@@ -763,7 +665,8 @@ export default function StudioPage() {
   };
 
   return (
-    <div
+      <div
+      className="studio-shell"
       style={{
         minHeight: '100vh',
         display: 'flex',
@@ -776,6 +679,7 @@ export default function StudioPage() {
     >
       {/* ── Studio Header ── */}
       <header
+        className="studio-header"
         style={{
           display: 'flex',
           alignItems: 'center',
@@ -788,7 +692,7 @@ export default function StudioPage() {
           zIndex: 40,
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: '1.75rem', flexWrap: 'wrap' }}>
+        <div className="studio-header-main" style={{ display: 'flex', alignItems: 'center', gap: '1.75rem', flexWrap: 'wrap' }}>
           {/* Brand */}
           <Link
             to="/"
@@ -815,7 +719,7 @@ export default function StudioPage() {
           </Link>
 
           {/* Project Switcher */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          <div className="studio-project-tools" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             <select
               value={activeProjectId || ''}
               onChange={(e) => setActiveProjectId(e.target.value ? Number(e.target.value) : null)}
@@ -885,7 +789,7 @@ export default function StudioPage() {
         </div>
 
         {/* User Info & Logout */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+        <div className="studio-user-tools" style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
           <span style={{ fontSize: '0.875rem', color: '#5b616b' }}>{user?.full_name || user?.email}</span>
           <button
             onClick={() => {
@@ -913,9 +817,10 @@ export default function StudioPage() {
       </header>
 
       {/* ── Main Studio Workspace Layout ── */}
-      <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
+      <div className="studio-workspace" style={{ display: 'flex', flex: 1, minHeight: 0 }}>
         {/* Left Column: Video List & Upload */}
         <aside
+          className="studio-sidebar"
           style={{
             width: '320px',
             backgroundColor: '#ffffff',
@@ -1114,7 +1019,7 @@ export default function StudioPage() {
         </aside>
 
         {/* Center & Right Column: Pipeline Stage & Clip Player */}
-        <main style={{ flex: 1, display: 'flex', flexDirection: 'column', backgroundColor: '#fafaf8', overflowY: 'auto' }}>
+        <main className="studio-main" style={{ flex: 1, display: 'flex', flexDirection: 'column', backgroundColor: '#fafaf8', overflowY: 'auto' }}>
           {selectedVideo ? (
             visibleSelectedClip && ['pending', 'rendering'].includes(visibleSelectedClip.status) ? (
               <div
@@ -1224,17 +1129,22 @@ export default function StudioPage() {
                   <p style={{ margin: '0 0 1.25rem', color: '#5b616b', fontSize: '0.875rem' }}>Choose your video length and language options. We’ll analyze the source and find five moments to turn into a short.</p>
                   {actionMessage && <p style={{ margin: '-0.7rem 0 1rem', color: '#b91c1c', fontSize: '0.85rem' }}>{actionMessage}</p>}
 
-                  <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.4fr) minmax(280px, 0.9fr)', gap: '1.25rem', alignItems: 'start' }}>
+                  <div className="studio-output-grid" style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.4fr) minmax(280px, 0.9fr)', gap: '1.25rem', alignItems: 'start' }}>
                     <div style={{ background: '#111318', borderRadius: '8px', overflow: 'hidden', aspectRatio: '16/9', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                       {sourceVideoUrl ? <video key={selectedVideo.id} src={sourceVideoUrl} controls playsInline style={{ width: '100%', height: '100%', objectFit: 'contain' }} /> : <div style={{ color: '#fff', fontSize: '0.9rem' }}><Loader size={18} className="render-loading-spinner" /> Loading source video…</div>}
                     </div>
 
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.9rem' }}>
                       <label style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', color: '#5b616b', fontSize: '0.83rem', fontWeight: 600 }}>
-                        Short length
+                        Maximum clip length
                         <select value={clipLength} onChange={(event) => setClipLength(Number(event.target.value))} disabled={actionLoading} style={{ padding: '0.65rem', border: '1px solid #e6e6e1', borderRadius: '6px', background: '#fff', color: '#16181d' }}>
                           <option value={15}>15 seconds</option><option value={30}>30 seconds</option><option value={45}>45 seconds</option><option value={60}>60 seconds</option>
                         </select>
+                        <small style={{ color: '#7a808a', fontSize: '0.75rem', lineHeight: 1.45 }}>
+                          {clipLength > 15
+                            ? `A clear speech ending may shorten the clip to longer than ${clipLength - 15} and up to ${clipLength} seconds. Without a usable speech ending, it uses the full selected length.`
+                            : 'The clip can be up to 15 seconds. Without a usable speech ending, it uses the full selected length.'}
+                        </small>
                       </label>
                       <label style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', color: '#5b616b', fontSize: '0.83rem', fontWeight: 600 }}>
                         Caption style
@@ -1572,7 +1482,7 @@ export default function StudioPage() {
 
               {/* ── Main Content: Clips Showcase & Player ── */}
               {hasAnalyzedMoments && !isAnalyzing && (
-              <div ref={generatedOutputRef} style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.35fr) minmax(300px, 360px)', gap: '1.5rem', alignItems: 'start', scrollMarginTop: '1rem' }}>
+              <div className="studio-output-grid" ref={generatedOutputRef} style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.35fr) minmax(300px, 360px)', gap: '1.5rem', alignItems: 'start', scrollMarginTop: '1rem' }}>
                 {/* Generated Clips Grid */}
                 <div
                   style={{
@@ -1787,71 +1697,19 @@ export default function StudioPage() {
                         <Download size={15} /> Download 9:16 Video
                       </a>
 
-                      {/* 1-Click Social Publishing */}
+                      {/* Open the dedicated publishing workspace */}
                       <div style={{ borderTop: '1px solid #e6e6e1', paddingTop: '1rem' }}>
                         <div style={{ fontSize: '0.8rem', fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase', color: '#7a808a', marginBottom: '0.6rem' }}>
-                          Publish to Social Channels
+                          Share your video
                         </div>
-                        <div style={{ display: 'flex', gap: '0.5rem' }}>
-                          <button
-                            disabled={publishing || !visibleSelectedClip}
-                            onClick={() => handlePublishClip('youtube')}
-                            style={{
-                              flex: 1,
-                              padding: '0.55rem',
-                              borderRadius: '6px',
-                              backgroundColor: '#ffffff',
-                              color: '#16181d',
-                              border: '1px solid #e6e6e1',
-                              fontSize: '0.8rem',
-                              fontWeight: 600,
-                              cursor: publishing || !visibleSelectedClip ? 'not-allowed' : 'pointer',
-                            }}
-                          >
-                            {socialConnections.some((connection) => connection.platform === 'youtube') ? 'YouTube · Connected' : 'YouTube'}
-                          </button>
-                          <button
-                            disabled={publishing || !visibleSelectedClip}
-                            onClick={() => handlePublishClip('facebook')}
-                            style={{
-                              flex: 1,
-                              padding: '0.55rem',
-                              borderRadius: '6px',
-                              backgroundColor: '#ffffff',
-                              color: '#16181d',
-                              border: '1px solid #e6e6e1',
-                              fontSize: '0.8rem',
-                              fontWeight: 600,
-                              cursor: publishing || !visibleSelectedClip ? 'not-allowed' : 'pointer',
-                            }}
-                          >
-                            {socialConnections.some((connection) => connection.platform === 'facebook') ? 'Facebook · Connected' : 'Facebook'}
-                          </button>
-                          <button
-                            disabled={publishing || !visibleSelectedClip}
-                            onClick={() => handlePublishClip('instagram')}
-                            style={{
-                              flex: 1,
-                              padding: '0.55rem',
-                              borderRadius: '6px',
-                              backgroundColor: '#ffffff',
-                              color: '#16181d',
-                              border: '1px solid #e6e6e1',
-                              fontSize: '0.8rem',
-                              fontWeight: 600,
-                              cursor: publishing || !visibleSelectedClip ? 'not-allowed' : 'pointer',
-                            }}
-                          >
-                            {socialConnections.some((connection) => connection.platform === 'instagram') ? 'Instagram · Connected' : 'Instagram'}
-                          </button>
-                        </div>
-
-                        {publishStatus && (
-                          <div style={{ marginTop: '0.65rem', fontSize: '0.8rem', color: '#16181d', textAlign: 'center', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.35rem' }}>
-                            <CheckCircle2 size={14} color="#1f6f4a" />
-                            <span>{publishStatus}</span>
-                          </div>
-                        )}
+                        <button
+                          type="button"
+                          onClick={openPublishPage}
+                          disabled={!visibleSelectedClip}
+                          style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.45rem', padding: '0.75rem', borderRadius: '6px', backgroundColor: '#1f6f4a', color: '#fff', border: '1px solid #1f6f4a', fontSize: '0.9rem', fontWeight: 650, cursor: visibleSelectedClip ? 'pointer' : 'not-allowed' }}
+                        >
+                          Publish
+                        </button>
                       </div>
                     </div>
                   ) : (

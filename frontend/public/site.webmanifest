@@ -1,0 +1,22 @@
+{
+  "name": "Harvest Studio",
+  "short_name": "Harvest",
+  "description": "Turn long videos into short vertical clips.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f8f8f5",
+  "theme_color": "#1f6f4a",
+  "icons": [
+    {
+      "src": "/harvest-icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/harvest-icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

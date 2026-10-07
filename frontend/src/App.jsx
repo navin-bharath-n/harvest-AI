@@ -10,6 +10,7 @@ const HomePage = lazy(() => import('./components/HomePage'));
 const LoginPage = lazy(() => import('./components/LoginPage'));
 const RegisterPage = lazy(() => import('./components/RegisterPage'));
 const StudioPage = lazy(() => import('./components/StudioPage'));
+const SocialPublishPage = lazy(() => import('./components/SocialPublishPage'));
 const PrivacyPolicyPage = lazy(() => import('./components/PrivacyPolicyPage'));
 const TermsPage = lazy(() => import('./components/TermsPage'));
 const CookiePolicyPage = lazy(() => import('./components/CookiePolicyPage'));
@@ -82,6 +83,14 @@ export default function App() {
                 element={
                   <ProtectedRoute>
                     <StudioPage />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/publish"
+                element={
+                  <ProtectedRoute>
+                    <SocialPublishPage />
                   </ProtectedRoute>
                 }
               />
