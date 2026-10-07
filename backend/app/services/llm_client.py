@@ -1,13 +1,105 @@
 import json
 import logging
+import re
+import time
 from typing import List, Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
 
+def _repair_truncated_json(cleaned: str) -> Optional[Dict[str, Any]]:
+    """Attempt to repair slightly malformed or token-truncated JSON strings."""
+    # 1. Strip trailing commas before closing braces/brackets
+    candidate = re.sub(r',\s*([\]}])', r'\1', cleaned)
+
+    # 2. Track unclosed strings and unbalanced brackets
+    in_string = False
+    escape = False
+    stack = []
+
+    for ch in candidate:
+        if escape:
+            escape = False
+            continue
+        if ch == '\\':
+            escape = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if not in_string:
+            if ch in '{[':
+                stack.append(ch)
+            elif ch == '}' and stack and stack[-1] == '{':
+                stack.pop()
+            elif ch == ']' and stack and stack[-1] == '[':
+                stack.pop()
+
+    # If cut off inside an open string, close the quote
+    if in_string:
+        candidate += '"'
+
+    # Remove any dangling trailing comma
+    candidate = re.sub(r',\s*$', '', candidate.strip())
+
+    # Close remaining open brackets and braces
+    while stack:
+        top = stack.pop()
+        if top == '{':
+            candidate += '}'
+        elif top == '[':
+            candidate += ']'
+
+    try:
+        data = json.loads(candidate)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+    return None
+
+def _extract_clips_fallback(text: str) -> Optional[Dict[str, Any]]:
+    """Extract clip items from unstructured or partially broken JSON using regex."""
+    clip_pattern = re.compile(r'\{[^{}]*?"start_time"[^{}]*?\}', re.DOTALL)
+    found_clips = []
+
+    for match in clip_pattern.finditer(text):
+        raw = match.group(0)
+        # Try direct load of this item
+        cleaned_item = re.sub(r',\s*([\]}])', r'\1', raw)
+        try:
+            item = json.loads(cleaned_item)
+            if "start_time" in item and "end_time" in item:
+                found_clips.append(item)
+                continue
+        except Exception:
+            pass
+
+        # Regex fallback per clip
+        st_match = re.search(r'"start_time"\s*:\s*([\d.]+)', raw)
+        et_match = re.search(r'"end_time"\s*:\s*([\d.]+)', raw)
+        title_match = re.search(r'"title"\s*:\s*"([^"]*)"', raw)
+        reason_match = re.search(r'"reason"\s*:\s*"([^"]*)"', raw)
+        imp_match = re.search(r'"importance_score"\s*:\s*(\d+)', raw)
+        viral_match = re.search(r'"viral_score"\s*:\s*(\d+)', raw)
+        if st_match and et_match:
+            found_clips.append({
+                "start_time": float(st_match.group(1)),
+                "end_time": float(et_match.group(1)),
+                "title": title_match.group(1) if title_match else "Highlight Clip",
+                "reason": reason_match.group(1) if reason_match else "Viral moment",
+                "importance_score": int(imp_match.group(1)) if imp_match else 85,
+                "viral_score": int(viral_match.group(1)) if viral_match else 88,
+            })
+
+    if found_clips:
+        return {"clips": found_clips}
+    return None
+
 def parse_json_robust(text: str) -> Dict[str, Any]:
     """
-    Parses a JSON object robustly by handling markdown code fences
-    and extracting content between the first '{' and last '}'.
+    Parses a JSON object robustly by handling markdown code fences,
+    extracting content between '{' and '}', repairing truncated JSON,
+    and salvaging valid clips as a fallback.
     """
     cleaned = (text or "").strip()
     
@@ -26,6 +118,36 @@ def parse_json_robust(text: str) -> Dict[str, Any]:
     if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
         cleaned = cleaned[start_idx:end_idx + 1]
     
+    # 1. Direct standard parse
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        pass
+
+    # 2. Repair truncated JSON (unclosed strings, braces, brackets, trailing commas)
+    repaired = _repair_truncated_json(cleaned)
+    if repaired is not None:
+        logger.info("Successfully recovered JSON using structural auto-repair.")
+        return repaired
+
+    # 3. Fallback: extract clips via regex if this is a highlight detection output
+    clips_fallback = _extract_clips_fallback(text)
+    if clips_fallback is not None:
+        logger.info(f"Successfully salvaged {len(clips_fallback.get('clips', []))} clips via regex fallback.")
+        return clips_fallback
+
+    # 4. Fallback for content understanding (topic, summary, scores)
+    topic_match = re.search(r'"topic"\s*:\s*"([^"]*)"', text)
+    summary_match = re.search(r'"summary"\s*:\s*"([^"]*)"', text)
+    if topic_match or summary_match:
+        logger.info("Successfully salvaged content analysis via regex fallback.")
+        return {
+            "topic": topic_match.group(1) if topic_match else "General Discussion",
+            "summary": summary_match.group(1) if summary_match else "Video content summary.",
+            "importance_scores": []
+        }
+
+    # Final attempt: let json.loads raise original exception for clarity
     return json.loads(cleaned)
 
 def parse_json_list_robust(text: str) -> List[Any]:
@@ -56,7 +178,6 @@ def parse_json_list_robust(text: str) -> List[Any]:
     except Exception:
         pass
 
-    import re
     strings = re.findall(r'"((?:[^"\\]|\\.)*)"', cleaned)
     if strings:
         return strings
@@ -67,20 +188,19 @@ _CACHED_GROQ_MODEL = None
 
 def get_groq_chat_model(client=None) -> str:
     """
-    Dynamically identifies the best available chat model on the Groq endpoint.
-    Falls back gracefully through prioritized candidates.
+    Identifies the best available chat model on the Groq endpoint.
+    Prioritizes LLaMA models over Qwen because Qwen on Groq has an extremely
+    restrictive 1,000 output tokens per minute (OTPM) rate limit that causes 429
+    errors during concurrent parallel video processing.
     """
     global _CACHED_GROQ_MODEL
     if _CACHED_GROQ_MODEL:
         return _CACHED_GROQ_MODEL
 
     candidates = [
-        "qwen/qwen3.8-27b",
         "llama-3.3-70b-versatile",
         "llama-3.1-8b-instant",
-        "openai/gpt-oss-20b",
-        "openai/gpt-oss-120b",
-        "mixtral-8x7b-32768",
+        "qwen/qwen3.8-27b",
     ]
 
     if client:
@@ -97,9 +217,9 @@ def get_groq_chat_model(client=None) -> str:
                     logger.info(f"Selected fallback Groq model: {m_id}")
                     return m_id
         except Exception as e:
-            logger.warning(f"Could not list Groq models: {e}. Defaulting to openai/gpt-oss-120b.")
+            logger.warning(f"Could not list Groq models: {e}. Defaulting to llama-3.3-70b-versatile.")
 
-    _CACHED_GROQ_MODEL = "openai/gpt-oss-120b"
+    _CACHED_GROQ_MODEL = "llama-3.3-70b-versatile"
     return _CACHED_GROQ_MODEL
 
 def safe_chat_completion(
@@ -112,19 +232,17 @@ def safe_chat_completion(
 ) -> Any:
     """
     Sends a chat completion request to the LLM client, handling fallback models,
-    excluding unstable providers (like Novita), and retrying without JSON mode constraints if they fail.
+    exponential backoff for rate limits, and retrying without JSON mode constraints if needed.
     """
     extra_body = None
     
     if is_openrouter:
-        # Define fallback models in priority order
         fallback_models = [
             "qwen/qwen-2.5-72b-instruct",
             "google/gemini-2.5-flash",
             "meta-llama/llama-3.3-70b-instruct"
         ]
         
-        # Ensure the requested model is at the front of the list
         if model in fallback_models:
             fallback_models.remove(model)
         fallback_models.insert(0, model)
@@ -132,20 +250,22 @@ def safe_chat_completion(
         extra_body = {
             "models": fallback_models,
             "provider": {
-                "ignore": ["Novita"]  # Ignore Novita as they return 400 Bad Request for JSON mode and completion endpoints
+                "ignore": ["Novita"]
             }
         }
         
         if response_format and response_format.get("type") == "json_object":
             extra_body["provider"]["require_parameters"] = True
 
-    # On Groq, on-demand tier enforces OTPM limits (1000 for Qwen).
-    # Keep max_tokens bounded so Groq does not reject requests upfront with 429.
+    # Adjust max_tokens:
+    # Qwen on Groq enforces 1,000 OTPM limit, so keep max_tokens <= 600 if using Qwen.
+    # LLaMA models on Groq support full token lengths (1,500) so JSON highlight responses
+    # are never truncated.
     if not is_openrouter:
         if "max_tokens" not in kwargs:
-            kwargs["max_tokens"] = 500
+            kwargs["max_tokens"] = 600 if "qwen" in model.lower() else 1500
         elif kwargs["max_tokens"] > 800 and "qwen" in model.lower():
-            kwargs["max_tokens"] = 500
+            kwargs["max_tokens"] = 600
 
     try:
         if response_format:
@@ -167,39 +287,48 @@ def safe_chat_completion(
     except Exception as e:
         logger.warning(f"Initial chat completion failed for model '{model}': {e}.")
 
-        # Check if error is 404 / 413 / 429 / rate limit / model not found on non-openrouter client (e.g. Groq)
+        # Check for 404, 413, 429 rate limit or invalid model on Groq
         err_msg = str(e).lower()
         if not is_openrouter and any(k in err_msg for k in ["model_not_found", "does not exist", "404", "413", "429", "rate_limit", "too large"]):
-            groq_fallbacks = ["qwen/qwen3.8-27b", "openai/gpt-oss-20b", "openai/gpt-oss-120b"]
+            is_rate_limited = "429" in err_msg or "rate_limit" in err_msg
+            if is_rate_limited:
+                logger.info("Rate limit hit on Groq. Waiting 3s before fallback model...")
+                time.sleep(3.0)
+
+            groq_fallbacks = ["llama-3.1-8b-instant", "llama-3.3-70b-versatile", "qwen/qwen3.8-27b"]
             for fb_model in groq_fallbacks:
                 if fb_model != model:
-                    logger.info(f"Retrying with alternative model '{fb_model}'...")
+                    logger.info(f"Retrying with alternative Groq model '{fb_model}'...")
                     try:
+                        fb_kwargs = dict(kwargs)
+                        if "qwen" in fb_model.lower():
+                            fb_kwargs["max_tokens"] = min(fb_kwargs.get("max_tokens", 600), 600)
+                        else:
+                            fb_kwargs["max_tokens"] = max(fb_kwargs.get("max_tokens", 1500), 1200)
+
                         if response_format:
                             return client.chat.completions.create(
                                 model=fb_model,
                                 messages=messages,
                                 response_format=response_format,
-                                **kwargs
+                                **fb_kwargs
                             )
                         else:
                             return client.chat.completions.create(
                                 model=fb_model,
                                 messages=messages,
-                                **kwargs
+                                **fb_kwargs
                             )
                     except Exception as fb_err:
-                        logger.warning(f"Alternative model '{fb_model}' failed: {fb_err}")
+                        logger.warning(f"Alternative Groq model '{fb_model}' failed: {fb_err}")
                         continue
         
         # If JSON mode failed, try retrying without response_format and parse robustly in caller
         if response_format and response_format.get("type") == "json_object":
             logger.info("Retrying without JSON mode constraint...")
             
-            # Append manual JSON instruction to the system or user message
             fallback_messages = list(messages)
             if fallback_messages:
-                # If there's a system message, modify it. Otherwise, add a system message.
                 system_found = False
                 for idx, msg in enumerate(fallback_messages):
                     if msg.get("role") == "system":
@@ -215,7 +344,6 @@ def safe_chat_completion(
                         "content": "You are a helpful assistant. You must return ONLY a raw, valid JSON object. Do not wrap the JSON output in markdown code blocks."
                     })
             
-            # Disable require_parameters since we're not using json_object response_format anymore
             if extra_body and "provider" in extra_body:
                 extra_body["provider"].pop("require_parameters", None)
                 
@@ -226,5 +354,4 @@ def safe_chat_completion(
                 **kwargs
             )
         else:
-            # Raise the exception if it was a non-JSON call failure
             raise e

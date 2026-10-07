@@ -118,12 +118,12 @@ Rules for importance_scores:
             )
             
             result_text = response.choices[0].message.content
-            logger.info("Successfully received analysis from Qwen.")
+            logger.info(f"Successfully received analysis from {self.model}.")
             
             return parse_json_robust(result_text)
             
         except Exception as e:
-            logger.error(f"Failed to analyze content with Qwen: {e}")
+            logger.error(f"Failed to analyze content with {self.model}: {e}")
             raise
 
 content_understanding_service = ContentUnderstandingService()

@@ -115,16 +115,17 @@ You MUST output exactly and ONLY valid JSON matching this schema, with no markdo
                     {"role": "user", "content": prompt}
                 ],
                 is_openrouter=(self.provider == "openrouter"),
-                response_format={"type": "json_object"}
+                response_format={"type": "json_object"},
+                max_tokens=1500
             )
             
             result_text = response.choices[0].message.content
-            logger.info("Successfully received highlights from Qwen.")
+            logger.info(f"Successfully received highlights from {self.model}.")
             
             return parse_json_robust(result_text)
             
         except Exception as e:
-            logger.error(f"Failed to detect highlights with Qwen: {e}")
+            logger.error(f"Failed to detect highlights with {self.model}: {e}")
             raise
 
 highlight_detection_service = HighlightDetectionService()
