@@ -19,9 +19,9 @@ class Settings(BaseSettings):
     FRONTEND_ORIGIN: Optional[str] = None
     AUTO_START_CELERY: bool = True
     AUTO_START_OLLAMA: bool = True
-    # Number of independent background jobs a worker may run at once. Keep this
-    # conservative because video/ML jobs can use substantial RAM and CPU.
-    CELERY_CONCURRENCY: int = 1
+    # Number of independent background jobs/videos a worker may run at once.
+    # Set to 2 or more to allow simultaneous parallel video processing across users.
+    CELERY_CONCURRENCY: int = 2
 
     GROQ_API_KEY: Optional[str] = None
     QWEN_API_KEY: Optional[str] = None
