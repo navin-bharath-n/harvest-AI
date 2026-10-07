@@ -171,6 +171,7 @@ def parse_json_list_robust(text: str) -> List[Any]:
     if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
         cleaned = cleaned[start_idx:end_idx + 1]
     
+    # 1. Standard json.loads
     try:
         data = json.loads(cleaned)
         if isinstance(data, list):
@@ -178,9 +179,23 @@ def parse_json_list_robust(text: str) -> List[Any]:
     except Exception:
         pass
 
+    # 2. Try unescaping quotes if returned with escaped quotes [\"...\"]
+    if r'\"' in cleaned:
+        try:
+            unescaped = cleaned.replace(r'\"', '"')
+            data = json.loads(unescaped)
+            if isinstance(data, list):
+                return data
+        except Exception:
+            pass
+
     strings = re.findall(r'"((?:[^"\\]|\\.)*)"', cleaned)
     if strings:
         return strings
+
+    escaped_strings = re.findall(r'\\"((?:[^"\\]|\\.)*)\\"', cleaned)
+    if escaped_strings:
+        return escaped_strings
 
     return []
 

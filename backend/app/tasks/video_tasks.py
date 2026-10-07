@@ -758,6 +758,8 @@ def generate_smart_crop_task(video_id: int, target_fps: int = 1):
 @celery_app.task(ignore_result=True)
 def render_clip_task(clip_id: int):
     logger.info(f"Starting to render clip {clip_id}")
+
+    # ── Phase 1: Read all metadata & mark RENDERING in a short-lived DB transaction ──
     db = SessionLocal()
     try:
         clip = db.query(models.Clip).filter(models.Clip.id == clip_id).first()
@@ -774,28 +776,35 @@ def render_clip_task(clip_id: int):
 
         import os
         import uuid
-        video_path = _resolve_video_path(video.storage_path)
+        video_id = video.id
+        video_storage_path = video.storage_path
+        start_time = float(clip.start_time)
+        end_time = float(clip.end_time)
+        edit_options = dict(clip.edit_options or {})
+        transcript_snapshot = list(edit_options.get("transcript_snapshot") or video.transcript or [])
+        crop_metadata = dict(video.crop_metadata) if (video.crop_metadata and isinstance(video.crop_metadata, dict)) else None
+        previous_storage_path = clip.storage_path
 
-        # Determine edit options early so we know if crop is even needed
-        edit_options = clip.edit_options or {}
+        video_path = _resolve_video_path(video_storage_path)
+        audio_path_resolved = _resolve_or_extract_video_audio(video, video_path, db)
+
         framing_mode = (edit_options.get("framing_mode") or "fit_blur").lower()
         needs_crop = framing_mode in ["crop", "smart_crop", "fill"]
 
-        # Check if we have crop trajectory; calculate on the fly ONLY IF crop mode is requested
         has_crop_trajectory = (
-            video.crop_metadata is not None
-            and isinstance(video.crop_metadata, dict)
-            and bool(video.crop_metadata.get("trajectory"))
+            crop_metadata is not None
+            and isinstance(crop_metadata, dict)
+            and bool(crop_metadata.get("trajectory"))
         )
 
         if needs_crop and not has_crop_trajectory:
-            logger.info(f"Smart crop mode '{framing_mode}' requested for video {video.id}. Generating trajectory...")
+            logger.info(f"Smart crop mode '{framing_mode}' requested for video {video_id}. Generating trajectory...")
             try:
                 from app.services.smart_cropping_service import smart_cropping_service
                 crop_data = smart_cropping_service.generate_crop_metadata(video_path, target_fps=1)
                 video.crop_metadata = crop_data
                 video.crop_status = models.CropStatus.COMPLETED
-                db.commit()
+                crop_metadata = crop_data
                 has_crop_trajectory = True
                 logger.info("Successfully generated crop trajectory on the fly.")
             except Exception as e:
@@ -805,6 +814,17 @@ def render_clip_task(clip_id: int):
 
         clip.status = models.ClipStatus.RENDERING
         db.commit()
+    except Exception as init_err:
+        logger.error(f"Failed to initialize render task for clip {clip_id}: {init_err}")
+        db.rollback()
+        return
+    finally:
+        # Crucial: Close connection immediately so it does NOT stay idle in transaction
+        # during the minutes-long FFmpeg/TTS operations below.
+        db.close()
+
+    # ── Phase 2: Heavy rendering, TTS, subtitles, and R2 upload (ZERO open DB connections) ──
+    try:
 
         # Always write clip output to _BACKEND_DIR/uploads/clips/ so the output
         # is guaranteed to be on the same drive as _BACKEND_DIR, avoiding the
@@ -882,24 +902,24 @@ def render_clip_task(clip_id: int):
             for w in manual_subs:
                 start_val = float(w["start"])
                 end_val = float(w["end"])
-                if start_val >= clip.start_time and end_val <= clip.end_time:
+                if start_val >= start_time and end_val <= end_time:
                     absolute_words.append({
                         "start": start_val,
                         "end": end_val,
                         "text": w["text"]
                     })
                     shifted_words.append({
-                        "start": start_val - clip.start_time,
-                        "end": end_val - clip.start_time,
+                        "start": start_val - start_time,
+                        "end": end_val - start_time,
                         "text": w["text"]
                     })
         else:
-            full_transcript = edit_options.get("transcript_snapshot") or video.transcript or []
+            full_transcript = transcript_snapshot
             part_words = [
                 w for w in full_transcript
                 if isinstance(w, dict)
-                and float(w.get("start", clip.start_time)) < clip.end_time
-                and float(w.get("end", clip.start_time)) > clip.start_time
+                and float(w.get("start", start_time)) < end_time
+                and float(w.get("end", start_time)) > start_time
             ]
             for w in part_words:
                 absolute_words.append({
@@ -908,8 +928,8 @@ def render_clip_task(clip_id: int):
                     "text": w["text"]
                 })
                 shifted_words.append({
-                    "start": w["start"] - clip.start_time,
-                    "end": w["end"] - clip.start_time,
+                    "start": w["start"] - start_time,
+                    "end": w["end"] - start_time,
                     "text": w["text"]
                 })
 
@@ -965,15 +985,15 @@ def render_clip_task(clip_id: int):
             logger.info(f"Voice dubbing requested to language: {translate_lang} (Gender: {speaker_gender})")
             from app.services.voice_service import voice_service
 
-            abs_audio_path = _resolve_or_extract_video_audio(video, video_path, db)
+            abs_audio_path = audio_path_resolved
             try:
                 dubbed_audio_path = f"{variation_base}_dubbed.wav"
                 voice_service.dub_voice(
                     original_audio_path=abs_audio_path,
                     transcript_words=absolute_words,
                     target_lang=translate_lang,
-                    start_time=clip.start_time,
-                    end_time=clip.end_time,
+                    start_time=start_time,
+                    end_time=end_time,
                     output_path=dubbed_audio_path,
                     mix_mode=dub_mix_mode,
                     speaker_gender=speaker_gender,
@@ -1015,14 +1035,14 @@ def render_clip_task(clip_id: int):
         temp_video_source = subbed_path if has_subtitles else cropped_path
 
         from app.services.clip_rendering_service import clip_rendering_service
-        trajectory = video.crop_metadata.get("trajectory", []) if (video.crop_metadata and isinstance(video.crop_metadata, dict)) else []
+        trajectory = crop_metadata.get("trajectory", []) if (crop_metadata and isinstance(crop_metadata, dict)) else []
 
         if framing_mode in ["fit", "fit_blur", "fit_black"] or has_crop_trajectory:
             clip_rendering_service.render_clip(
                 video_path=video_path,
                 output_path=temp_video_source,
-                start_time=clip.start_time,
-                end_time=clip.end_time,
+                start_time=start_time,
+                end_time=end_time,
                 crop_trajectory=trajectory,
                 editing_instructions=instructions,
                 subtitle_path=ass_path if has_subtitles else None
@@ -1031,12 +1051,12 @@ def render_clip_task(clip_id: int):
             # Fallback: direct FFmpeg trim
             logger.info(f"No crop trajectory for clip {clip_id}, using direct FFmpeg trim fallback.")
             import subprocess
-            duration = clip.end_time - clip.start_time
+            duration = end_time - start_time
 
             ffmpeg_cmd = [
                 "ffmpeg", "-y",
                 "-loglevel", "error",
-                "-ss", str(clip.start_time),
+                "-ss", str(start_time),
                 "-t", str(duration),
                 "-i", video_path,
             ]
@@ -1057,7 +1077,7 @@ def render_clip_task(clip_id: int):
                 if has_subtitles:
                     logger.warning("FFmpeg trim with subtitles failed. Retrying without subtitles...")
                     retry_cmd = [
-                        "ffmpeg", "-y", "-ss", str(clip.start_time), "-t", str(duration),
+                        "ffmpeg", "-y", "-ss", str(start_time), "-t", str(duration),
                         "-i", video_path, "-c:v", "libx264", "-preset", "fast", "-crf", "18",
                         "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", temp_video_source
                     ]
@@ -1136,25 +1156,33 @@ def render_clip_task(clip_id: int):
                     logger.warning(f"Failed to remove temp file {fpath}: {ex}")
 
         from app.services import object_storage
-        previous_storage_path = clip.storage_path
         if object_storage.enabled():
             r2_path = object_storage.upload_file(
                 output_path, f"clips/{os.path.basename(output_path)}", "video/mp4"
             )
-            clip.storage_path = r2_path
-            # video.short_path should also point to R2 so clip-media redirects correctly
-            video.short_path = r2_path
-            # Remove local rendered file — it's safely in R2 now
+            final_storage_path = r2_path
             try:
                 os.remove(output_path)
             except Exception as rm_err:
                 logger.warning(f"Could not remove local clip file after R2 upload: {rm_err}")
         else:
-            clip.storage_path = relative_path
-            video.short_path = relative_path
-        clip.status = models.ClipStatus.COMPLETED
-        db.commit()
-        if previous_storage_path and previous_storage_path != clip.storage_path:
+            final_storage_path = relative_path
+
+        # ── Phase 3: Save results in a fresh, short-lived DB transaction ──
+        db = SessionLocal()
+        try:
+            clip = db.query(models.Clip).filter(models.Clip.id == clip_id).first()
+            if clip:
+                clip.storage_path = final_storage_path
+                clip.status = models.ClipStatus.COMPLETED
+                if clip.video:
+                    clip.video.short_path = final_storage_path
+                db.commit()
+                logger.info(f"Successfully rendered clip {clip_id} to {final_storage_path}")
+        finally:
+            db.close()
+
+        if previous_storage_path and previous_storage_path != final_storage_path:
             try:
                 if object_storage.is_remote(previous_storage_path):
                     object_storage.delete(previous_storage_path)
@@ -1164,18 +1192,20 @@ def render_clip_task(clip_id: int):
                         os.remove(old_path)
             except Exception as cleanup_error:
                 logger.warning("Could not remove prior clip output %s: %s", previous_storage_path, cleanup_error)
-        logger.info(f"Successfully rendered clip {clip_id} to {clip.storage_path}")
 
     except Exception as e:
-        logger.error(f"Error rendering clip {clip_id}: {e}")
-        db.rollback()
-
-        clip = db.query(models.Clip).filter(models.Clip.id == clip_id).first()
-        if clip:
-            clip.status = models.ClipStatus.FAILED
-            db.commit()
+        logger.error(f"Error rendering clip {clip_id}: {e}", exc_info=True)
+        db = SessionLocal()
+        try:
+            clip = db.query(models.Clip).filter(models.Clip.id == clip_id).first()
+            if clip:
+                clip.status = models.ClipStatus.FAILED
+                db.commit()
+        except Exception as db_err:
+            logger.warning(f"Could not update status to FAILED for clip {clip_id}: {db_err}")
+        finally:
+            db.close()
     finally:
-        db.close()
         import gc
         gc.collect()
 
