@@ -189,18 +189,18 @@ _CACHED_GROQ_MODEL = None
 def get_groq_chat_model(client=None) -> str:
     """
     Identifies the best available chat model on the Groq endpoint.
-    Prioritizes LLaMA models over Qwen because Qwen on Groq has an extremely
-    restrictive 1,000 output tokens per minute (OTPM) rate limit that causes 429
-    errors during concurrent parallel video processing.
+    Uses 'qwen/qwen3.8-27b' initially. If it fails or hits rate limits
+    during execution, safe_chat_completion falls back to
+    'llama-3.3-70b-versatile' and 'llama-3.1-8b-instant'.
     """
     global _CACHED_GROQ_MODEL
     if _CACHED_GROQ_MODEL:
         return _CACHED_GROQ_MODEL
 
     candidates = [
+        "qwen/qwen3.8-27b",
         "llama-3.3-70b-versatile",
         "llama-3.1-8b-instant",
-        "qwen/qwen3.8-27b",
     ]
 
     if client:
@@ -217,9 +217,9 @@ def get_groq_chat_model(client=None) -> str:
                     logger.info(f"Selected fallback Groq model: {m_id}")
                     return m_id
         except Exception as e:
-            logger.warning(f"Could not list Groq models: {e}. Defaulting to llama-3.3-70b-versatile.")
+            logger.warning(f"Could not list Groq models: {e}. Defaulting to qwen/qwen3.8-27b.")
 
-    _CACHED_GROQ_MODEL = "llama-3.3-70b-versatile"
+    _CACHED_GROQ_MODEL = "qwen/qwen3.8-27b"
     return _CACHED_GROQ_MODEL
 
 def safe_chat_completion(
