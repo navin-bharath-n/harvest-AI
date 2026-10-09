@@ -129,12 +129,16 @@ def _build_ydl_opts(
 ) -> Dict[str, Any]:
     opts: Dict[str, Any] = {
         # Prefer 1080p or below MP4 with audio; fallback to best mp4 or best available
-        "format": "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4][height<=1080]/bestvideo+bestaudio/best",
+        "format": "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4][height<=1080]/bestvideo+bestaudio/best[ext=mp4]/best",
         "outtmpl": temp_template,
         "merge_output_format": "mp4",
         "noplaylist": True,
         "quiet": True,
         "no_warnings": True,
+        "cachedir": False,
+        "geo_bypass": True,
+        "nocheckcertificate": True,
+        "check_formats": False,
         "socket_timeout": 45,
         "retries": 10,
         "fragment_retries": 10,
@@ -188,15 +192,26 @@ def download_video_from_url(url: str, output_dir: str) -> Dict[str, Any]:
     cookie_file = _resolve_cookiefile()
     proxy = _resolve_proxy()
 
-    # Define extraction strategies
+    # Define extraction strategies (prioritizing clients that bypass datacenter IP blocks)
     if is_youtube:
         strategies: List[Dict[str, Any]] = [
-            # Strategy 1: Default modern extraction (lets yt-dlp negotiate working client)
+            # Strategy 1: Android + Web + TV multi-client negotiation (highest success rate on cloud/datacenter IPs)
+            {
+                "name": "android_web_tv",
+                "extractor_args": {"youtube": {"player_client": ["android", "web", "tv"]}},
+            },
+            # Strategy 2: TV & Embedded TV (bypasses bot challenges and web player response)
+            {
+                "name": "tv_embedded",
+                "extractor_args": {"youtube": {"player_client": ["tv", "tv_embedded", "web_creator"]}},
+            },
+            # Strategy 3: Mobile Web & Android Creator
+            {
+                "name": "mweb_android",
+                "extractor_args": {"youtube": {"player_client": ["mweb", "android_creator", "ios"]}},
+            },
+            # Strategy 4: Standard default extraction (relies on cookies/proxy if supplied)
             {"name": "default", "extractor_args": None},
-            # Strategy 2: Web & Mobile Web clients
-            {"name": "web_mweb", "extractor_args": {"youtube": {"player_client": ["web", "mweb"]}}},
-            # Strategy 3: TV client fallback (often bypasses aggressive datacenter IP blocks)
-            {"name": "tv", "extractor_args": {"youtube": {"player_client": ["tv", "web_creator"]}}},
         ]
     else:
         strategies = [{"name": "standard", "extractor_args": None}]
@@ -306,8 +321,9 @@ def download_video_from_url(url: str, output_dir: str) -> Dict[str, Any]:
             except Exception:
                 pass
         except Exception as sto_err:
-            logger.error(f"Failed to store imported video in object storage: {sto_err}")
-            raise UrlDownloadError("Failed to store downloaded video in remote storage.")
+            logger.warning(f"Could not store imported video in remote object storage ({sto_err}); using local file fallback.")
+            final_file_path = local_path
+            storage_path = f"uploads/{os.path.basename(local_path)}"
     else:
         final_file_path = local_path
         storage_path = f"uploads/{os.path.basename(local_path)}"
