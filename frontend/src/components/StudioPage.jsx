@@ -1685,7 +1685,11 @@ export default function StudioPage() {
                   >
                     <div>
                       <div style={{ color: '#7a808a', fontSize: '0.75rem', fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: '0.25rem' }}>
-                        {momentWorkflowStep === 'moments' ? 'Step 1 of 2 · Choose a Viral Moment' : momentWorkflowStep === 'customize' ? 'Step 2 of 2 · Audio & Creator Outro' : 'Generated Shorts Workspace'}
+                        {momentWorkflowStep === 'moments'
+                          ? 'Step 1 of 2 · Choose a Viral Moment'
+                          : momentWorkflowStep === 'customize'
+                          ? 'Step 2 of 2 · Audio Track, Creator Outro & Branding Settings'
+                          : 'Generated Shorts Workspace'}
                       </div>
                       <h2
                         style={{
@@ -1703,13 +1707,13 @@ export default function StudioPage() {
                         {momentWorkflowStep === 'moments'
                           ? 'Select one of the five detected moments below, then click Next.'
                           : momentWorkflowStep === 'customize'
-                          ? 'Customize your audio soundtrack and outro template, then render your 9:16 short.'
+                          ? 'Customize soundtrack, outro template, custom thumbnail, and branding, then render your 9:16 short.'
                           : 'Preview, download, and publish your generated 9:16 vertical shorts.'}
                       </p>
                     </div>
 
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem', flexWrap: 'wrap' }}>
-                      {visibleClips.length > 0 && (
+                      {hasAnalyzedMoments && !isAnalyzing && (
                         <div style={{ display: 'flex', gap: '0.35rem', backgroundColor: '#f1f5f9', padding: '3px', borderRadius: '8px' }}>
                           <button
                             type="button"
@@ -1717,12 +1721,12 @@ export default function StudioPage() {
                             style={{
                               padding: '0.4rem 0.85rem',
                               fontSize: '0.82rem',
-                              fontWeight: momentWorkflowStep !== 'clips' ? 700 : 500,
+                              fontWeight: momentWorkflowStep === 'moments' ? 700 : 500,
                               borderRadius: '6px',
                               border: 'none',
-                              backgroundColor: momentWorkflowStep !== 'clips' ? '#ffffff' : 'transparent',
-                              color: momentWorkflowStep !== 'clips' ? '#1f6f4a' : '#64748b',
-                              boxShadow: momentWorkflowStep !== 'clips' ? '0 1px 3px rgba(0,0,0,0.08)' : 'none',
+                              backgroundColor: momentWorkflowStep === 'moments' ? '#ffffff' : 'transparent',
+                              color: momentWorkflowStep === 'moments' ? '#1f6f4a' : '#64748b',
+                              boxShadow: momentWorkflowStep === 'moments' ? '0 1px 3px rgba(0,0,0,0.08)' : 'none',
                               cursor: 'pointer',
                               display: 'flex',
                               alignItems: 'center',
@@ -1732,27 +1736,52 @@ export default function StudioPage() {
                             <Film size={14} />
                             Moments (5)
                           </button>
-                          <button
-                            type="button"
-                            onClick={() => setMomentWorkflowStep('clips')}
-                            style={{
-                              padding: '0.4rem 0.85rem',
-                              fontSize: '0.82rem',
-                              fontWeight: momentWorkflowStep === 'clips' ? 700 : 500,
-                              borderRadius: '6px',
-                              border: 'none',
-                              backgroundColor: momentWorkflowStep === 'clips' ? '#ffffff' : 'transparent',
-                              color: momentWorkflowStep === 'clips' ? '#1f6f4a' : '#64748b',
-                              boxShadow: momentWorkflowStep === 'clips' ? '0 1px 3px rgba(0,0,0,0.08)' : 'none',
-                              cursor: 'pointer',
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: '0.35rem',
-                            }}
-                          >
-                            <Sparkles size={14} />
-                            Generated Clips ({visibleClips.length})
-                          </button>
+                          {selectedMomentId != null && (
+                            <button
+                              type="button"
+                              onClick={() => setMomentWorkflowStep('customize')}
+                              style={{
+                                padding: '0.4rem 0.85rem',
+                                fontSize: '0.82rem',
+                                fontWeight: momentWorkflowStep === 'customize' ? 700 : 500,
+                                borderRadius: '6px',
+                                border: 'none',
+                                backgroundColor: momentWorkflowStep === 'customize' ? '#ffffff' : 'transparent',
+                                color: momentWorkflowStep === 'customize' ? '#1f6f4a' : '#64748b',
+                                boxShadow: momentWorkflowStep === 'customize' ? '0 1px 3px rgba(0,0,0,0.08)' : 'none',
+                                cursor: 'pointer',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '0.35rem',
+                              }}
+                            >
+                              <Music size={14} />
+                              Audio &amp; Outro Settings
+                            </button>
+                          )}
+                          {visibleClips.length > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => setMomentWorkflowStep('clips')}
+                              style={{
+                                padding: '0.4rem 0.85rem',
+                                fontSize: '0.82rem',
+                                fontWeight: momentWorkflowStep === 'clips' ? 700 : 500,
+                                borderRadius: '6px',
+                                border: 'none',
+                                backgroundColor: momentWorkflowStep === 'clips' ? '#ffffff' : 'transparent',
+                                color: momentWorkflowStep === 'clips' ? '#1f6f4a' : '#64748b',
+                                boxShadow: momentWorkflowStep === 'clips' ? '0 1px 3px rgba(0,0,0,0.08)' : 'none',
+                                cursor: 'pointer',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '0.35rem',
+                              }}
+                            >
+                              <Sparkles size={14} />
+                              Generated Clips ({visibleClips.length})
+                            </button>
+                          )}
                         </div>
                       )}
 
@@ -1849,8 +1878,8 @@ export default function StudioPage() {
                   </div>
                 )}
 
-                {hasAnalyzedMoments && !isAnalyzing && (
-                  <section style={{ background: '#fff', border: '1px solid #e6e6e1', borderRadius: '10px', padding: '1.25rem' }}>
+                {hasAnalyzedMoments && !isAnalyzing && momentWorkflowStep === 'moments' && (
+                  <section style={{ background: '#fff', border: '1px solid #e6e6e1', borderRadius: '10px', padding: '1.25rem', boxShadow: '0 1px 3px rgba(0, 0, 0, 0.04)' }}>
                     {/* Moments Section Header */}
                     <div style={{
                       display: 'flex',
@@ -1951,6 +1980,35 @@ export default function StudioPage() {
                                 <small style={{ color: '#7a808a', fontSize: '0.72rem' }}>Original audio preview unavailable</small>
                               )}
                             </div>
+                            {selectedMomentId === index && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setSelectedMomentId(index);
+                                  setMomentWorkflowStep('customize');
+                                }}
+                                style={{
+                                  marginTop: '0.6rem',
+                                  width: '100%',
+                                  padding: '0.45rem 0.6rem',
+                                  borderRadius: '6px',
+                                  backgroundColor: '#1f6f4a',
+                                  color: '#ffffff',
+                                  border: 'none',
+                                  fontSize: '0.78rem',
+                                  fontWeight: 600,
+                                  cursor: 'pointer',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  gap: '0.35rem',
+                                }}
+                              >
+                                <span>Configure &amp; Render</span>
+                                <ArrowRight size={13} />
+                              </button>
+                            )}
                           </div>
                         ))}
                       </div>
@@ -1969,14 +2027,14 @@ export default function StudioPage() {
                           {selectedMomentId != null ? (
                             <span>Selected: <strong style={{ color: '#16181d' }}>{selectedVideo.highlights.clips[selectedMomentId]?.title || `Moment ${selectedMomentId + 1}`}</strong></span>
                           ) : (
-                            <span style={{ color: '#d97706' }}>Choose one moment above, then click Create Video</span>
+                            <span style={{ color: '#d97706' }}>Choose one moment above, then click Next</span>
                           )}
                         </div>
 
                         <button
                           type="button"
                           disabled={selectedMomentId == null}
-                          onClick={() => setShowAudioModal(true)}
+                          onClick={() => setMomentWorkflowStep('customize')}
                           style={{
                             display: 'inline-flex',
                             alignItems: 'center',
@@ -1993,101 +2051,141 @@ export default function StudioPage() {
                             transition: 'all 0.15s ease',
                           }}
                         >
+                          <span>Next: Audio &amp; Outro Settings</span>
+                          <ArrowRight size={16} />
+                        </button>
+                      </div>
+                    </div>
+                  </section>
+                )}
+
+
+                {/* ════════ STEP 2: AUDIO, OUTRO, THUMBNAIL & BRANDING CUSTOMIZATION PAGE ════════ */}
+                {hasAnalyzedMoments && !isAnalyzing && momentWorkflowStep === 'customize' && selectedMomentId != null && selectedVideo && (
+                  <section
+                    style={{
+                      backgroundColor: '#ffffff',
+                      borderRadius: '12px',
+                      border: '1px solid #e2e8f0',
+                      boxShadow: '0 2px 10px rgba(0, 0, 0, 0.04)',
+                      width: '100%',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      marginBottom: '1.75rem',
+                      overflow: 'hidden',
+                    }}
+                  >
+                    {/* Page Header */}
+                    <div style={{
+                      padding: '1.25rem 1.5rem',
+                      borderBottom: '1px solid #e2e8f0',
+                      backgroundColor: '#fafaf9',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      flexWrap: 'wrap',
+                      gap: '1rem',
+                    }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
+                        <button
+                          type="button"
+                          onClick={() => setMomentWorkflowStep('moments')}
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '0.45rem',
+                            padding: '0.5rem 0.9rem',
+                            borderRadius: '7px',
+                            border: '1px solid #cbd5e1',
+                            backgroundColor: '#ffffff',
+                            color: '#334155',
+                            fontSize: '0.85rem',
+                            fontWeight: 600,
+                            cursor: 'pointer',
+                            transition: 'all 0.15s ease',
+                            boxShadow: '0 1px 2px rgba(0, 0, 0, 0.04)',
+                          }}
+                          onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = '#f1f5f9'; }}
+                          onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = '#ffffff'; }}
+                        >
+                          <ArrowLeft size={16} />
+                          <span>Back to Moments</span>
+                        </button>
+
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
+                          <div style={{ width: 36, height: 36, borderRadius: '8px', backgroundColor: '#ecfdf5', color: '#1f6f4a', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid #a7f3d0' }}>
+                            <Music size={18} />
+                          </div>
+                          <div>
+                            <div style={{ fontSize: '0.72rem', fontWeight: 700, color: '#1f6f4a', letterSpacing: '0.04em', textTransform: 'uppercase' }}>
+                              Step 2 · Audio, Outro &amp; Branding Studio
+                            </div>
+                            <h3 style={{ margin: '0.1rem 0 0', fontSize: '1.1rem', fontWeight: 700, color: '#0f172a' }}>
+                              Customize 9:16 Vertical Short
+                            </h3>
+                            <p style={{ margin: '0.15rem 0 0', fontSize: '0.78rem', color: '#64748b' }}>
+                              Moment: <strong style={{ color: '#0f172a' }}>{selectedVideo.highlights.clips[selectedMomentId]?.title || `Moment ${selectedMomentId + 1}`}</strong> ({Number(selectedVideo.highlights.clips[selectedMomentId]?.start_time).toFixed(1)}s – {Number(selectedVideo.highlights.clips[selectedMomentId]?.end_time).toFixed(1)}s · {selectedVideo.highlights.clips[selectedMomentId]?.duration}s)
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                        <button
+                          type="button"
+                          onClick={() => setMomentWorkflowStep('moments')}
+                          style={{
+                            padding: '0.6rem 1.1rem',
+                            borderRadius: '7px',
+                            backgroundColor: '#ffffff',
+                            color: '#64748b',
+                            border: '1px solid #cbd5e1',
+                            fontSize: '0.85rem',
+                            fontWeight: 600,
+                            cursor: 'pointer',
+                          }}
+                        >
+                          Cancel
+                        </button>
+
+                        <button
+                          type="button"
+                          disabled={
+                            actionLoading ||
+                            selectedMomentId == null ||
+                            ((audioMode === 'mix' || audioMode === 'replace') && audioSourceType === 'upload' && !customAudioPath) ||
+                            visibleClips.some((clip) => clip.edit_options?.workflow === 'selected_moment_v1' && clip.edit_options?.selected_moment_id === selectedMomentId && ['pending', 'rendering'].includes(clip.status))
+                          }
+                          onClick={handleRenderSelectedMoment}
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '0.5rem',
+                            padding: '0.65rem 1.4rem',
+                            borderRadius: '7px',
+                            backgroundColor: (actionLoading || selectedMomentId == null || ((audioMode === 'mix' || audioMode === 'replace') && audioSourceType === 'upload' && !customAudioPath)) ? '#94a3b8' : '#1f6f4a',
+                            color: '#ffffff',
+                            border: 'none',
+                            fontSize: '0.9rem',
+                            fontWeight: 700,
+                            cursor: (actionLoading || selectedMomentId == null || ((audioMode === 'mix' || audioMode === 'replace') && audioSourceType === 'upload' && !customAudioPath)) ? 'not-allowed' : 'pointer',
+                            boxShadow: '0 2px 6px rgba(31, 111, 74, 0.25)',
+                          }}
+                        >
                           <Wand2 size={16} />
-                          <span>Create Video</span>
+                          <span>{actionLoading ? 'Creating Video…' : 'Confirm & Render 9:16 Short'}</span>
                         </button>
                       </div>
                     </div>
 
-
-                    {/* ════════ AUDIO & OUTRO CUSTOMIZATION MODAL (SHOWN AFTER CREATE BUTTON CLICK) ════════ */}
-                    {showAudioModal && selectedMomentId != null && selectedVideo && (
-                      <div
-                        role="dialog"
-                        aria-modal="true"
-                        aria-labelledby="audio-customization-modal-title"
-                        style={{
-                          position: 'fixed',
-                          inset: 0,
-                          backgroundColor: 'rgba(15, 23, 42, 0.65)',
-                          backdropFilter: 'blur(5px)',
-                          zIndex: 9998,
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          padding: '1.25rem',
-                        }}
-                        onClick={(e) => {
-                          if (e.target === e.currentTarget) setShowAudioModal(false);
-                        }}
-                      >
-                        <div
-                          style={{
-                            backgroundColor: '#ffffff',
-                            borderRadius: '12px',
-                            border: '1px solid #e2e8f0',
-                            boxShadow: '0 24px 60px rgba(0, 0, 0, 0.28)',
-                            maxWidth: '920px',
-                            width: '100%',
-                            maxHeight: '90vh',
-                            display: 'flex',
-                            flexDirection: 'column',
-                            overflow: 'hidden',
-                          }}
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          {/* Modal Header */}
-                          <div style={{
-                            padding: '0.9rem 1.25rem',
-                            borderBottom: '1px solid #e2e8f0',
-                            backgroundColor: '#fafaf9',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'space-between',
-                          }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
-                              <div style={{ width: 34, height: 34, borderRadius: '8px', backgroundColor: '#ecfdf5', color: '#1f6f4a', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid #a7f3d0' }}>
-                                <Music size={18} />
-                              </div>
-                              <div>
-                                <h3 id="audio-customization-modal-title" style={{ margin: 0, fontSize: '1.02rem', fontWeight: 700, color: '#0f172a' }}>
-                                  Audio Track &amp; Creator Outro Settings
-                                </h3>
-                                <p style={{ margin: '0.15rem 0 0', fontSize: '0.78rem', color: '#64748b' }}>
-                                  Moment: <strong>{selectedVideo.highlights.clips[selectedMomentId]?.title || `Moment ${selectedMomentId + 1}`}</strong> ({Number(selectedVideo.highlights.clips[selectedMomentId]?.start_time).toFixed(1)}s – {Number(selectedVideo.highlights.clips[selectedMomentId]?.end_time).toFixed(1)}s · {selectedVideo.highlights.clips[selectedMomentId]?.duration}s)
-                                </p>
-                              </div>
-                            </div>
-
-                            <button
-                              type="button"
-                              onClick={() => setShowAudioModal(false)}
-                              style={{
-                                background: 'transparent',
-                                border: 'none',
-                                color: '#64748b',
-                                cursor: 'pointer',
-                                padding: '6px',
-                                borderRadius: '6px',
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                              }}
-                              title="Close"
-                            >
-                              <X size={20} />
-                            </button>
-                          </div>
-
-                          {/* Modal Body (Scrollable) */}
-                          <div style={{
-                            flex: 1,
-                            overflowY: 'auto',
-                            padding: '1.25rem',
-                            display: 'flex',
-                            flexDirection: 'column',
-                            gap: '1.25rem',
-                          }}>
+                    {/* Page Content Body (4 Cards) */}
+                    <div style={{
+                      padding: '1.5rem',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '1.5rem',
+                      backgroundColor: '#ffffff',
+                    }}>
 
                             {/* ── CARD 1: AUDIO & SOUNDTRACK ── */}
                             <div style={{
@@ -4274,25 +4372,29 @@ export default function StudioPage() {
 
                           </div>
 
-                          {/* ── MODAL FOOTER ── */}
+                          {/* Page Bottom Sticky Action Bar */}
                           <div style={{
-                            padding: '0.85rem 1.25rem',
+                            position: 'sticky',
+                            bottom: 0,
+                            zIndex: 10,
+                            padding: '1rem 1.5rem',
                             borderTop: '1px solid #e2e8f0',
                             backgroundColor: '#fafaf9',
+                            boxShadow: '0 -4px 12px rgba(0, 0, 0, 0.05)',
                             display: 'flex',
                             alignItems: 'center',
                             justifyContent: 'space-between',
                             flexWrap: 'wrap',
-                            gap: '0.75rem',
+                            gap: '0.85rem',
                           }}>
                             <button
                               type="button"
-                              onClick={() => setShowAudioModal(false)}
+                              onClick={() => setMomentWorkflowStep('moments')}
                               style={{
                                 display: 'inline-flex',
                                 alignItems: 'center',
-                                gap: '0.4rem',
-                                padding: '0.55rem 1rem',
+                                gap: '0.45rem',
+                                padding: '0.6rem 1.1rem',
                                 borderRadius: '6px',
                                 backgroundColor: '#ffffff',
                                 color: '#475569',
@@ -4302,23 +4404,24 @@ export default function StudioPage() {
                                 cursor: 'pointer',
                               }}
                             >
-                              Cancel
+                              <ArrowLeft size={16} />
+                              <span>Back to Moments</span>
                             </button>
 
-                            <div style={{ fontSize: '0.8rem', color: '#64748b' }}>
+                            <div style={{ fontSize: '0.82rem', color: '#64748b', display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
                               <span>Soundtrack: <strong style={{ color: '#0f172a' }}>{audioMode === 'original' ? 'Original Audio' : audioMode === 'mix' ? `Mixed (${audioSourceType === 'upload' ? (customAudioName || 'Custom') : musicPreset})` : `Replaced (${audioSourceType === 'upload' ? (customAudioName || 'Custom') : musicPreset})`}</strong></span>
                               {outroMode === 'template' && (
-                                <span style={{ marginLeft: '0.5rem' }}>· R2 Outro: <strong style={{ color: '#1f6f4a' }}>{templates.find((t) => t.id === selectedTemplateId)?.title || 'Template Selected'}</strong></span>
+                                <span>· Outro: <strong style={{ color: '#1f6f4a' }}>{templates.find((t) => t.id === selectedTemplateId)?.title || 'Template Selected'}</strong></span>
                               )}
                               {outroMode === 'custom' && (
-                                <span style={{ marginLeft: '0.5rem' }}>· 9:16 Outro: <strong style={{ color: '#1f6f4a' }}>{outroDuration}s Screen</strong></span>
+                                <span>· Outro: <strong style={{ color: '#1f6f4a' }}>{outroDuration}s Screen</strong></span>
                               )}
                               {outroMode === 'none' && (
-                                <span style={{ marginLeft: '0.5rem' }}>· Outro: <strong style={{ color: '#64748b' }}>None</strong></span>
+                                <span>· Outro: <strong style={{ color: '#64748b' }}>None</strong></span>
                               )}
-                              <span style={{ marginLeft: '0.5rem' }}>· Thumbnail: <strong style={{ color: modalThumbnailPath ? '#1f6f4a' : '#64748b' }}>{modalThumbnailPath ? 'Custom' : 'Auto-Frame'}</strong></span>
+                              <span>· Thumbnail: <strong style={{ color: modalThumbnailPath ? '#1f6f4a' : '#64748b' }}>{modalThumbnailPath ? 'Custom' : 'Auto-Frame'}</strong></span>
                               {(modalWatermarkPath || modalHeaderPath || modalFooterPath) && (
-                                <span style={{ marginLeft: '0.5rem' }}>· Branding: <strong style={{ color: '#1f6f4a' }}>Active</strong></span>
+                                <span>· Branding: <strong style={{ color: '#1f6f4a' }}>Active</strong></span>
                               )}
                             </div>
 
@@ -4335,12 +4438,12 @@ export default function StudioPage() {
                                 display: 'inline-flex',
                                 alignItems: 'center',
                                 gap: '0.5rem',
-                                padding: '0.65rem 1.4rem',
+                                padding: '0.7rem 1.6rem',
                                 borderRadius: '6px',
                                 backgroundColor: (actionLoading || selectedMomentId == null || ((audioMode === 'mix' || audioMode === 'replace') && audioSourceType === 'upload' && !customAudioPath)) ? '#94a3b8' : '#1f6f4a',
                                 color: '#ffffff',
                                 border: 'none',
-                                fontSize: '0.9rem',
+                                fontSize: '0.92rem',
                                 fontWeight: 700,
                                 cursor: (actionLoading || selectedMomentId == null || ((audioMode === 'mix' || audioMode === 'replace') && audioSourceType === 'upload' && !customAudioPath)) ? 'not-allowed' : 'pointer',
                                 boxShadow: '0 2px 6px rgba(31, 111, 74, 0.25)',
@@ -4351,11 +4454,46 @@ export default function StudioPage() {
                               {actionLoading ? 'Creating Video…' : 'Confirm & Render 9:16 Short'}
                             </button>
                           </div>
-                        </div>
-                      </div>
-                    )}
-                  </section>
-                )}
+                        </section>
+                      )}
+
+                      {hasAnalyzedMoments && !isAnalyzing && momentWorkflowStep === 'customize' && (selectedMomentId == null || !selectedVideo) && (
+                        <section
+                          style={{
+                            backgroundColor: '#ffffff',
+                            borderRadius: '12px',
+                            border: '1px solid #e2e8f0',
+                            padding: '3rem 1.5rem',
+                            textAlign: 'center',
+                            boxShadow: '0 2px 8px rgba(0, 0, 0, 0.04)',
+                            marginBottom: '1.5rem',
+                          }}
+                        >
+                          <Music size={32} color="#1f6f4a" style={{ marginBottom: '0.75rem' }} />
+                          <h3 style={{ margin: '0 0 0.5rem', fontSize: '1.1rem', color: '#0f172a' }}>No Moment Selected</h3>
+                          <p style={{ margin: '0 0 1.25rem', fontSize: '0.85rem', color: '#64748b' }}>Please select one of the 5 detected viral moments first.</p>
+                          <button
+                            type="button"
+                            onClick={() => setMomentWorkflowStep('moments')}
+                            style={{
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '0.45rem',
+                              padding: '0.65rem 1.25rem',
+                              borderRadius: '6px',
+                              backgroundColor: '#1f6f4a',
+                              color: '#ffffff',
+                              border: 'none',
+                              fontSize: '0.88rem',
+                              fontWeight: 600,
+                              cursor: 'pointer',
+                            }}
+                          >
+                            <ArrowLeft size={16} />
+                            <span>Choose a Moment</span>
+                          </button>
+                        </section>
+                      )}
 
                         {/* ── REAL-TIME ANALYSIS & GENERATION REPORT ── */}
                         {isAnalyzing ? (
@@ -4606,7 +4744,7 @@ export default function StudioPage() {
                         ) : null}
 
                         {/* ── Main Content: Clips Showcase & Player ── */}
-                        {hasAnalyzedMoments && !isAnalyzing && visibleClips.length > 0 && (
+                        {hasAnalyzedMoments && !isAnalyzing && momentWorkflowStep !== 'customize' && visibleClips.length > 0 && (
                           <div className="studio-output-grid" ref={generatedOutputRef} style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.35fr) minmax(300px, 360px)', gap: '1.5rem', alignItems: 'start', scrollMarginTop: '1rem' }}>
                             {/* Generated Clips Grid */}
                             <div
