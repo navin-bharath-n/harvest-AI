@@ -5,7 +5,7 @@ ENV PYTHONUNBUFFERED 1
 
 WORKDIR /app
 
-# Install system dependencies (including FFmpeg and graphics libraries for MediaPipe / OpenCV)
+# Install system dependencies (including FFmpeg, Node.js for yt-dlp JavaScript challenges, and graphics libraries for MediaPipe / OpenCV)
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         build-essential \
@@ -13,6 +13,7 @@ RUN apt-get update \
         g++ \
         git \
         ffmpeg \
+        nodejs \
         fonts-dejavu-core \
         fonts-freefont-ttf \
         fontconfig \

@@ -102,8 +102,8 @@ def _sanitize_netscape_cookies(raw_text: str) -> str:
 
 def _resolve_cookiefile() -> Optional[str]:
     """
-    Finds or creates a cookie file from settings, environment variables, or local files.
-    Supports Netscape cookies format text directly via YOUTUBE_COOKIES_CONTENT.
+    Finds or creates a cookie file from settings, local files, or environment variables.
+    Prioritizes local clean cookies.txt bundled in the repository, then environment variables.
     """
     # 1. Direct path setting / env var
     for candidate in [
@@ -112,11 +112,22 @@ def _resolve_cookiefile() -> Optional[str]:
         os.getenv("YOUTUBE_COOKIE_PATH"),
         os.getenv("YOUTUBE_COOKIE_FILE"),
     ]:
-        if candidate and os.path.isfile(candidate):
+        if candidate and os.path.isfile(candidate) and os.path.getsize(candidate) > 30:
             logger.info(f"Using YouTube cookie file from: {candidate}")
             return candidate
 
-    # 2. Raw cookie content passed via env var (ideal for cloud/Docker deployments)
+    # 2. Local cookies.txt in workspace or backend (bundled directly with repo)
+    for local_path in [
+        os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "cookies.txt"),
+        os.path.join(os.getcwd(), "cookies.txt"),
+        os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), "cookies.txt"),
+        "/app/cookies.txt",
+    ]:
+        if os.path.isfile(local_path) and os.path.getsize(local_path) > 30:
+            logger.info(f"Using local cookies.txt found at: {local_path}")
+            return local_path
+
+    # 3. Raw cookie content passed via env var (ideal for cloud/Docker deployments)
     content = getattr(settings, "YOUTUBE_COOKIES_CONTENT", None) or os.getenv("YOUTUBE_COOKIES_CONTENT") or os.getenv("YOUTUBE_COOKIE_DATA")
     if content and content.strip():
         try:
@@ -140,17 +151,6 @@ def _resolve_cookiefile() -> Optional[str]:
         except Exception as e:
             logger.warning(f"Could not write temporary cookie file from YOUTUBE_COOKIES_CONTENT: {e}")
 
-    # 3. Local cookies.txt in workspace or backend
-    for local_path in [
-        os.path.join(os.getcwd(), "cookies.txt"),
-        os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "cookies.txt"),
-        os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), "cookies.txt"),
-        "/app/cookies.txt",
-    ]:
-        if os.path.isfile(local_path):
-            logger.info(f"Using local cookies.txt found at: {local_path}")
-            return local_path
-
     return None
 
 
@@ -165,9 +165,10 @@ def _resolve_proxy() -> Optional[str]:
 
 def _get_js_runtimes() -> Dict[str, Any]:
     js_runtimes = {}
-    for rt in ["node", "deno", "bun"]:
+    for rt in ["node", "nodejs", "deno", "bun"]:
         if shutil.which(rt):
-            js_runtimes[rt] = {}
+            runtime_name = "node" if rt == "nodejs" else rt
+            js_runtimes[runtime_name] = {}
             break
     return js_runtimes
 
@@ -320,10 +321,9 @@ def download_video_from_url(url: str, output_dir: str) -> Dict[str, Any]:
         # Specific diagnosis for datacenter IP blocking
         if any(term in msg.lower() for term in ["player response", "bot", "sign in", "429", "confirm you're not a bot"]):
             raise UrlDownloadError(
-                "YouTube is blocking requests from this server's IP address (common on cloud/datacenter deployments like AWS, Render, or Railway). "
-                "To resolve this on your deployed server: "
-                "1. Update yt-dlp to latest (pip install -U yt-dlp). "
-                "2. Provide YouTube cookies via the YOUTUBE_COOKIES_CONTENT or YOUTUBE_COOKIES_PATH environment variable, or configure YOUTUBE_PROXY."
+                "YouTube is blocking downloads directly from Render's cloud datacenter IP. "
+                "Immediate solution: Download the video on your computer and upload the MP4 file directly using the 'Upload Video' box above, "
+                "or configure a proxy via YOUTUBE_PROXY."
             )
 
         raise UrlDownloadError(f"Could not download video from link: {msg.split('ERROR:')[-1].strip()}")
