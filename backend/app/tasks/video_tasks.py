@@ -1579,6 +1579,33 @@ def publish_video_task(clip_id: int, config: dict):
         req_configs = config.get("platform_configs") or {}
         platform_configs = {**db_configs, **req_configs}
 
+        # Check if branding needs to be applied before publishing
+        branding_cfg = config.get("branding_config") or (clip.edit_options or {}).get("branding")
+        if branding_cfg and (branding_cfg.get("watermark_path") or branding_cfg.get("header_image_path") or branding_cfg.get("footer_image_path")):
+            if not (clip.edit_options or {}).get("branding_burned", False):
+                try:
+                    import tempfile, uuid
+                    from app.services.watermark_service import watermark_service
+                    branded_tmp = os.path.join(tempfile.gettempdir(), f"branded_{clip_id}_{uuid.uuid4().hex[:8]}.mp4")
+                    watermark_service.apply_branding_to_video(
+                        input_video_path=video_path,
+                        output_video_path=branded_tmp,
+                        watermark_path=branding_cfg.get("watermark_path"),
+                        watermark_position=branding_cfg.get("watermark_position", "header"),
+                        watermark_scale=float(branding_cfg.get("watermark_scale", 0.20)),
+                        watermark_opacity=float(branding_cfg.get("watermark_opacity", 0.90)),
+                        watermark_mode=branding_cfg.get("watermark_mode", "always"),
+                        header_image_path=branding_cfg.get("header_image_path"),
+                        header_height=int(branding_cfg.get("header_height", 160)),
+                        footer_image_path=branding_cfg.get("footer_image_path"),
+                        footer_height=int(branding_cfg.get("footer_height", 180)),
+                    )
+                    video_path = branded_tmp
+                except Exception as b_err:
+                    logger.warning(f"Could not burn branding prior to publishing clip {clip_id}: {b_err}")
+
+        thumb_path = config.get("thumbnail_path") or (clip.edit_options or {}).get("thumbnail_path")
+
         published_urls = clip.published_urls or {}
         if not isinstance(published_urls, dict):
             published_urls = dict(published_urls)
@@ -1588,6 +1615,7 @@ def publish_video_task(clip_id: int, config: dict):
                 "title": title,
                 "description": description,
                 "privacy": privacy,
+                "thumbnail_path": thumb_path,
                 "youtube_access_token": platform_configs.get("youtube_access_token"),
                 "youtube_refresh_token": platform_configs.get("youtube_refresh_token"),
                 "facebook_access_token": platform_configs.get("facebook_access_token"),
@@ -1596,6 +1624,7 @@ def publish_video_task(clip_id: int, config: dict):
                 "instagram_business_id": platform_configs.get("instagram_business_id"),
                 "public_video_url": platform_configs.get("public_video_url")
             }
+
             try:
                 res = SocialPublishService.publish_clip(video_path, platform, publish_config)
                 logger.info(f"Publish result for platform {platform}: {res}")

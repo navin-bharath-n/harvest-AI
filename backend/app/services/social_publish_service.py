@@ -363,6 +363,30 @@ class SocialPublishService:
             video_id = res_data.get("id")
             logger.info(f"YouTube upload complete! Video ID: {video_id}")
             
+            # Step 3: Optional custom thumbnail upload
+            thumbnail_path = config.get("thumbnail_path")
+            if thumbnail_path and video_id:
+                try:
+                    from app.services.watermark_service import _resolve_local_file
+                    local_thumb = _resolve_local_file(thumbnail_path)
+                    if local_thumb and os.path.isfile(local_thumb):
+                        logger.info(f"Uploading custom thumbnail to YouTube video {video_id}...")
+                        content_type = "image/png" if local_thumb.lower().endswith(".png") else "image/jpeg"
+                        with open(local_thumb, "rb") as tf:
+                            thumb_data = tf.read()
+                        thumb_url = f"https://www.googleapis.com/upload/youtube/v3/thumbnails/set?videoId={video_id}&uploadType=media"
+                        thumb_headers = {
+                            "Authorization": f"Bearer {access_token}",
+                            "Content-Type": content_type
+                        }
+                        thumb_res = requests.post(thumb_url, headers=thumb_headers, data=thumb_data, timeout=30)
+                        if thumb_res.status_code in [200, 201]:
+                            logger.info(f"Successfully set custom thumbnail on YouTube video {video_id}!")
+                        else:
+                            logger.warning(f"YouTube thumbnail set returned status {thumb_res.status_code}: {thumb_res.text}")
+                except Exception as th_err:
+                    logger.warning(f"Failed to upload thumbnail to YouTube (non-fatal): {th_err}")
+
             result_payload = {
                 "status": "success",
                 "platform": "youtube",

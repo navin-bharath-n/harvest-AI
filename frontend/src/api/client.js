@@ -398,6 +398,55 @@ export const api = {
     return response.data;
   },
 
+  // Publish clip to social media platforms
+  publishClip: async (clipId, platforms, title, description, privacy = 'public', platformConfigs = {}, thumbnailPath = null, brandingConfig = null) => {
+    const response = await client.post(`/videos/clips/${clipId}/publish`, {
+      platforms,
+      title,
+      description,
+      privacy,
+      platform_configs: platformConfigs,
+      thumbnail_path: thumbnailPath,
+      branding_config: brandingConfig,
+    });
+    return response.data;
+  },
+
+  // Upload custom thumbnail for a clip
+  uploadClipThumbnail: async (clipId, file) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const response = await client.post(`/videos/clips/${clipId}/thumbnail`, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+    return response.data;
+  },
+
+  // Upload branding image (watermark logo, header banner, or footer banner)
+  uploadBrandingImage: async (clipId, file, assetType = 'watermark') => {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('asset_type', assetType);
+    const response = await client.post(`/videos/clips/${clipId}/branding-image`, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+    return response.data;
+  },
+
+  // Apply and burn branding (watermark, header, footer) into video
+  applyClipBranding: async (clipId, brandingConfig) => {
+    const response = await client.post(`/videos/clips/${clipId}/apply-branding`, brandingConfig);
+    return response.data;
+  },
+
+  // Get custom thumbnail blob URL
+  getClipThumbnailMedia: async (clipId) => {
+    const response = await authFetch(`/videos/clips/${clipId}/thumbnail-media`);
+    if (!response.ok) throw new Error(`Unable to load thumbnail (${response.status})`);
+    return URL.createObjectURL(await response.blob());
+  },
+
+
   // Create or update a social connection
   saveUserConnection: async (userId = null, connectionData) => {
     let targetUserId = userId;

@@ -1450,3 +1450,249 @@ def publish_clip(
     from app.tasks.video_tasks import publish_video_task
     dispatch_task(publish_video_task, db_clip.id, request.dict())
     return {"message": "Publishing task triggered", "task_id": db_clip.id}
+
+
+THUMBNAIL_UPLOAD_DIR = os.path.join(UPLOAD_DIR, "thumbnails")
+BRANDING_UPLOAD_DIR = os.path.join(UPLOAD_DIR, "branding")
+
+@router.post("/clips/{clip_id}/thumbnail")
+async def upload_clip_thumbnail(
+    clip_id: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """Upload custom thumbnail image for a clip."""
+    db_clip = get_user_clip(clip_id, current_user.id, db)
+    ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+    file_ext = os.path.splitext(file.filename)[1].lower()
+    if file_ext not in ALLOWED_IMAGE_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid image format. Supported formats: {', '.join(sorted(ALLOWED_IMAGE_EXTENSIONS))}"
+        )
+
+    os.makedirs(THUMBNAIL_UPLOAD_DIR, exist_ok=True)
+    unique_name = f"thumb_{clip_id}_{uuid.uuid4().hex[:10]}{file_ext}"
+    local_path = os.path.join(THUMBNAIL_UPLOAD_DIR, unique_name)
+    MAX_IMAGE_SIZE = 25 * 1024 * 1024  # 25 MB
+
+    from app.services import object_storage
+    if object_storage.enabled():
+        try:
+            file.file.seek(0, os.SEEK_END)
+            upload_size = file.file.tell()
+            file.file.seek(0)
+            if upload_size > MAX_IMAGE_SIZE:
+                raise HTTPException(status_code=413, detail="Image file too large. Maximum size is 25 MB.")
+            storage_path = object_storage.upload_fileobj(
+                file.file, f"thumbnails/{unique_name}", file.content_type or "image/jpeg"
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to upload thumbnail to object storage: {e}")
+            raise HTTPException(status_code=502, detail="Failed to store thumbnail image")
+    else:
+        storage_path = f"uploads/thumbnails/{unique_name}"
+        bytes_written = 0
+        with open(local_path, "wb") as buffer:
+            while chunk := await file.read(1024 * 1024):
+                bytes_written += len(chunk)
+                if bytes_written > MAX_IMAGE_SIZE:
+                    buffer.close()
+                    if os.path.exists(local_path):
+                        os.remove(local_path)
+                    raise HTTPException(status_code=413, detail="Image file too large. Maximum size is 25 MB.")
+                buffer.write(chunk)
+
+    edit_options = db_clip.edit_options or {}
+    if not isinstance(edit_options, dict):
+        edit_options = dict(edit_options)
+    else:
+        edit_options = edit_options.copy()
+    edit_options["thumbnail_path"] = storage_path
+    db_clip.edit_options = edit_options
+    from sqlalchemy.orm.attributes import flag_modified
+    flag_modified(db_clip, "edit_options")
+    db.commit()
+    db.refresh(db_clip)
+
+    return {
+        "thumbnail_path": storage_path,
+        "filename": file.filename,
+        "message": "Thumbnail uploaded successfully"
+    }
+
+
+@router.post("/clips/{clip_id}/branding-image")
+async def upload_clip_branding_image(
+    clip_id: int,
+    file: UploadFile = File(...),
+    asset_type: str = Form("watermark"),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """Upload watermark logo or header/footer banner image for a clip."""
+    db_clip = get_user_clip(clip_id, current_user.id, db)
+    ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+    file_ext = os.path.splitext(file.filename)[1].lower()
+    if file_ext not in ALLOWED_IMAGE_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid image format. Supported formats: {', '.join(sorted(ALLOWED_IMAGE_EXTENSIONS))}"
+        )
+
+    clean_asset_type = asset_type.lower().strip()
+    if clean_asset_type not in ("watermark", "header", "footer"):
+        clean_asset_type = "watermark"
+
+    os.makedirs(BRANDING_UPLOAD_DIR, exist_ok=True)
+    unique_name = f"{clean_asset_type}_{clip_id}_{uuid.uuid4().hex[:10]}{file_ext}"
+    local_path = os.path.join(BRANDING_UPLOAD_DIR, unique_name)
+    MAX_IMAGE_SIZE = 25 * 1024 * 1024  # 25 MB
+
+    from app.services import object_storage
+    if object_storage.enabled():
+        try:
+            file.file.seek(0, os.SEEK_END)
+            upload_size = file.file.tell()
+            file.file.seek(0)
+            if upload_size > MAX_IMAGE_SIZE:
+                raise HTTPException(status_code=413, detail="Image file too large. Maximum size is 25 MB.")
+            storage_path = object_storage.upload_fileobj(
+                file.file, f"branding/{unique_name}", file.content_type or "image/png"
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to upload branding image to object storage: {e}")
+            raise HTTPException(status_code=502, detail="Failed to store branding image")
+    else:
+        storage_path = f"uploads/branding/{unique_name}"
+        bytes_written = 0
+        with open(local_path, "wb") as buffer:
+            while chunk := await file.read(1024 * 1024):
+                bytes_written += len(chunk)
+                if bytes_written > MAX_IMAGE_SIZE:
+                    buffer.close()
+                    if os.path.exists(local_path):
+                        os.remove(local_path)
+                    raise HTTPException(status_code=413, detail="Image file too large. Maximum size is 25 MB.")
+                buffer.write(chunk)
+
+    return {
+        "asset_type": clean_asset_type,
+        "storage_path": storage_path,
+        "filename": file.filename
+    }
+
+
+@router.post("/clips/{clip_id}/apply-branding", response_model=schemas.Clip)
+def apply_clip_branding(
+    clip_id: int,
+    request: schemas.ClipBrandingRequest,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Renders and burns watermark logo, header banner, and footer banner into the clip video.
+    Returns the updated clip model.
+    """
+    db_clip = get_user_clip(clip_id, current_user.id, db)
+    if not db_clip.storage_path:
+        raise HTTPException(status_code=400, detail="Clip has no source video rendered yet.")
+
+    from app.services.watermark_service import watermark_service, _resolve_local_file
+    source_video = _resolve_local_file(db_clip.storage_path)
+    if not source_video or not os.path.isfile(source_video):
+        raise HTTPException(status_code=404, detail="Source clip video file could not be located.")
+
+    # Create branded output destination
+    output_filename = f"clip_{clip_id}_branded_{uuid.uuid4().hex[:8]}.mp4"
+    CLIPS_DIR = os.path.join(UPLOAD_DIR, "clips")
+    os.makedirs(CLIPS_DIR, exist_ok=True)
+    local_output_path = os.path.join(CLIPS_DIR, output_filename)
+
+    try:
+        watermark_service.apply_branding_to_video(
+            input_video_path=source_video,
+            output_video_path=local_output_path,
+            watermark_path=request.watermark_path,
+            watermark_position=request.watermark_position or "header",
+            watermark_scale=float(request.watermark_scale or 0.20),
+            watermark_opacity=float(request.watermark_opacity or 0.90),
+            watermark_mode=request.watermark_mode or "always",
+            header_image_path=request.header_image_path,
+            header_height=request.header_height or 160,
+            footer_image_path=request.footer_image_path,
+            footer_height=request.footer_height or 180,
+        )
+    except Exception as exc:
+        logger.error(f"Failed to apply branding to clip {clip_id}: {exc}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to apply branding to video: {str(exc)}")
+
+    # Store in remote object storage if enabled
+    from app.services import object_storage
+    if object_storage.enabled():
+        try:
+            with open(local_output_path, "rb") as f_obj:
+                new_storage_path = object_storage.upload_fileobj(
+                    f_obj, f"clips/{output_filename}", "video/mp4"
+                )
+        except Exception as se:
+            logger.error(f"Failed to store branded clip in remote storage: {se}")
+            new_storage_path = f"uploads/clips/{output_filename}"
+    else:
+        new_storage_path = f"uploads/clips/{output_filename}"
+
+    # Update clip in database
+    db_clip.storage_path = new_storage_path
+    edit_options = db_clip.edit_options or {}
+    if not isinstance(edit_options, dict):
+        edit_options = dict(edit_options)
+    else:
+        edit_options = edit_options.copy()
+
+    edit_options["branding"] = request.dict()
+    edit_options["branding_burned"] = True
+    if request.thumbnail_path:
+        edit_options["thumbnail_path"] = request.thumbnail_path
+
+    db_clip.edit_options = edit_options
+    from sqlalchemy.orm.attributes import flag_modified
+    flag_modified(db_clip, "edit_options")
+    db.commit()
+    db.refresh(db_clip)
+
+    return db_clip
+
+
+@router.get("/clips/{clip_id}/thumbnail-media")
+def get_clip_thumbnail_media(
+    clip_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """Serves the uploaded custom thumbnail image for a clip."""
+    db_clip = get_user_clip(clip_id, current_user.id, db)
+    thumb_path = (db_clip.edit_options or {}).get("thumbnail_path")
+    if not thumb_path:
+        raise HTTPException(status_code=404, detail="No custom thumbnail uploaded for this clip")
+
+    from app.services import object_storage
+    if object_storage.is_remote(thumb_path):
+        try:
+            remote_obj = object_storage.open_read(thumb_path)
+            content_type = remote_obj.get("ContentType") or "image/jpeg"
+            return StreamingResponse(remote_obj["Body"], media_type=content_type)
+        except Exception as e:
+            raise HTTPException(status_code=404, detail="Remote thumbnail not found")
+
+    local_path = _resolve_path(thumb_path)
+    if not os.path.isfile(local_path):
+        raise HTTPException(status_code=404, detail="Thumbnail file not found")
+
+    mime = "image/png" if local_path.lower().endswith(".png") else "image/jpeg"
+    return FileResponse(local_path, media_type=mime)
+

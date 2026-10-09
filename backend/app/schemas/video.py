@@ -35,12 +35,27 @@ class MasterGenerateRequest(BaseModel):
     framing_mode: Optional[str] = "fit_blur"
     caption_style: Optional[str] = "pop"
 
+class ClipBrandingRequest(BaseModel):
+    watermark_path: Optional[str] = None
+    watermark_position: Optional[str] = "header"
+    watermark_scale: Optional[float] = 0.20
+    watermark_opacity: Optional[float] = 0.90
+    watermark_mode: Optional[str] = "always"
+    header_image_path: Optional[str] = None
+    header_height: Optional[int] = 160
+    footer_image_path: Optional[str] = None
+    footer_height: Optional[int] = 180
+    thumbnail_path: Optional[str] = None
+
 class ClipPublishRequest(BaseModel):
     platforms: list[str]
     title: Optional[str] = None
     description: Optional[str] = None
     privacy: Optional[str] = "public"
     platform_configs: Optional[dict] = None
+    thumbnail_path: Optional[str] = None
+    branding_config: Optional[dict] = None
+
 
 class ClipCreate(BaseModel):
     title: Optional[str] = None
