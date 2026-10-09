@@ -201,27 +201,26 @@ def download_video_from_url(url: str, output_dir: str) -> Dict[str, Any]:
     cookie_file = _resolve_cookiefile()
     proxy = _resolve_proxy()
 
-    # Define extraction strategies (prioritizing clients that bypass datacenter IP blocks)
+    # Define extraction strategies
     if is_youtube:
-        strategies: List[Dict[str, Any]] = [
-            # Strategy 1: Android + Web + TV multi-client negotiation (highest success rate on cloud/datacenter IPs)
-            {
-                "name": "android_web_tv",
-                "extractor_args": {"youtube": {"player_client": ["android", "web", "tv"]}},
-            },
-            # Strategy 2: TV & Embedded TV (bypasses bot challenges and web player response)
-            {
-                "name": "tv_embedded",
-                "extractor_args": {"youtube": {"player_client": ["tv", "tv_embedded", "web_creator"]}},
-            },
-            # Strategy 3: Mobile Web & Android Creator
-            {
-                "name": "mweb_android",
-                "extractor_args": {"youtube": {"player_client": ["mweb", "android_creator", "ios"]}},
-            },
-            # Strategy 4: Standard default extraction (relies on cookies/proxy if supplied)
-            {"name": "default", "extractor_args": None},
-        ]
+        if cookie_file:
+            # When cookies are configured, yt-dlp must use clients that accept Netscape cookies (web, mweb, visionos)
+            strategies: List[Dict[str, Any]] = [
+                # Strategy 1: Standard yt-dlp authenticated client negotiation (uses cookies directly)
+                {"name": "authenticated_default", "extractor_args": None},
+                # Strategy 2: Web, Mobile Web & visionOS authenticated
+                {"name": "authenticated_web_mweb", "extractor_args": {"youtube": {"player_client": ["web", "mweb", "visionos"]}}},
+                # Strategy 3: TV and Android fallback
+                {"name": "fallback_tv_android", "extractor_args": {"youtube": {"player_client": ["tv", "tv_embedded", "android"]}}},
+            ]
+        else:
+            # Without cookies on datacenter IPs: try default negotiation, visionos and mobile clients
+            strategies = [
+                {"name": "default", "extractor_args": None},
+                {"name": "visionos_tv", "extractor_args": {"youtube": {"player_client": ["visionos", "tv", "android"]}}},
+                {"name": "android_web_tv", "extractor_args": {"youtube": {"player_client": ["android", "web", "tv"]}}},
+                {"name": "tv_embedded", "extractor_args": {"youtube": {"player_client": ["tv", "tv_embedded", "web_creator"]}}},
+            ]
     else:
         strategies = [{"name": "standard", "extractor_args": None}]
 
