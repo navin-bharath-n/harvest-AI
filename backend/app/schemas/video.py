@@ -87,6 +87,16 @@ class SelectMomentRequest(BaseModel):
     outro_music_style: Optional[str] = "upbeat"
     template_id: Optional[str] = None
     template_storage_path: Optional[str] = None
+    watermark_path: Optional[str] = None
+    watermark_position: Optional[str] = "header"
+    watermark_scale: Optional[float] = 0.20
+    watermark_opacity: Optional[float] = 0.90
+    watermark_mode: Optional[str] = "interval_2s"
+    header_image_path: Optional[str] = None
+    header_height: Optional[int] = 160
+    footer_image_path: Optional[str] = None
+    footer_height: Optional[int] = 180
+    thumbnail_path: Optional[str] = None
 
 class HighlightAnalysisRequest(BaseModel):
     length: float = Field(default=30.0, ge=10.0, le=60.0, description="Target maximum duration for suggested moments")

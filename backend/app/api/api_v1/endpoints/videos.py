@@ -413,6 +413,123 @@ async def upload_custom_audio(
         "audio_name": os.path.splitext(file.filename)[0]
     }
 
+@router.post("/upload-thumbnail")
+async def upload_general_thumbnail(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+    file_ext = os.path.splitext(file.filename)[1].lower()
+    if file_ext not in ALLOWED_IMAGE_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid image format. Supported: {', '.join(sorted(ALLOWED_IMAGE_EXTENSIONS))}"
+        )
+
+    THUMBNAIL_UPLOAD_DIR = os.path.join(UPLOAD_DIR, "thumbnails")
+    os.makedirs(THUMBNAIL_UPLOAD_DIR, exist_ok=True)
+    unique_name = f"thumb_{uuid.uuid4().hex[:12]}{file_ext}"
+    local_path = os.path.join(THUMBNAIL_UPLOAD_DIR, unique_name)
+    MAX_IMAGE_SIZE = 25 * 1024 * 1024
+
+    from app.services import object_storage
+    if object_storage.enabled():
+        try:
+            file.file.seek(0, os.SEEK_END)
+            upload_size = file.file.tell()
+            file.file.seek(0)
+            if upload_size > MAX_IMAGE_SIZE:
+                raise HTTPException(status_code=413, detail="Image file too large. Maximum size is 25 MB.")
+            storage_path = object_storage.upload_fileobj(
+                file.file, f"thumbnails/{unique_name}", file.content_type or "image/jpeg"
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to upload thumbnail to remote storage: {e}")
+            raise HTTPException(status_code=502, detail="Failed to store thumbnail image")
+    else:
+        storage_path = f"uploads/thumbnails/{unique_name}"
+        bytes_written = 0
+        with open(local_path, "wb") as buffer:
+            while chunk := await file.read(1024 * 1024):
+                bytes_written += len(chunk)
+                if bytes_written > MAX_IMAGE_SIZE:
+                    buffer.close()
+                    if os.path.exists(local_path):
+                        os.remove(local_path)
+                    raise HTTPException(status_code=413, detail="Image file too large. Maximum size is 25 MB.")
+                buffer.write(chunk)
+
+    return {
+        "filename": file.filename,
+        "storage_path": storage_path,
+        "thumbnail_path": storage_path,
+    }
+
+
+@router.post("/upload-branding-image")
+async def upload_general_branding_image(
+    file: UploadFile = File(...),
+    asset_type: str = Form("watermark"),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+    file_ext = os.path.splitext(file.filename)[1].lower()
+    if file_ext not in ALLOWED_IMAGE_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid image format. Supported: {', '.join(sorted(ALLOWED_IMAGE_EXTENSIONS))}"
+        )
+
+    clean_asset_type = asset_type.lower().strip()
+    if clean_asset_type not in ("watermark", "header", "footer"):
+        clean_asset_type = "watermark"
+
+    BRANDING_UPLOAD_DIR = os.path.join(UPLOAD_DIR, "branding")
+    os.makedirs(BRANDING_UPLOAD_DIR, exist_ok=True)
+    unique_name = f"{clean_asset_type}_{uuid.uuid4().hex[:12]}{file_ext}"
+    local_path = os.path.join(BRANDING_UPLOAD_DIR, unique_name)
+    MAX_IMAGE_SIZE = 25 * 1024 * 1024
+
+    from app.services import object_storage
+    if object_storage.enabled():
+        try:
+            file.file.seek(0, os.SEEK_END)
+            upload_size = file.file.tell()
+            file.file.seek(0)
+            if upload_size > MAX_IMAGE_SIZE:
+                raise HTTPException(status_code=413, detail="Image file too large. Maximum size is 25 MB.")
+            storage_path = object_storage.upload_fileobj(
+                file.file, f"branding/{unique_name}", file.content_type or "image/png"
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to upload branding image to remote storage: {e}")
+            raise HTTPException(status_code=502, detail="Failed to store branding image")
+    else:
+        storage_path = f"uploads/branding/{unique_name}"
+        bytes_written = 0
+        with open(local_path, "wb") as buffer:
+            while chunk := await file.read(1024 * 1024):
+                bytes_written += len(chunk)
+                if bytes_written > MAX_IMAGE_SIZE:
+                    buffer.close()
+                    if os.path.exists(local_path):
+                        os.remove(local_path)
+                    raise HTTPException(status_code=413, detail="Image file too large. Maximum size is 25 MB.")
+                buffer.write(chunk)
+
+    return {
+        "asset_type": clean_asset_type,
+        "filename": file.filename,
+        "storage_path": storage_path,
+    }
+
+
 @router.get("/music-presets/{preset}/audio")
 def get_music_preset_audio(preset: str):
     """
@@ -677,6 +794,12 @@ def select_moment(
         and abs(float((existing.edit_options or {}).get("outro_duration", 3.0)) - float(request.outro_duration or 3.0)) < 0.01
         and (existing.edit_options or {}).get("template_id") == (request.template_id or None)
         and (existing.edit_options or {}).get("template_storage_path") == (request.template_storage_path or None)
+        and (existing.edit_options or {}).get("watermark_path") == (request.watermark_path or None)
+        and (existing.edit_options or {}).get("watermark_position", "header") == (request.watermark_position or "header")
+        and (existing.edit_options or {}).get("watermark_mode", "interval_2s") == (request.watermark_mode or "interval_2s")
+        and (existing.edit_options or {}).get("header_image_path") == (request.header_image_path or None)
+        and (existing.edit_options or {}).get("footer_image_path") == (request.footer_image_path or None)
+        and (existing.edit_options or {}).get("thumbnail_path") == (request.thumbnail_path or None)
     ):
         db.commit()
         return existing
@@ -720,6 +843,27 @@ def select_moment(
         "template_id": request.template_id or None,
         "template_storage_path": request.template_storage_path or None,
         "framing_mode": "fit_blur",
+        "watermark_path": request.watermark_path or None,
+        "watermark_position": request.watermark_position or "header",
+        "watermark_scale": float(request.watermark_scale if request.watermark_scale is not None else 0.20),
+        "watermark_opacity": float(request.watermark_opacity if request.watermark_opacity is not None else 0.90),
+        "watermark_mode": request.watermark_mode or "interval_2s",
+        "header_image_path": request.header_image_path or None,
+        "header_height": int(request.header_height if request.header_height is not None else 160),
+        "footer_image_path": request.footer_image_path or None,
+        "footer_height": int(request.footer_height if request.footer_height is not None else 180),
+        "thumbnail_path": request.thumbnail_path or None,
+        "branding": {
+            "watermark_path": request.watermark_path or None,
+            "watermark_position": request.watermark_position or "header",
+            "watermark_scale": float(request.watermark_scale if request.watermark_scale is not None else 0.20),
+            "watermark_opacity": float(request.watermark_opacity if request.watermark_opacity is not None else 0.90),
+            "watermark_mode": request.watermark_mode or "interval_2s",
+            "header_image_path": request.header_image_path or None,
+            "header_height": int(request.header_height if request.header_height is not None else 160),
+            "footer_image_path": request.footer_image_path or None,
+            "footer_height": int(request.footer_height if request.footer_height is not None else 180),
+        } if (request.watermark_path or request.header_image_path or request.footer_image_path) else None,
     }
     if existing:
         existing.title = moment.get("title") or f"Moment {request.moment_id + 1}"
@@ -1677,6 +1821,28 @@ def get_clip_thumbnail_media(
     """Serves the uploaded custom thumbnail image for a clip."""
     db_clip = get_user_clip(clip_id, current_user.id, db)
     thumb_path = (db_clip.edit_options or {}).get("thumbnail_path")
+    if not thumb_path and db_clip.storage_path:
+        try:
+            from app.tasks.video_tasks import _resolve_video_path
+            clip_video_local = _resolve_video_path(db_clip.storage_path)
+            if clip_video_local and os.path.isfile(clip_video_local):
+                THUMBNAIL_UPLOAD_DIR = os.path.join(UPLOAD_DIR, "thumbnails")
+                os.makedirs(THUMBNAIL_UPLOAD_DIR, exist_ok=True)
+                unique_name = f"thumb_{clip_id}_{uuid.uuid4().hex[:8]}.jpg"
+                local_thumb = os.path.join(THUMBNAIL_UPLOAD_DIR, unique_name)
+                cmd = ["ffmpeg", "-y", "-ss", "0.5", "-i", clip_video_local, "-vframes", "1", "-q:v", "2", local_thumb]
+                res = subprocess.run(cmd, capture_output=True)
+                if res.returncode == 0 and os.path.isfile(local_thumb) and os.path.getsize(local_thumb) > 0:
+                    thumb_path = f"uploads/thumbnails/{unique_name}"
+                    opts = dict(db_clip.edit_options or {})
+                    opts["thumbnail_path"] = thumb_path
+                    db_clip.edit_options = opts
+                    from sqlalchemy.orm.attributes import flag_modified
+                    flag_modified(db_clip, "edit_options")
+                    db.commit()
+        except Exception as th_fallback_err:
+            logger.warning(f"Failed to generate dynamic fallback thumbnail for clip {clip_id}: {th_fallback_err}")
+
     if not thumb_path:
         raise HTTPException(status_code=404, detail="No custom thumbnail uploaded for this clip")
 

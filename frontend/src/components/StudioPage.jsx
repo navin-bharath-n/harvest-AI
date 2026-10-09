@@ -6,7 +6,7 @@ import {
   CheckCircle2, Film, Clock, XCircle, Trash2, AlertTriangle,
   Link2, Globe, Music, Volume2, X, Check, ArrowRight,
   ThumbsUp, MessageSquare, Bell, Heart, RotateCcw, ExternalLink,
-  Search
+  Search, Image as ImageIcon, Layers, LoaderCircle
 } from 'lucide-react';
 import { api } from '../api/client';
 import { useAuth } from '../context/AuthContext';
@@ -117,6 +117,36 @@ export default function StudioPage() {
   const [outroLongText, setOutroLongText] = useState('');
   const [outroPreviewKey, setOutroPreviewKey] = useState(0);
   const [outroMusicStyle, setOutroMusicStyle] = useState('upbeat');
+
+  // Custom Thumbnail State for Modal
+  const [modalThumbnailPath, setModalThumbnailPath] = useState(null);
+  const [modalThumbnailPreview, setModalThumbnailPreview] = useState(null);
+  const [isUploadingModalThumb, setIsUploadingModalThumb] = useState(false);
+  const modalThumbInputRef = useRef(null);
+
+  // Watermark & Branding Studio State for Modal
+  const [modalBrandingTab, setModalBrandingTab] = useState('watermark'); // 'watermark' | 'header' | 'footer'
+  const [modalWatermarkPath, setModalWatermarkPath] = useState(null);
+  const [modalWatermarkPreview, setModalWatermarkPreview] = useState(null);
+  const [modalWatermarkPos, setModalWatermarkPos] = useState('header');
+  const [modalWatermarkScale, setModalWatermarkScale] = useState(20);
+  const [modalWatermarkOpacity, setModalWatermarkOpacity] = useState(90);
+  const [modalWatermarkMode, setModalWatermarkMode] = useState('interval_2s'); // 'interval_2s' | 'always'
+  const [isUploadingModalWatermark, setIsUploadingModalWatermark] = useState(false);
+
+  const [modalHeaderPath, setModalHeaderPath] = useState(null);
+  const [modalHeaderPreview, setModalHeaderPreview] = useState(null);
+  const [modalHeaderHeight, setModalHeaderHeight] = useState(160);
+  const [isUploadingModalHeader, setIsUploadingModalHeader] = useState(false);
+
+  const [modalFooterPath, setModalFooterPath] = useState(null);
+  const [modalFooterPreview, setModalFooterPreview] = useState(null);
+  const [modalFooterHeight, setModalFooterHeight] = useState(180);
+  const [isUploadingModalFooter, setIsUploadingModalFooter] = useState(false);
+
+  const modalWatermarkInputRef = useRef(null);
+  const modalHeaderInputRef = useRef(null);
+  const modalFooterInputRef = useRef(null);
 
   const loadTemplates = useCallback(async () => {
     try {
@@ -669,6 +699,76 @@ export default function StudioPage() {
     }
   };
 
+  const handleModalThumbnailUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const localUrl = URL.createObjectURL(file);
+    setModalThumbnailPreview(localUrl);
+    setIsUploadingModalThumb(true);
+    try {
+      const res = await api.uploadThumbnail(file);
+      setModalThumbnailPath(res.thumbnail_path || res.storage_path);
+    } catch (err) {
+      console.error('Thumbnail upload failed:', err);
+      setActionMessage(`Thumbnail upload failed: ${err.response?.data?.detail || err.message}`);
+    } finally {
+      setIsUploadingModalThumb(false);
+    }
+  };
+
+  const handleModalBrandingUpload = async (e, type) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const localUrl = URL.createObjectURL(file);
+    if (type === 'watermark') {
+      setModalWatermarkPreview(localUrl);
+      setIsUploadingModalWatermark(true);
+    } else if (type === 'header') {
+      setModalHeaderPreview(localUrl);
+      setIsUploadingModalHeader(true);
+    } else if (type === 'footer') {
+      setModalFooterPreview(localUrl);
+      setIsUploadingModalFooter(true);
+    }
+
+    try {
+      const res = await api.uploadBrandingImageGeneral(file, type);
+      const sPath = res.storage_path;
+      if (type === 'watermark') setModalWatermarkPath(sPath);
+      else if (type === 'header') setModalHeaderPath(sPath);
+      else if (type === 'footer') setModalFooterPath(sPath);
+    } catch (err) {
+      console.error(`Upload branding ${type} failed:`, err);
+      setActionMessage(`Upload branding ${type} failed: ${err.response?.data?.detail || err.message}`);
+    } finally {
+      if (type === 'watermark') setIsUploadingModalWatermark(false);
+      else if (type === 'header') setIsUploadingModalHeader(false);
+      else if (type === 'footer') setIsUploadingModalFooter(false);
+    }
+  };
+
+  const clearModalThumbnail = () => {
+    setModalThumbnailPath(null);
+    setModalThumbnailPreview(null);
+    if (modalThumbInputRef.current) modalThumbInputRef.current.value = '';
+  };
+
+  const clearModalBrandingAsset = (type) => {
+    if (type === 'watermark') {
+      setModalWatermarkPath(null);
+      setModalWatermarkPreview(null);
+      if (modalWatermarkInputRef.current) modalWatermarkInputRef.current.value = '';
+    } else if (type === 'header') {
+      setModalHeaderPath(null);
+      setModalHeaderPreview(null);
+      if (modalHeaderInputRef.current) modalHeaderInputRef.current.value = '';
+    } else if (type === 'footer') {
+      setModalFooterPath(null);
+      setModalFooterPreview(null);
+      if (modalFooterInputRef.current) modalFooterInputRef.current.value = '';
+    }
+  };
+
   const handleRenderSelectedMoment = async () => {
     if (!selectedVideo || selectedMomentId == null) return;
     setActionLoading(true);
@@ -698,12 +798,22 @@ export default function StudioPage() {
         outroMusicStyle: isCustomMode ? outroMusicStyle : 'upbeat',
         templateId: isTemplateMode ? selectedTemplate.id : null,
         templateStoragePath: isTemplateMode ? selectedTemplate.storage_path : null,
+        thumbnailPath: modalThumbnailPath || null,
+        watermarkPath: modalWatermarkPath || null,
+        watermarkPosition: modalWatermarkPos || 'header',
+        watermarkScale: (Number(modalWatermarkScale) || 20) / 100,
+        watermarkOpacity: (Number(modalWatermarkOpacity) || 90) / 100,
+        watermarkMode: modalWatermarkMode || 'interval_2s',
+        headerImagePath: modalHeaderPath || null,
+        headerHeight: Number(modalHeaderHeight) || 160,
+        footerImagePath: modalFooterPath || null,
+        footerHeight: Number(modalFooterHeight) || 180,
       });
       setSelectedClip(clip);
       setClips((items) => [clip, ...items.filter((item) => item.id !== clip.id)]);
       setClipsVideoId(selectedVideo.id);
       setMomentWorkflowStep('clips');
-      setActionMessage('This moment is rendering. Your chosen soundtrack and creator outro are being applied.');
+      setActionMessage('This moment is rendering. Your chosen soundtrack, branding and creator outro are being applied.');
       setActionLoading(false);
       await loadVideos();
     } catch (error) {
@@ -3669,6 +3779,499 @@ export default function StudioPage() {
                               )}
                             </div>
 
+                            {/* ── CARD 3: 2. CUSTOM THUMBNAIL ── */}
+                            <div style={{
+                              backgroundColor: '#ffffff',
+                              border: '1px solid #e6e6e1',
+                              borderRadius: '10px',
+                              padding: '1.15rem',
+                              display: 'flex',
+                              flexDirection: 'column',
+                              gap: '0.85rem',
+                            }}>
+                              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.5rem' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                                  <div style={{ width: 32, height: 32, borderRadius: '6px', background: '#ecfdf5', color: '#1f6f4a', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                    <ImageIcon size={17} />
+                                  </div>
+                                  <div>
+                                    <strong style={{ fontSize: '0.95rem', color: '#16181d', display: 'block' }}>2. Custom Thumbnail</strong>
+                                    <span style={{ fontSize: '0.78rem', color: '#5b616b' }}>Upload a custom thumbnail or auto-extract a video frame (never blank)</span>
+                                  </div>
+                                </div>
+                                {modalThumbnailPath && (
+                                  <span style={{ fontSize: '0.74rem', background: '#eef6f0', color: '#1f6f4a', border: '1px solid #cce5d4', padding: '0.2rem 0.6rem', borderRadius: 99, fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}>
+                                    <Check size={12} /> Custom Thumbnail Attached
+                                  </span>
+                                )}
+                              </div>
+
+                              <input
+                                type="file"
+                                ref={modalThumbInputRef}
+                                accept="image/png,image/jpeg,image/webp,image/jpg"
+                                style={{ display: 'none' }}
+                                onChange={handleModalThumbnailUpload}
+                              />
+
+                              {modalThumbnailPreview ? (
+                                <div style={{ display: 'flex', gap: '1rem', alignItems: 'center', background: '#f9f9f7', padding: '0.85rem', borderRadius: 8, border: '1px solid #e6e6e1' }}>
+                                  <div style={{ width: 80, height: 110, borderRadius: 6, overflow: 'hidden', background: '#1c1e24', flexShrink: 0, boxShadow: '0 2px 6px rgba(0,0,0,0.1)' }}>
+                                    <img src={modalThumbnailPreview} alt="Thumbnail Preview" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                                  </div>
+                                  <div style={{ flex: 1, minWidth: 0 }}>
+                                    <div style={{ fontWeight: 700, fontSize: '0.9rem', color: '#16181d', marginBottom: '0.2rem' }}>Custom Thumbnail Active</div>
+                                    <div style={{ fontSize: '0.78rem', color: '#657080', marginBottom: '0.65rem' }}>This thumbnail will be assigned to the short immediately upon render.</div>
+                                    <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                                      <button
+                                        type="button"
+                                        disabled={isUploadingModalThumb}
+                                        onClick={() => modalThumbInputRef.current?.click()}
+                                        style={{
+                                          padding: '0.35rem 0.75rem',
+                                          borderRadius: 6,
+                                          border: '1px solid #d9dcd8',
+                                          background: '#fff',
+                                          color: '#16181d',
+                                          fontWeight: 600,
+                                          fontSize: '0.78rem',
+                                          cursor: 'pointer',
+                                          display: 'inline-flex',
+                                          alignItems: 'center',
+                                          gap: '0.35rem',
+                                        }}
+                                      >
+                                        {isUploadingModalThumb ? <LoaderCircle size={13} className="harvest-publish-spin" /> : <UploadCloud size={13} />} Replace
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={clearModalThumbnail}
+                                        style={{
+                                          padding: '0.35rem 0.75rem',
+                                          borderRadius: 6,
+                                          border: '1px solid #fecaca',
+                                          background: '#fff',
+                                          color: '#b91c1c',
+                                          fontWeight: 600,
+                                          fontSize: '0.78rem',
+                                          cursor: 'pointer',
+                                          display: 'inline-flex',
+                                          alignItems: 'center',
+                                          gap: '0.35rem',
+                                        }}
+                                      >
+                                        <Trash2 size={13} /> Remove
+                                      </button>
+                                    </div>
+                                  </div>
+                                </div>
+                              ) : (
+                                <div
+                                  onClick={() => modalThumbInputRef.current?.click()}
+                                  style={{
+                                    border: '1.5px dashed #d9dcd8',
+                                    borderRadius: 8,
+                                    padding: '1.1rem 1rem',
+                                    textAlign: 'center',
+                                    background: '#fcfcfb',
+                                    cursor: 'pointer',
+                                    transition: 'border-color 0.15s ease',
+                                  }}
+                                >
+                                  <div style={{ width: 36, height: 36, borderRadius: '50%', background: '#eef6f0', display: 'grid', placeItems: 'center', margin: '0 auto 0.5rem' }}>
+                                    <ImageIcon size={18} color="#1f6f4a" />
+                                  </div>
+                                  <div style={{ fontWeight: 700, fontSize: '0.86rem', color: '#16181d', marginBottom: '0.15rem' }}>
+                                    Click to upload custom thumbnail (Optional)
+                                  </div>
+                                  <div style={{ fontSize: '0.76rem', color: '#7a828e' }}>
+                                    If left empty, a crisp frame from the video (at 0.5s) is automatically captured — never blank.
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+
+                            {/* ── CARD 4: 3. WATERMARK & BRANDING STUDIO ── */}
+                            <div style={{
+                              backgroundColor: '#ffffff',
+                              border: '1px solid #e6e6e1',
+                              borderRadius: '10px',
+                              padding: '1.15rem',
+                              display: 'flex',
+                              flexDirection: 'column',
+                              gap: '0.85rem',
+                            }}>
+                              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.5rem' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                                  <div style={{ width: 32, height: 32, borderRadius: '6px', background: '#ecfdf5', color: '#1f6f4a', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                    <Layers size={17} />
+                                  </div>
+                                  <div>
+                                    <strong style={{ fontSize: '0.95rem', color: '#16181d', display: 'block' }}>3. Watermark &amp; Branding Studio</strong>
+                                    <span style={{ fontSize: '0.78rem', color: '#5b616b' }}>Channel logo, top header banner, and bottom footer banner rendered directly into the short</span>
+                                  </div>
+                                </div>
+                                {(modalWatermarkPath || modalHeaderPath || modalFooterPath) && (
+                                  <span style={{ fontSize: '0.74rem', background: '#eef6f0', color: '#1f6f4a', border: '1px solid #cce5d4', padding: '0.2rem 0.6rem', borderRadius: 99, fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}>
+                                    <Check size={12} /> Branding Configured
+                                  </span>
+                                )}
+                              </div>
+
+                              {/* Branding Tabs */}
+                              <div style={{ display: 'flex', gap: '0.35rem', padding: '0.25rem', background: '#f4f5f3', borderRadius: 8 }}>
+                                {[
+                                  { id: 'watermark', label: 'Logo / Watermark' },
+                                  { id: 'header', label: 'Header Banner' },
+                                  { id: 'footer', label: 'Footer Banner' },
+                                ].map((tab) => (
+                                  <button
+                                    key={tab.id}
+                                    type="button"
+                                    onClick={() => setModalBrandingTab(tab.id)}
+                                    style={{
+                                      flex: 1,
+                                      padding: '0.45rem 0.65rem',
+                                      border: 0,
+                                      borderRadius: 6,
+                                      background: modalBrandingTab === tab.id ? '#fff' : 'transparent',
+                                      color: modalBrandingTab === tab.id ? '#16181d' : '#657080',
+                                      fontWeight: modalBrandingTab === tab.id ? 700 : 550,
+                                      fontSize: '0.82rem',
+                                      cursor: 'pointer',
+                                      boxShadow: modalBrandingTab === tab.id ? '0 1px 4px rgba(0,0,0,0.06)' : 'none',
+                                      transition: 'all 0.15s ease',
+                                    }}
+                                  >
+                                    {tab.label}
+                                  </button>
+                                ))}
+                              </div>
+
+                              {/* Hidden file inputs */}
+                              <input
+                                type="file"
+                                ref={modalWatermarkInputRef}
+                                accept="image/png,image/jpeg,image/webp,image/gif"
+                                style={{ display: 'none' }}
+                                onChange={(e) => handleModalBrandingUpload(e, 'watermark')}
+                              />
+                              <input
+                                type="file"
+                                ref={modalHeaderInputRef}
+                                accept="image/png,image/jpeg,image/webp,image/gif"
+                                style={{ display: 'none' }}
+                                onChange={(e) => handleModalBrandingUpload(e, 'header')}
+                              />
+                              <input
+                                type="file"
+                                ref={modalFooterInputRef}
+                                accept="image/png,image/jpeg,image/webp,image/gif"
+                                style={{ display: 'none' }}
+                                onChange={(e) => handleModalBrandingUpload(e, 'footer')}
+                              />
+
+                              {/* TAB 1: LOGO / WATERMARK */}
+                              {modalBrandingTab === 'watermark' && (
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+                                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.75rem', background: '#fcfcfb', border: '1px solid #e6e6e1', borderRadius: 8, padding: '0.75rem' }}>
+                                    {modalWatermarkPreview ? (
+                                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                                        <div style={{ width: 44, height: 44, borderRadius: 6, background: '#1c1e24', display: 'grid', placeItems: 'center', overflow: 'hidden' }}>
+                                          <img src={modalWatermarkPreview} alt="Logo" style={{ maxWidth: '90%', maxHeight: '90%', objectFit: 'contain' }} />
+                                        </div>
+                                        <div>
+                                          <div style={{ fontWeight: 700, fontSize: '0.86rem', color: '#16181d' }}>Channel Logo Loaded</div>
+                                          <div style={{ fontSize: '0.75rem', color: '#657080' }}>Visible across video or pulsing every 2 seconds</div>
+                                        </div>
+                                      </div>
+                                    ) : (
+                                      <div>
+                                        <div style={{ fontWeight: 700, fontSize: '0.86rem', color: '#16181d' }}>Upload Channel Logo / Watermark</div>
+                                        <div style={{ fontSize: '0.75rem', color: '#657080' }}>e.g. "nb" channel logo with transparent background</div>
+                                      </div>
+                                    )}
+                                    <div style={{ display: 'flex', gap: '0.4rem' }}>
+                                      <button
+                                        type="button"
+                                        disabled={isUploadingModalWatermark}
+                                        onClick={() => modalWatermarkInputRef.current?.click()}
+                                        style={{
+                                          padding: '0.35rem 0.75rem',
+                                          borderRadius: 6,
+                                          border: '1px solid #d9dcd8',
+                                          background: '#fff',
+                                          color: '#16181d',
+                                          fontWeight: 600,
+                                          fontSize: '0.78rem',
+                                          cursor: 'pointer',
+                                          display: 'inline-flex',
+                                          alignItems: 'center',
+                                          gap: '0.35rem',
+                                        }}
+                                      >
+                                        {isUploadingModalWatermark ? <LoaderCircle size={13} className="harvest-publish-spin" /> : <UploadCloud size={13} />} {modalWatermarkPreview ? 'Replace' : 'Upload Logo'}
+                                      </button>
+                                      {modalWatermarkPreview && (
+                                        <button
+                                          type="button"
+                                          onClick={() => clearModalBrandingAsset('watermark')}
+                                          style={{
+                                            padding: '0.35rem 0.6rem',
+                                            borderRadius: 6,
+                                            border: '1px solid #fecaca',
+                                            background: '#fff',
+                                            color: '#b91c1c',
+                                            cursor: 'pointer',
+                                          }}
+                                        >
+                                          <Trash2 size={13} />
+                                        </button>
+                                      )}
+                                    </div>
+                                  </div>
+
+                                  {/* Watermark Placement */}
+                                  <div>
+                                    <div style={{ fontSize: '0.78rem', fontWeight: 650, color: '#334155', marginBottom: '0.4rem' }}>Logo Placement</div>
+                                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: '0.4rem' }}>
+                                      {[
+                                        { id: 'header', label: 'Header (Top)' },
+                                        { id: 'footer', label: 'Footer (Bottom)' },
+                                        { id: 'top-left', label: 'Top Left' },
+                                        { id: 'top-right', label: 'Top Right' },
+                                        { id: 'bottom-left', label: 'Bottom Left' },
+                                        { id: 'bottom-right', label: 'Bottom Right' },
+                                        { id: 'header_and_footer', label: 'Both Top & Bottom' },
+                                      ].map((p) => (
+                                        <button
+                                          key={p.id}
+                                          type="button"
+                                          onClick={() => setModalWatermarkPos(p.id)}
+                                          style={{
+                                            padding: '0.45rem 0.55rem',
+                                            borderRadius: 6,
+                                            border: `1px solid ${modalWatermarkPos === p.id ? '#1f6f4a' : '#d9dcd8'}`,
+                                            background: modalWatermarkPos === p.id ? '#eef6f0' : '#fff',
+                                            color: modalWatermarkPos === p.id ? '#1f6f4a' : '#343943',
+                                            fontWeight: modalWatermarkPos === p.id ? 700 : 500,
+                                            fontSize: '0.78rem',
+                                            cursor: 'pointer',
+                                            transition: 'all 0.15s ease',
+                                          }}
+                                        >
+                                          {p.label}
+                                        </button>
+                                      ))}
+                                    </div>
+                                  </div>
+
+                                  {/* Watermark Timing Mode */}
+                                  <div style={{ background: '#fcfcfb', border: '1px solid #e6e6e1', borderRadius: 8, padding: '0.75rem' }}>
+                                    <div style={{ fontWeight: 650, fontSize: '0.82rem', marginBottom: '0.35rem', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                                      <Clock size={15} color="#1f6f4a" /> Watermark Timing Mode
+                                    </div>
+                                    <div style={{ display: 'flex', gap: '0.85rem', marginTop: '0.35rem' }}>
+                                      <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem', cursor: 'pointer', fontWeight: modalWatermarkMode === 'interval_2s' ? 700 : 500 }}>
+                                        <input
+                                          type="radio"
+                                          name="modalWatermarkMode"
+                                          checked={modalWatermarkMode === 'interval_2s'}
+                                          onChange={() => setModalWatermarkMode('interval_2s')}
+                                        />
+                                        Every 2 Seconds (Pulsing / 2s on-off)
+                                      </label>
+                                      <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem', cursor: 'pointer', fontWeight: modalWatermarkMode === 'always' ? 700 : 500 }}>
+                                        <input
+                                          type="radio"
+                                          name="modalWatermarkMode"
+                                          checked={modalWatermarkMode === 'always'}
+                                          onChange={() => setModalWatermarkMode('always')}
+                                        />
+                                        Always Visible
+                                      </label>
+                                    </div>
+                                  </div>
+
+                                  {/* Sliders: Size & Opacity */}
+                                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.85rem' }}>
+                                    <label style={{ fontSize: '0.8rem', fontWeight: 600, color: '#586273' }}>
+                                      Logo Size: <strong style={{ color: '#16181d' }}>{modalWatermarkScale}%</strong>
+                                      <input
+                                        type="range"
+                                        min="8"
+                                        max="40"
+                                        value={modalWatermarkScale}
+                                        onChange={(e) => setModalWatermarkScale(Number(e.target.value))}
+                                        style={{ width: '100%', marginTop: '0.35rem', accentColor: '#1f6f4a' }}
+                                      />
+                                    </label>
+                                    <label style={{ fontSize: '0.8rem', fontWeight: 600, color: '#586273' }}>
+                                      Logo Opacity: <strong style={{ color: '#16181d' }}>{modalWatermarkOpacity}%</strong>
+                                      <input
+                                        type="range"
+                                        min="40"
+                                        max="100"
+                                        value={modalWatermarkOpacity}
+                                        onChange={(e) => setModalWatermarkOpacity(Number(e.target.value))}
+                                        style={{ width: '100%', marginTop: '0.35rem', accentColor: '#1f6f4a' }}
+                                      />
+                                    </label>
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* TAB 2: HEADER BANNER */}
+                              {modalBrandingTab === 'header' && (
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+                                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.75rem', background: '#fcfcfb', border: '1px solid #e6e6e1', borderRadius: 8, padding: '0.75rem' }}>
+                                    {modalHeaderPreview ? (
+                                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                                        <div style={{ width: 80, height: 34, borderRadius: 6, background: '#1c1e24', overflow: 'hidden' }}>
+                                          <img src={modalHeaderPreview} alt="Header" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                                        </div>
+                                        <div>
+                                          <div style={{ fontWeight: 700, fontSize: '0.86rem', color: '#16181d' }}>Header Banner Active</div>
+                                          <div style={{ fontSize: '0.75rem', color: '#657080' }}>Overlaid across the top of the video</div>
+                                        </div>
+                                      </div>
+                                    ) : (
+                                      <div>
+                                        <div style={{ fontWeight: 700, fontSize: '0.86rem', color: '#16181d' }}>Upload Header Banner</div>
+                                        <div style={{ fontSize: '0.75rem', color: '#657080' }}>Displays series name or branding banner at top</div>
+                                      </div>
+                                    )}
+                                    <div style={{ display: 'flex', gap: '0.4rem' }}>
+                                      <button
+                                        type="button"
+                                        disabled={isUploadingModalHeader}
+                                        onClick={() => modalHeaderInputRef.current?.click()}
+                                        style={{
+                                          padding: '0.35rem 0.75rem',
+                                          borderRadius: 6,
+                                          border: '1px solid #d9dcd8',
+                                          background: '#fff',
+                                          color: '#16181d',
+                                          fontWeight: 600,
+                                          fontSize: '0.78rem',
+                                          cursor: 'pointer',
+                                          display: 'inline-flex',
+                                          alignItems: 'center',
+                                          gap: '0.35rem',
+                                        }}
+                                      >
+                                        {isUploadingModalHeader ? <LoaderCircle size={13} className="harvest-publish-spin" /> : <UploadCloud size={13} />} {modalHeaderPreview ? 'Replace' : 'Upload Banner'}
+                                      </button>
+                                      {modalHeaderPreview && (
+                                        <button
+                                          type="button"
+                                          onClick={() => clearModalBrandingAsset('header')}
+                                          style={{
+                                            padding: '0.35rem 0.6rem',
+                                            borderRadius: 6,
+                                            border: '1px solid #fecaca',
+                                            background: '#fff',
+                                            color: '#b91c1c',
+                                            cursor: 'pointer',
+                                          }}
+                                        >
+                                          <Trash2 size={13} />
+                                        </button>
+                                      )}
+                                    </div>
+                                  </div>
+
+                                  <label style={{ fontSize: '0.82rem', fontWeight: 600, color: '#586273' }}>
+                                    Header Banner Height: <strong style={{ color: '#16181d' }}>{modalHeaderHeight}px</strong>
+                                    <input
+                                      type="range"
+                                      min="60"
+                                      max="260"
+                                      step="10"
+                                      value={modalHeaderHeight}
+                                      onChange={(e) => setModalHeaderHeight(Number(e.target.value))}
+                                      style={{ width: '100%', marginTop: '0.35rem', accentColor: '#1f6f4a' }}
+                                    />
+                                  </label>
+                                </div>
+                              )}
+
+                              {/* TAB 3: FOOTER BANNER */}
+                              {modalBrandingTab === 'footer' && (
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+                                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.75rem', background: '#fcfcfb', border: '1px solid #e6e6e1', borderRadius: 8, padding: '0.75rem' }}>
+                                    {modalFooterPreview ? (
+                                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                                        <div style={{ width: 80, height: 34, borderRadius: 6, background: '#1c1e24', overflow: 'hidden' }}>
+                                          <img src={modalFooterPreview} alt="Footer" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                                        </div>
+                                        <div>
+                                          <div style={{ fontWeight: 700, fontSize: '0.86rem', color: '#16181d' }}>Footer Banner Active</div>
+                                          <div style={{ fontSize: '0.75rem', color: '#657080' }}>Overlaid across the bottom of the video</div>
+                                        </div>
+                                      </div>
+                                    ) : (
+                                      <div>
+                                        <div style={{ fontWeight: 700, fontSize: '0.86rem', color: '#16181d' }}>Upload Footer Banner</div>
+                                        <div style={{ fontSize: '0.75rem', color: '#657080' }}>Displays social handles or callout at bottom</div>
+                                      </div>
+                                    )}
+                                    <div style={{ display: 'flex', gap: '0.4rem' }}>
+                                      <button
+                                        type="button"
+                                        disabled={isUploadingModalFooter}
+                                        onClick={() => modalFooterInputRef.current?.click()}
+                                        style={{
+                                          padding: '0.35rem 0.75rem',
+                                          borderRadius: 6,
+                                          border: '1px solid #d9dcd8',
+                                          background: '#fff',
+                                          color: '#16181d',
+                                          fontWeight: 600,
+                                          fontSize: '0.78rem',
+                                          cursor: 'pointer',
+                                          display: 'inline-flex',
+                                          alignItems: 'center',
+                                          gap: '0.35rem',
+                                        }}
+                                      >
+                                        {isUploadingModalFooter ? <LoaderCircle size={13} className="harvest-publish-spin" /> : <UploadCloud size={13} />} {modalFooterPreview ? 'Replace' : 'Upload Banner'}
+                                      </button>
+                                      {modalFooterPreview && (
+                                        <button
+                                          type="button"
+                                          onClick={() => clearModalBrandingAsset('footer')}
+                                          style={{
+                                            padding: '0.35rem 0.6rem',
+                                            borderRadius: 6,
+                                            border: '1px solid #fecaca',
+                                            background: '#fff',
+                                            color: '#b91c1c',
+                                            cursor: 'pointer',
+                                          }}
+                                        >
+                                          <Trash2 size={13} />
+                                        </button>
+                                      )}
+                                    </div>
+                                  </div>
+
+                                  <label style={{ fontSize: '0.82rem', fontWeight: 600, color: '#586273' }}>
+                                    Footer Banner Height: <strong style={{ color: '#16181d' }}>{modalFooterHeight}px</strong>
+                                    <input
+                                      type="range"
+                                      min="60"
+                                      max="260"
+                                      step="10"
+                                      value={modalFooterHeight}
+                                      onChange={(e) => setModalFooterHeight(Number(e.target.value))}
+                                      style={{ width: '100%', marginTop: '0.35rem', accentColor: '#1f6f4a' }}
+                                    />
+                                  </label>
+                                </div>
+                              )}
+                            </div>
+
                           </div>
 
                           {/* ── MODAL FOOTER ── */}
@@ -3712,6 +4315,10 @@ export default function StudioPage() {
                               )}
                               {outroMode === 'none' && (
                                 <span style={{ marginLeft: '0.5rem' }}>· Outro: <strong style={{ color: '#64748b' }}>None</strong></span>
+                              )}
+                              <span style={{ marginLeft: '0.5rem' }}>· Thumbnail: <strong style={{ color: modalThumbnailPath ? '#1f6f4a' : '#64748b' }}>{modalThumbnailPath ? 'Custom' : 'Auto-Frame'}</strong></span>
+                              {(modalWatermarkPath || modalHeaderPath || modalFooterPath) && (
+                                <span style={{ marginLeft: '0.5rem' }}>· Branding: <strong style={{ color: '#1f6f4a' }}>Active</strong></span>
                               )}
                             </div>
 

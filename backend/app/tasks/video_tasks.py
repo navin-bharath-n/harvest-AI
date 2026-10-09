@@ -1268,6 +1268,80 @@ def render_clip_task(clip_id: int):
                 except Exception as cta_err:
                     logger.error(f"Failed to apply CTA overlay ({cta_template}): {cta_err}", exc_info=True)
 
+        # ── Apply Watermark & Branding Studio at once during initial render ──
+        branding_data = edit_options.get("branding") or {}
+        wm_path = instructions.get("watermark_path") or edit_options.get("watermark_path") or branding_data.get("watermark_path")
+        hdr_path = instructions.get("header_image_path") or edit_options.get("header_image_path") or branding_data.get("header_image_path")
+        ftr_path = instructions.get("footer_image_path") or edit_options.get("footer_image_path") or branding_data.get("footer_image_path")
+
+        if wm_path or hdr_path or ftr_path:
+            branded_tmp = os.path.join(clips_dir, f"branded_{clip_id}_{uuid.uuid4().hex[:8]}.mp4")
+            try:
+                logger.info(f"Applying branding (watermark/header/footer) directly to rendered clip {clip_id}")
+                from app.services.watermark_service import watermark_service
+                watermark_service.apply_branding_to_video(
+                    input_video_path=output_path,
+                    output_video_path=branded_tmp,
+                    watermark_path=wm_path,
+                    watermark_position=instructions.get("watermark_position") or edit_options.get("watermark_position") or branding_data.get("watermark_position", "header"),
+                    watermark_scale=float(instructions.get("watermark_scale") or edit_options.get("watermark_scale") or branding_data.get("watermark_scale", 0.20)),
+                    watermark_opacity=float(instructions.get("watermark_opacity") or edit_options.get("watermark_opacity") or branding_data.get("watermark_opacity", 0.90)),
+                    watermark_mode=instructions.get("watermark_mode") or edit_options.get("watermark_mode") or branding_data.get("watermark_mode", "interval_2s"),
+                    header_image_path=hdr_path,
+                    header_height=int(instructions.get("header_height") or edit_options.get("header_height") or branding_data.get("header_height", 160)),
+                    footer_image_path=ftr_path,
+                    footer_height=int(instructions.get("footer_height") or edit_options.get("footer_height") or branding_data.get("footer_height", 180)),
+                )
+                if os.path.isfile(branded_tmp) and os.path.getsize(branded_tmp) > 0:
+                    import shutil
+                    shutil.move(branded_tmp, output_path)
+                    logger.info(f"Branding successfully burned into clip {clip_id}")
+            except Exception as brand_err:
+                logger.error(f"Failed to apply branding to clip {clip_id}: {brand_err}", exc_info=True)
+                if os.path.exists(branded_tmp):
+                    try:
+                        os.remove(branded_tmp)
+                    except Exception:
+                        pass
+
+        # ── Custom Thumbnail or Fallback Auto-Extracted Frame (Never blank!) ──
+        final_thumb_path = instructions.get("thumbnail_path") or edit_options.get("thumbnail_path")
+        if not final_thumb_path:
+            # Fallback method: automatically extract crisp frame from rendered video so thumbnail is never blank
+            try:
+                thumb_upload_dir = os.path.join(str(_BACKEND_DIR), "uploads", "thumbnails")
+                os.makedirs(thumb_upload_dir, exist_ok=True)
+                thumb_filename = f"thumb_{clip_id}_{uuid.uuid4().hex[:8]}.jpg"
+                thumb_local_path = os.path.join(thumb_upload_dir, thumb_filename)
+
+                clip_dur = max(0.1, end_time - start_time)
+                seek_time = "0.5" if clip_dur >= 1.0 else "0.0"
+                thumb_cmd = [
+                    "ffmpeg", "-y",
+                    "-ss", seek_time,
+                    "-i", output_path,
+                    "-vframes", "1",
+                    "-q:v", "2",
+                    thumb_local_path
+                ]
+                subprocess.run(thumb_cmd, capture_output=True, check=True)
+
+                if os.path.isfile(thumb_local_path) and os.path.getsize(thumb_local_path) > 0:
+                    from app.services import object_storage
+                    if object_storage.enabled():
+                        final_thumb_path = object_storage.upload_file(
+                            thumb_local_path, f"thumbnails/{thumb_filename}", "image/jpeg"
+                        )
+                        try:
+                            os.remove(thumb_local_path)
+                        except Exception:
+                            pass
+                    else:
+                        final_thumb_path = f"uploads/thumbnails/{thumb_filename}"
+                    logger.info(f"Auto-extracted fallback thumbnail for clip {clip_id}: {final_thumb_path}")
+            except Exception as th_err:
+                logger.warning(f"Failed to extract thumbnail frame for clip {clip_id}: {th_err}")
+
         # Cleanup intermediate files
         for fpath in [cropped_path, ass_path, subbed_path]:
             if os.path.exists(fpath) and fpath != output_path:
@@ -1296,10 +1370,16 @@ def render_clip_task(clip_id: int):
             if clip:
                 clip.storage_path = final_storage_path
                 clip.status = models.ClipStatus.COMPLETED
+                opts = dict(clip.edit_options or {})
+                if final_thumb_path:
+                    opts["thumbnail_path"] = final_thumb_path
+                clip.edit_options = opts
+                from sqlalchemy.orm.attributes import flag_modified
+                flag_modified(clip, "edit_options")
                 if clip.video:
                     clip.video.short_path = final_storage_path
                 db.commit()
-                logger.info(f"Successfully rendered clip {clip_id} to {final_storage_path}")
+                logger.info(f"Successfully rendered clip {clip_id} to {final_storage_path} (thumbnail: {final_thumb_path})")
         finally:
             db.close()
 

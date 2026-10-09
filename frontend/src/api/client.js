@@ -206,6 +206,31 @@ export const api = {
     return response.data;
   },
 
+  // Upload custom thumbnail before clip creation
+  uploadThumbnail: async (file) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const response = await client.post('/videos/upload-thumbnail', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+    });
+    return response.data;
+  },
+
+  // Upload branding asset (watermark logo, header banner, footer banner) before clip creation
+  uploadBrandingImageGeneral: async (file, assetType = 'watermark') => {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('asset_type', assetType);
+    const response = await client.post('/videos/upload-branding-image', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+    });
+    return response.data;
+  },
+
   selectMoment: async (videoId, momentId, captionStyle, options = {}) => {
     const response = await client.post(`/videos/${videoId}/select-moment`, {
       moment_id: momentId,
@@ -231,6 +256,16 @@ export const api = {
       outro_music_style: options.outroMusicStyle || 'upbeat',
       template_id: options.templateId || null,
       template_storage_path: options.templateStoragePath || null,
+      watermark_path: options.watermarkPath || null,
+      watermark_position: options.watermarkPosition || 'header',
+      watermark_scale: typeof options.watermarkScale === 'number' ? options.watermarkScale : 0.20,
+      watermark_opacity: typeof options.watermarkOpacity === 'number' ? options.watermarkOpacity : 0.90,
+      watermark_mode: options.watermarkMode || 'interval_2s',
+      header_image_path: options.headerImagePath || null,
+      header_height: typeof options.headerHeight === 'number' ? options.headerHeight : 160,
+      footer_image_path: options.footerImagePath || null,
+      footer_height: typeof options.footerHeight === 'number' ? options.footerHeight : 180,
+      thumbnail_path: options.thumbnailPath || null,
     });
     return response.data;
   },
