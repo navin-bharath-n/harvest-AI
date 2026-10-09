@@ -1763,18 +1763,38 @@ def apply_clip_branding(
             input_video_path=source_video,
             output_video_path=local_output_path,
             watermark_path=request.watermark_path,
-            watermark_position=request.watermark_position or "header",
-            watermark_scale=float(request.watermark_scale or 0.20),
-            watermark_opacity=float(request.watermark_opacity or 0.90),
+            watermark_position=request.watermark_position or "top-right",
+            watermark_scale=float(request.watermark_scale or 0.16),
+            watermark_opacity=float(request.watermark_opacity or 0.85),
             watermark_mode=request.watermark_mode or "always",
             header_image_path=request.header_image_path,
             header_height=request.header_height or 160,
             footer_image_path=request.footer_image_path,
             footer_height=request.footer_height or 180,
         )
+
+        # Append Outro Template or Custom CTA Outro if selected on publish page
+        if request.template_id or request.template_storage_path:
+            target_tmpl = request.template_storage_path or request.template_id
+            logger.info(f"Appending Cloudflare R2 outro template '{target_tmpl}' to clip {clip_id}")
+            from app.services.template_service import template_service
+            template_service.append_template_to_video(local_output_path, target_tmpl, with_audio=True)
+        elif request.enable_outro:
+            logger.info(f"Appending custom 9:16 CTA outro to clip {clip_id}")
+            from app.services.cta_overlay_service import cta_overlay_service
+            cta_overlay_service.append_9_16_outro(
+                video_path=local_output_path,
+                like_text=request.outro_like_text or "Like",
+                comment_text=request.outro_comment_text or "Comment",
+                subscribe_text=request.outro_subscribe_text or "Subscribe",
+                follow_text=request.outro_follow_text or "",
+                long_text=request.outro_custom_text or "",
+                duration=float(request.outro_duration or 3.0),
+                music_preset=request.outro_music_style or "upbeat",
+            )
     except Exception as exc:
-        logger.error(f"Failed to apply branding to clip {clip_id}: {exc}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to apply branding to video: {str(exc)}")
+        logger.error(f"Failed to apply branding / outro to clip {clip_id}: {exc}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to apply branding or outro to video: {str(exc)}")
 
     # Store in remote object storage if enabled
     from app.services import object_storage

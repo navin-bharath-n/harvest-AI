@@ -18,7 +18,13 @@ import {
   Users,
   Video,
   Clock,
-  Check
+  Check,
+  Film,
+  Wand2,
+  X,
+  Play,
+  Pause,
+  Volume2
 } from 'lucide-react';
 import { api } from '../api/client';
 import { useAuth } from '../context/AuthContext';
@@ -117,6 +123,29 @@ export default function SocialPublishPage() {
   const [isBurningBranding, setIsBurningBranding] = useState(false);
   const [brandingBurned, setBrandingBurned] = useState(false);
 
+  // ──────────────────────────────────────────────────────────────────────────
+  // Cloudflare R2 Video Templates & CTA Outro State
+  // ──────────────────────────────────────────────────────────────────────────
+  const [templates, setTemplates] = useState([]);
+  const [templatesLoading, setTemplatesLoading] = useState(false);
+  const [selectedTemplateId, setSelectedTemplateId] = useState(null);
+  const [outroMode, setOutroMode] = useState('none'); // 'none' | 'template' | 'custom'
+  const [templateFilterCategory, setTemplateFilterCategory] = useState('all');
+  const [playingTemplateId, setPlayingTemplateId] = useState(null);
+
+  // Custom 9:16 Creator Outro
+  const [outroDuration, setOutroDuration] = useState(3.0);
+  const [showLikeAction, setShowLikeAction] = useState(true);
+  const [outroLikeText, setOutroLikeText] = useState('Like');
+  const [showCommentAction, setShowCommentAction] = useState(true);
+  const [outroCommentText, setOutroCommentText] = useState('Comment');
+  const [showSubscribeAction, setShowSubscribeAction] = useState(true);
+  const [outroSubscribeText, setOutroSubscribeText] = useState('Subscribe');
+  const [showFollowAction, setShowFollowAction] = useState(true);
+  const [outroFollowText, setOutroFollowText] = useState('Follow');
+  const [outroLongText, setOutroLongText] = useState('');
+  const [outroMusicStyle, setOutroMusicStyle] = useState('upbeat');
+
   const refreshConnections = useCallback(async () => {
     if (!currentUserId) return [];
     try {
@@ -140,9 +169,14 @@ export default function SocialPublishPage() {
       }
       setLoading(true);
       try {
-        const [clipResult] = await Promise.all([api.getClip(clipId), refreshConnections()]);
+        const [clipResult, , tmplData] = await Promise.all([
+          api.getClip(clipId),
+          refreshConnections(),
+          api.getTemplates().catch(() => [])
+        ]);
         if (!active) return;
         setClip(clipResult);
+        setTemplates(tmplData || []);
         setTitle((current) => current || clipResult.title || 'Harvest short');
 
         // Restore any existing custom thumbnail
@@ -167,6 +201,24 @@ export default function SocialPublishPage() {
           if (existingBranding.footer_image_path) setFooterPath(existingBranding.footer_image_path);
           if (existingBranding.footer_height) setFooterHeight(existingBranding.footer_height);
           if (clipResult.edit_options?.branding_burned) setBrandingBurned(true);
+        }
+
+        // Restore existing outro configuration
+        const existingTemplateId = clipResult.edit_options?.template_id || existingBranding?.template_id;
+        const existingCustomOutro = clipResult.edit_options?.enable_outro || existingBranding?.enable_outro;
+        if (existingTemplateId) {
+          setSelectedTemplateId(existingTemplateId);
+          setOutroMode('template');
+        } else if (existingCustomOutro) {
+          setOutroMode('custom');
+          const eo = clipResult.edit_options || existingBranding || {};
+          if (eo.outro_like_text) setOutroLikeText(eo.outro_like_text);
+          if (eo.outro_comment_text) setOutroCommentText(eo.outro_comment_text);
+          if (eo.outro_subscribe_text) setOutroSubscribeText(eo.outro_subscribe_text);
+          if (eo.outro_follow_text) setOutroFollowText(eo.outro_follow_text);
+          if (eo.outro_custom_text) setOutroLongText(eo.outro_custom_text);
+          if (eo.outro_duration) setOutroDuration(Number(eo.outro_duration));
+          if (eo.outro_music_style) setOutroMusicStyle(eo.outro_music_style);
         }
 
         if (clipResult.status === 'completed' && clipResult.storage_path) {
@@ -322,14 +374,18 @@ export default function SocialPublishPage() {
   // ──────────────────────────────────────────────────────────────────────────
   const burnBrandingIntoVideo = async () => {
     if (!clipId || isBurningBranding) return;
-    if (!watermarkPath && !headerPath && !footerPath) {
+    const selectedTemplate = templates.find((t) => t.id === selectedTemplateId);
+    const isTemplateMode = outroMode === 'template' && selectedTemplate;
+    const isCustomMode = outroMode === 'custom';
+
+    if (!watermarkPath && !headerPath && !footerPath && !isTemplateMode && !isCustomMode && !thumbnailPath) {
       setMessageError(true);
-      setMessage('Please upload a watermark logo, header banner, or footer banner first.');
+      setMessage('Please select an outro template, upload a logo, or attach a thumbnail first.');
       return;
     }
     setIsBurningBranding(true);
     setMessageError(false);
-    setMessage('Rendering and burning branding into video with FFmpeg…');
+    setMessage('Rendering customizations and burning into video with FFmpeg…');
     try {
       const payload = {
         watermark_path: watermarkPath || null,
@@ -342,6 +398,16 @@ export default function SocialPublishPage() {
         footer_image_path: footerPath || null,
         footer_height: Number(footerHeight),
         thumbnail_path: thumbnailPath || null,
+        template_id: isTemplateMode ? selectedTemplate.id : null,
+        template_storage_path: isTemplateMode ? selectedTemplate.storage_path : null,
+        enable_outro: isCustomMode,
+        outro_like_text: isCustomMode && showLikeAction ? outroLikeText : '',
+        outro_comment_text: isCustomMode && showCommentAction ? outroCommentText : '',
+        outro_subscribe_text: isCustomMode && showSubscribeAction ? outroSubscribeText : '',
+        outro_follow_text: isCustomMode && showFollowAction ? outroFollowText : '',
+        outro_custom_text: isCustomMode ? outroLongText : '',
+        outro_duration: isCustomMode ? outroDuration : (selectedTemplate?.duration || 3.0),
+        outro_music_style: outroMusicStyle || 'upbeat',
       };
       const updatedClip = await api.applyClipBranding(clipId, payload);
       setClip(updatedClip);
@@ -351,10 +417,10 @@ export default function SocialPublishPage() {
       const newMediaUrl = await api.getClipMedia(clipId);
       setVideoUrl(newMediaUrl);
 
-      setMessage('Branding successfully burned into video! The video player now reflects the final render.');
+      setMessage('Branding & outro successfully burned into video! The video player now reflects the final render.');
     } catch (err) {
       setMessageError(true);
-      setMessage(`Failed to burn branding: ${err.response?.data?.detail || err.message}`);
+      setMessage(`Failed to process video: ${err.response?.data?.detail || err.message}`);
     } finally {
       setIsBurningBranding(false);
     }
@@ -439,6 +505,9 @@ export default function SocialPublishPage() {
   };
 
   const hasAnyBranding = Boolean(watermarkPreviewUrl || headerPreviewUrl || footerPreviewUrl || watermarkPath || headerPath || footerPath);
+  const selectedTemplate = templates.find((t) => t.id === selectedTemplateId);
+  const hasAnyOutro = Boolean((outroMode === 'template' && selectedTemplate) || outroMode === 'custom');
+  const hasAnyCustomization = Boolean(hasAnyBranding || hasAnyOutro);
 
   return (
     <div style={{ minHeight: '100vh', background: '#f8f8f5', color: '#16181d', fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' }}>
@@ -882,28 +951,261 @@ export default function SocialPublishPage() {
                     </label>
                   </div>
                 )}
+              </section>
 
-                {/* Burn Branding Action Button */}
+              {/* 4. Creator Outro & Call to Action Cards */}
+              <section style={{ padding: '1.35rem', background: '#fff', border: '1px solid #e6e6e1', borderRadius: 12 }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.4rem' }}>
+                  <h2 style={{ margin: 0, fontSize: '1.18rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <Film size={20} color="#1f6f4a" /> 4. Outro & Call to Action Cards
+                  </h2>
+                  {outroMode === 'template' && selectedTemplate ? (
+                    <span style={{ fontSize: '0.74rem', background: '#eef6f0', color: '#1f6f4a', border: '1px solid #cce5d4', padding: '0.2rem 0.6rem', borderRadius: 99, fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}>
+                      <Check size={12} /> {selectedTemplate.title} ({selectedTemplate.duration}s)
+                    </span>
+                  ) : outroMode === 'custom' ? (
+                    <span style={{ fontSize: '0.74rem', background: '#eef6f0', color: '#1f6f4a', border: '1px solid #cce5d4', padding: '0.2rem 0.6rem', borderRadius: 99, fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}>
+                      <Check size={12} /> Custom 9:16 CTA ({outroDuration}s)
+                    </span>
+                  ) : (
+                    <span style={{ fontSize: '0.74rem', background: '#f1f5f9', color: '#64748b', padding: '0.2rem 0.6rem', borderRadius: 99, fontWeight: 600 }}>
+                      No Outro Selected
+                    </span>
+                  )}
+                </div>
+                <p style={{ margin: '0 0 1.1rem', color: '#657080', fontSize: '0.88rem' }}>
+                  Optionally append a professional animated outro screen, subscribe alert, or call-to-action card to the end of your short.
+                </p>
+
+                {/* Outro Mode Switcher */}
+                <div style={{ display: 'flex', gap: '0.35rem', padding: '0.3rem', background: '#f4f5f3', borderRadius: 8, marginBottom: '1.25rem' }}>
+                  {[
+                    { id: 'none', label: 'No Outro', icon: X },
+                    { id: 'template', label: 'Cloudflare R2 Templates', icon: Film },
+                    { id: 'custom', label: 'Custom 9:16 Builder', icon: Wand2 },
+                  ].map((tab) => {
+                    const TabIcon = tab.icon;
+                    return (
+                      <button
+                        key={tab.id}
+                        type="button"
+                        onClick={() => { setOutroMode(tab.id); setBrandingBurned(false); }}
+                        style={{
+                          flex: 1,
+                          padding: '0.55rem 0.75rem',
+                          border: 0,
+                          borderRadius: 6,
+                          background: outroMode === tab.id ? '#fff' : 'transparent',
+                          color: outroMode === tab.id ? '#16181d' : '#657080',
+                          fontWeight: outroMode === tab.id ? 700 : 550,
+                          fontSize: '0.86rem',
+                          cursor: 'pointer',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: '0.4rem',
+                          boxShadow: outroMode === tab.id ? '0 1px 4px rgba(0,0,0,0.06)' : 'none',
+                          transition: 'all 0.15s ease',
+                        }}
+                      >
+                        <TabIcon size={14} />
+                        {tab.label}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* MODE 1: CLOUDFLARE R2 TEMPLATES */}
+                {outroMode === 'template' && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                    {/* Category Filter Pills */}
+                    <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap' }}>
+                      {[
+                        { id: 'all', label: 'All Templates' },
+                        { id: 'Outro', label: 'Outros' },
+                        { id: 'Subscribe', label: 'Subscribe' },
+                        { id: 'Profile Outro', label: 'Profile Outros' },
+                        { id: 'All-in-One', label: 'All-in-One' },
+                        { id: 'Social Story', label: 'Social Story' },
+                      ].map((cat) => (
+                        <button
+                          key={cat.id}
+                          type="button"
+                          onClick={() => setTemplateFilterCategory(cat.id)}
+                          style={{
+                            fontSize: '0.78rem',
+                            fontWeight: templateFilterCategory === cat.id ? 700 : 500,
+                            padding: '0.3rem 0.65rem',
+                            borderRadius: '6px',
+                            border: templateFilterCategory === cat.id ? '1px solid #1f6f4a' : '1px solid #e2e8f0',
+                            backgroundColor: templateFilterCategory === cat.id ? '#ecfdf5' : '#ffffff',
+                            color: templateFilterCategory === cat.id ? '#1f6f4a' : '#475569',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          {cat.label}
+                        </button>
+                      ))}
+                    </div>
+
+                    {/* Template Cards Grid */}
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: '0.85rem', maxHeight: '420px', overflowY: 'auto', paddingRight: '4px' }}>
+                      {templates
+                        .filter((t) => templateFilterCategory === 'all' || t.category === templateFilterCategory)
+                        .map((tmpl) => {
+                          const isSelected = selectedTemplateId === tmpl.id;
+                          return (
+                            <div
+                              key={tmpl.id}
+                              onClick={() => { setSelectedTemplateId(tmpl.id); setBrandingBurned(false); }}
+                              style={{
+                                border: isSelected ? '2px solid #1f6f4a' : '1px solid #e2e8f0',
+                                borderRadius: 10,
+                                overflow: 'hidden',
+                                background: isSelected ? '#f6fbf8' : '#fff',
+                                cursor: 'pointer',
+                                transition: 'all 0.15s ease',
+                                display: 'flex',
+                                flexDirection: 'column',
+                              }}
+                            >
+                              <div style={{ position: 'relative', width: '100%', height: 110, background: '#111827', overflow: 'hidden' }}>
+                                {tmpl.thumb_url ? (
+                                  <img src={tmpl.thumb_url} alt={tmpl.title} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                                ) : (
+                                  <div style={{ width: '100%', height: '100%', display: 'grid', placeItems: 'center', color: '#94a3b8' }}>
+                                    <Film size={24} />
+                                  </div>
+                                )}
+                                <span style={{ position: 'absolute', bottom: 6, right: 6, background: 'rgba(0,0,0,0.75)', color: '#fff', fontSize: '0.68rem', padding: '2px 5px', borderRadius: 4, fontWeight: 700 }}>
+                                  {tmpl.duration}s
+                                </span>
+                                {isSelected && (
+                                  <span style={{ position: 'absolute', top: 6, right: 6, background: '#1f6f4a', color: '#fff', width: 20, height: 20, borderRadius: '50%', display: 'grid', placeItems: 'center' }}>
+                                    <Check size={12} />
+                                  </span>
+                                )}
+                              </div>
+                              <div style={{ padding: '0.65rem', flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+                                <div style={{ fontWeight: 700, fontSize: '0.82rem', color: '#1e293b', marginBottom: '0.2rem', lineHeight: 1.3 }}>
+                                  {tmpl.title}
+                                </div>
+                                <div style={{ fontSize: '0.72rem', color: '#64748b' }}>
+                                  {tmpl.badge || tmpl.category}
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                    </div>
+                  </div>
+                )}
+
+                {/* MODE 2: CUSTOM 9:16 BUILDER */}
+                {outroMode === 'custom' && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', background: '#fcfcfb', border: '1px solid #e6e6e1', borderRadius: 9, padding: '1rem' }}>
+                    <div style={{ fontWeight: 700, fontSize: '0.9rem', color: '#16181d' }}>Action Buttons to Display</div>
+                    <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap' }}>
+                      {[
+                        { label: '👍 Like', active: showLikeAction, toggle: () => setShowLikeAction(!showLikeAction) },
+                        { label: '💬 Comment', active: showCommentAction, toggle: () => setShowCommentAction(!showCommentAction) },
+                        { label: '🔔 Subscribe', active: showSubscribeAction, toggle: () => setShowSubscribeAction(!showSubscribeAction) },
+                        { label: '❤️ Follow', active: showFollowAction, toggle: () => setShowFollowAction(!showFollowAction) },
+                      ].map((btn, idx) => (
+                        <button
+                          key={idx}
+                          type="button"
+                          onClick={() => { btn.toggle(); setBrandingBurned(false); }}
+                          style={{
+                            padding: '0.45rem 0.8rem',
+                            borderRadius: 6,
+                            border: btn.active ? '1.5px solid #1f6f4a' : '1px solid #d9dcd8',
+                            background: btn.active ? '#eef6f0' : '#fff',
+                            color: btn.active ? '#1f6f4a' : '#586273',
+                            fontWeight: btn.active ? 700 : 500,
+                            fontSize: '0.82rem',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          {btn.label}
+                        </button>
+                      ))}
+                    </div>
+
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.85rem' }}>
+                      <label style={{ fontSize: '0.82rem', fontWeight: 600, color: '#586273' }}>
+                        Outro Duration: <strong style={{ color: '#16181d' }}>{outroDuration}s</strong>
+                        <input
+                          type="range"
+                          min="2.0"
+                          max="5.0"
+                          step="0.5"
+                          value={outroDuration}
+                          onChange={(e) => { setOutroDuration(Number(e.target.value)); setBrandingBurned(false); }}
+                          style={{ width: '100%', marginTop: '0.35rem', accentColor: '#1f6f4a' }}
+                        />
+                      </label>
+                      <label style={{ fontSize: '0.82rem', fontWeight: 600, color: '#586273' }}>
+                        Music Style:
+                        <select
+                          value={outroMusicStyle}
+                          onChange={(e) => { setOutroMusicStyle(e.target.value); setBrandingBurned(false); }}
+                          style={{ display: 'block', width: '100%', marginTop: '0.35rem', padding: '0.45rem', borderRadius: 6, border: '1px solid #d9dcd8', background: '#fff', fontSize: '0.82rem' }}
+                        >
+                          <option value="upbeat">Upbeat / Energetic</option>
+                          <option value="chill">Chill / Lo-Fi</option>
+                          <option value="cinematic">Cinematic</option>
+                          <option value="pop">Modern Pop</option>
+                        </select>
+                      </label>
+                    </div>
+
+                    <label style={{ fontSize: '0.82rem', fontWeight: 600, color: '#586273' }}>
+                      Custom Outro Text / Channel Link (Optional):
+                      <input
+                        type="text"
+                        placeholder="e.g. Follow @harvestai for more tips!"
+                        value={outroLongText}
+                        onChange={(e) => { setOutroLongText(e.target.value); setBrandingBurned(false); }}
+                        style={{ display: 'block', width: '100%', boxSizing: 'border-box', marginTop: '0.35rem', padding: '0.55rem 0.7rem', border: '1px solid #d9dcd8', borderRadius: 6, fontSize: '0.84rem' }}
+                      />
+                    </label>
+                  </div>
+                )}
+
+                {/* MODE 3: NO OUTRO */}
+                {outroMode === 'none' && (
+                  <div style={{ padding: '1rem', borderRadius: 8, background: '#f8fafc', border: '1px dashed #cbd5e1', display: 'flex', alignItems: 'center', gap: '0.65rem', color: '#475569', fontSize: '0.84rem' }}>
+                    <CheckCircle2 size={16} color="#10b981" />
+                    <span><strong>No Outro Screen:</strong> The vertical short will finish immediately after the video moment ends without appending any outro screen.</span>
+                  </div>
+                )}
+
+                {/* Combined Burn / Render Customizations Button */}
                 <div style={{ marginTop: '1.25rem', paddingTop: '1.1rem', borderTop: '1px solid #f0f0ed', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.8rem' }}>
                   <div style={{ fontSize: '0.82rem', color: '#657080' }}>
-                    {brandingBurned ? '✓ Branding is permanently burned into the video.' : 'Previewing live on video player. Click below to burn permanently.'}
+                    {brandingBurned
+                      ? '✓ Customizations are burned into the video and reflected in the player.'
+                      : hasAnyCustomization
+                      ? 'Customizations ready. Click to render & burn into video with FFmpeg.'
+                      : 'Customize logo, branding, or outro above, then click to burn.'}
                   </div>
                   <button
                     type="button"
-                    disabled={isBurningBranding || (!watermarkPath && !headerPath && !footerPath)}
+                    disabled={isBurningBranding || (!hasAnyCustomization && !thumbnailPath)}
                     onClick={burnBrandingIntoVideo}
                     style={{
                       ...primaryButton,
                       background: brandingBurned ? '#2563eb' : '#1f6f4a',
                       borderColor: brandingBurned ? '#2563eb' : '#1f6f4a',
-                      opacity: (!watermarkPath && !headerPath && !footerPath) ? 0.6 : 1,
-                      cursor: (!watermarkPath && !headerPath && !footerPath) ? 'not-allowed' : 'pointer',
+                      opacity: (!hasAnyCustomization && !thumbnailPath) ? 0.6 : 1,
+                      cursor: (!hasAnyCustomization && !thumbnailPath) ? 'not-allowed' : 'pointer',
                     }}
                   >
                     {isBurningBranding ? (
                       <><LoaderCircle size={16} className="harvest-publish-spin" /> Rendering with FFmpeg…</>
                     ) : (
-                      <><Sparkles size={16} /> {brandingBurned ? 'Re-Burn Branding to Video' : 'Burn Branding into Video'}</>
+                      <><Sparkles size={16} /> {brandingBurned ? 'Re-Apply Customizations' : 'Burn Branding & Outro into Video'}</>
                     )}
                   </button>
                 </div>

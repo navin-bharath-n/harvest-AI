@@ -37,15 +37,25 @@ class MasterGenerateRequest(BaseModel):
 
 class ClipBrandingRequest(BaseModel):
     watermark_path: Optional[str] = None
-    watermark_position: Optional[str] = "header"
-    watermark_scale: Optional[float] = 0.20
-    watermark_opacity: Optional[float] = 0.90
+    watermark_position: Optional[str] = "top-right"
+    watermark_scale: Optional[float] = 0.16
+    watermark_opacity: Optional[float] = 0.85
     watermark_mode: Optional[str] = "always"
     header_image_path: Optional[str] = None
     header_height: Optional[int] = 160
     footer_image_path: Optional[str] = None
     footer_height: Optional[int] = 180
     thumbnail_path: Optional[str] = None
+    template_id: Optional[str] = None
+    template_storage_path: Optional[str] = None
+    enable_outro: Optional[bool] = False
+    outro_like_text: Optional[str] = "Like"
+    outro_comment_text: Optional[str] = "Comment"
+    outro_subscribe_text: Optional[str] = "Subscribe"
+    outro_follow_text: Optional[str] = ""
+    outro_custom_text: Optional[str] = ""
+    outro_duration: Optional[float] = 3.0
+    outro_music_style: Optional[str] = "upbeat"
 
 class ClipPublishRequest(BaseModel):
     platforms: list[str]
