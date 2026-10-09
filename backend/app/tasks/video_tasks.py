@@ -1312,6 +1312,7 @@ def render_clip_task(clip_id: int):
                     header_height=int(instructions.get("header_height") or edit_options.get("header_height") or branding_data.get("header_height", 160)),
                     footer_image_path=ftr_path,
                     footer_height=int(instructions.get("footer_height") or edit_options.get("footer_height") or branding_data.get("footer_height", 180)),
+                    footer_position=instructions.get("footer_position") or edit_options.get("footer_position") or branding_data.get("footer_position", "bottom"),
                 )
                 if os.path.isfile(branded_tmp) and os.path.getsize(branded_tmp) > 0:
                     import shutil
@@ -1700,6 +1701,7 @@ def publish_video_task(clip_id: int, config: dict):
                         header_height=int(branding_cfg.get("header_height", 160)),
                         footer_image_path=branding_cfg.get("footer_image_path"),
                         footer_height=int(branding_cfg.get("footer_height", 180)),
+                        footer_position=branding_cfg.get("footer_position", "bottom"),
                     )
                     video_path = branded_tmp
                 except Exception as b_err:

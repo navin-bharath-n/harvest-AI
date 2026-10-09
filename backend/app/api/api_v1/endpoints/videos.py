@@ -1771,6 +1771,7 @@ def apply_clip_branding(
             header_height=request.header_height or 160,
             footer_image_path=request.footer_image_path,
             footer_height=request.footer_height or 180,
+            footer_position=request.footer_position or "bottom",
         )
 
         # Append Outro Template or Custom CTA Outro if selected on publish page

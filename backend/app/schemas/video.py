@@ -45,6 +45,7 @@ class ClipBrandingRequest(BaseModel):
     header_height: Optional[int] = 160
     footer_image_path: Optional[str] = None
     footer_height: Optional[int] = 180
+    footer_position: Optional[str] = "bottom"
     thumbnail_path: Optional[str] = None
     template_id: Optional[str] = None
     template_storage_path: Optional[str] = None

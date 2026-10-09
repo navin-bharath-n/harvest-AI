@@ -74,10 +74,11 @@ class WatermarkService:
         header_height: Optional[int] = 160,
         footer_image_path: Optional[str] = None,
         footer_height: Optional[int] = 180,
+        footer_position: Optional[str] = "bottom",
     ) -> str:
         """
         Overlays header banners, footer banners, and/or channel watermark logos onto a video clip.
-        Supports customizable image sizes and 2-second interval visibility toggling.
+        Supports customizable image sizes, draggable vertical positions, and 2-second interval visibility toggling.
         """
         local_video = _resolve_local_file(input_video_path)
         if not local_video or not os.path.exists(local_video):
@@ -106,7 +107,7 @@ class WatermarkService:
             current_stream = out_label
             input_idx += 1
 
-        # 2. Footer Banner Image
+        # 2. Footer Banner Image (Supports draggable positioning across height)
         local_footer = _resolve_local_file(footer_image_path) if footer_image_path else None
         if local_footer and os.path.isfile(local_footer):
             inputs.extend(["-i", local_footer])
@@ -117,7 +118,26 @@ class WatermarkService:
             scaled_label = f"f_scale_{input_idx}"
             out_label = f"v_ftr_{input_idx}"
             filter_chains.append(f"[{input_idx}:v]scale={video_w}:{fh}[{scaled_label}]")
-            filter_chains.append(f"[{current_stream}][{scaled_label}]overlay=0:{video_h - fh}[{out_label}]")
+
+            # Determine Y position: default is bottom (video_h - fh)
+            # Supports 'bottom', 'top', or 'custom:{y_percent}'
+            f_pos = str(footer_position or "bottom").lower().strip()
+            if f_pos.startswith("custom:") or f_pos.startswith("coords:"):
+                try:
+                    parts = f_pos.split(":")
+                    y_pct = float(parts[-1])
+                    overlay_y = int(video_h * (y_pct / 100.0) - (fh / 2.0))
+                    overlay_y = max(0, min(video_h - fh, overlay_y))
+                except Exception:
+                    overlay_y = video_h - fh
+            elif f_pos == "top":
+                overlay_y = 0
+            elif f_pos in ("center", "middle"):
+                overlay_y = max(0, (video_h - fh) // 2)
+            else:
+                overlay_y = video_h - fh
+
+            filter_chains.append(f"[{current_stream}][{scaled_label}]overlay=0:{overlay_y}[{out_label}]")
             current_stream = out_label
             input_idx += 1
 
@@ -125,7 +145,7 @@ class WatermarkService:
         local_wm = _resolve_local_file(watermark_path) if watermark_path else None
         if local_wm and os.path.isfile(local_wm):
             inputs.extend(["-i", local_wm])
-            scale_val = max(0.06, min(0.50, float(watermark_scale or 0.20)))
+            scale_val = max(0.04, min(1.0, float(watermark_scale or 0.20)))
             wm_w = int(video_w * scale_val)
             wm_w = wm_w - (wm_w % 2)
             opacity_val = max(0.10, min(1.0, float(watermark_opacity or 0.90)))
@@ -140,7 +160,24 @@ class WatermarkService:
             pad_x = max(16, int(video_w * 0.03))
             pad_y = max(16, int(video_h * 0.02))
 
-            if pos == "top-left":
+            if pos.startswith("custom:") or pos.startswith("coords:"):
+                try:
+                    parts = pos.split(":")
+                    x_pct = float(parts[1])
+                    y_pct = float(parts[2])
+                    x_ratio = max(0.0, min(1.0, x_pct / 100.0))
+                    y_ratio = max(0.0, min(1.0, y_pct / 100.0))
+                    out_label = f"v_wm_{input_idx}"
+                    filter_chains.append(
+                        f"[{current_stream}][{scaled_label}]overlay=x='min(max(0, (W-w)*{x_ratio:.4f}), W-w)':y='min(max(0, (H-h)*{y_ratio:.4f}), H-h)'{enable_expr}[{out_label}]"
+                    )
+                    current_stream = out_label
+                except Exception as parse_err:
+                    logger.warning(f"Failed to parse custom watermark position '{pos}': {parse_err}")
+                    out_label = f"v_wm_{input_idx}"
+                    filter_chains.append(f"[{current_stream}][{scaled_label}]overlay=W-w-{pad_x}:{pad_y}{enable_expr}[{out_label}]")
+                    current_stream = out_label
+            elif pos == "top-left":
                 out_label = f"v_wm_{input_idx}"
                 filter_chains.append(f"[{current_stream}][{scaled_label}]overlay={pad_x}:{pad_y}{enable_expr}[{out_label}]")
                 current_stream = out_label
@@ -159,6 +196,10 @@ class WatermarkService:
             elif pos in ("footer", "bottom"):
                 out_label = f"v_wm_{input_idx}"
                 filter_chains.append(f"[{current_stream}][{scaled_label}]overlay=(W-w)/2:H-h-{pad_y}{enable_expr}[{out_label}]")
+                current_stream = out_label
+            elif pos in ("center", "middle"):
+                out_label = f"v_wm_{input_idx}"
+                filter_chains.append(f"[{current_stream}][{scaled_label}]overlay=(W-w)/2:(H-h)/2{enable_expr}[{out_label}]")
                 current_stream = out_label
             elif pos == "header_and_footer":
                 # Watermark displayed at both header and footer

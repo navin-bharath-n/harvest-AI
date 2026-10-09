@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   ArrowLeft,
+  ArrowRight,
   Camera,
   CheckCircle2,
   Download,
@@ -24,7 +25,8 @@ import {
   X,
   Play,
   Pause,
-  Volume2
+  Volume2,
+  Move
 } from 'lucide-react';
 import { api } from '../api/client';
 import { useAuth } from '../context/AuthContext';
@@ -95,33 +97,133 @@ export default function SocialPublishPage() {
   const thumbInputRef = useRef(null);
 
   // ──────────────────────────────────────────────────────────────────────────
-  // Watermark, Header & Footer Branding State
+  // Watermark & Footer Branding State
   // ──────────────────────────────────────────────────────────────────────────
-  const [activeBrandingTab, setActiveBrandingTab] = useState('watermark'); // 'watermark' | 'header' | 'footer'
+  const [activeBrandingTab, setActiveBrandingTab] = useState('watermark'); // 'watermark' | 'footer'
 
-  // Watermark (Channel logo, e.g. "nb")
+  // Watermark (Channel logo or image overlay)
   const [watermarkPreviewUrl, setWatermarkPreviewUrl] = useState(null);
   const [watermarkPath, setWatermarkPath] = useState(null);
-  const [watermarkPosition, setWatermarkPosition] = useState('header'); // 'header', 'footer', 'top-left', 'top-right', 'bottom-left', 'bottom-right', 'header_and_footer'
-  const [watermarkScale, setWatermarkScale] = useState(20); // 8% to 40% of video width
+  const [watermarkPosition, setWatermarkPosition] = useState('top-right');
+  const [watermarkPos, setWatermarkPos] = useState({ x: 84, y: 8 }); // % coordinates from top-left
+  const [isDraggingWatermark, setIsDraggingWatermark] = useState(false);
+  const videoContainerRef = useRef(null);
+
+  const [watermarkScale, setWatermarkScale] = useState(20); // 8% to 100% of video width
   const [watermarkOpacity, setWatermarkOpacity] = useState(90); // 40% to 100%
   const [watermarkMode, setWatermarkMode] = useState('interval_2s'); // 'interval_2s' | 'always'
   const watermarkInputRef = useRef(null);
-
-  // Header Banner
-  const [headerPreviewUrl, setHeaderPreviewUrl] = useState(null);
-  const [headerPath, setHeaderPath] = useState(null);
-  const [headerHeight, setHeaderHeight] = useState(160); // 60px to 260px
-  const headerInputRef = useRef(null);
 
   // Footer Banner
   const [footerPreviewUrl, setFooterPreviewUrl] = useState(null);
   const [footerPath, setFooterPath] = useState(null);
   const [footerHeight, setFooterHeight] = useState(180); // 60px to 260px
+  const [footerPos, setFooterPos] = useState({ y: 94 }); // % Y coordinate from top
+  const [footerPosition, setFooterPosition] = useState('bottom');
+  const [isDraggingFooter, setIsDraggingFooter] = useState(false);
   const footerInputRef = useRef(null);
 
   const [isBurningBranding, setIsBurningBranding] = useState(false);
+  const burningBranding = isBurningBranding;
   const [brandingBurned, setBrandingBurned] = useState(false);
+  const [hasRenderedOnce, setHasRenderedOnce] = useState(false);
+  const [currentStage, setCurrentStage] = useState('customize'); // 'customize' | 'publish'
+
+  // Handle live interactive dragging of the watermark on the video player
+  const handleWatermarkMouseDown = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingWatermark(true);
+  };
+
+  const handleWatermarkTouchStart = (e) => {
+    e.stopPropagation();
+    setIsDraggingWatermark(true);
+  };
+
+  useEffect(() => {
+    if (!isDraggingWatermark) return;
+
+    const handlePointerMove = (e) => {
+      if (!videoContainerRef.current) return;
+      const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+      const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+      const rect = videoContainerRef.current.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+
+      let xPct = ((clientX - rect.left) / rect.width) * 100;
+      let yPct = ((clientY - rect.top) / rect.height) * 100;
+
+      // Constrain inside frame with safe margin
+      xPct = Math.max(5, Math.min(95, Math.round(xPct * 10) / 10));
+      yPct = Math.max(5, Math.min(95, Math.round(yPct * 10) / 10));
+
+      setWatermarkPos({ x: xPct, y: yPct });
+      setWatermarkPosition(`custom:${xPct}:${yPct}`);
+    };
+
+    const handlePointerUp = () => {
+      setIsDraggingWatermark(false);
+    };
+
+    window.addEventListener('mousemove', handlePointerMove);
+    window.addEventListener('mouseup', handlePointerUp);
+    window.addEventListener('touchmove', handlePointerMove, { passive: false });
+    window.addEventListener('touchend', handlePointerUp);
+
+    return () => {
+      window.removeEventListener('mousemove', handlePointerMove);
+      window.removeEventListener('mouseup', handlePointerUp);
+      window.removeEventListener('touchmove', handlePointerMove);
+      window.removeEventListener('touchend', handlePointerUp);
+    };
+  }, [isDraggingWatermark]);
+
+  // Handle live interactive dragging of the footer banner on the video player
+  const handleFooterMouseDown = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingFooter(true);
+  };
+
+  const handleFooterTouchStart = (e) => {
+    e.stopPropagation();
+    setIsDraggingFooter(true);
+  };
+
+  useEffect(() => {
+    if (!isDraggingFooter) return;
+
+    const handlePointerMove = (e) => {
+      if (!videoContainerRef.current) return;
+      const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+      const rect = videoContainerRef.current.getBoundingClientRect();
+      if (!rect.height) return;
+
+      let yPct = ((clientY - rect.top) / rect.height) * 100;
+      const halfH = ((footerHeight / 1920) * 100) / 2;
+      yPct = Math.max(halfH, Math.min(100 - halfH, Math.round(yPct * 10) / 10));
+
+      setFooterPos({ y: yPct });
+      setFooterPosition(`custom:${yPct}`);
+    };
+
+    const handlePointerUp = () => {
+      setIsDraggingFooter(false);
+    };
+
+    window.addEventListener('mousemove', handlePointerMove);
+    window.addEventListener('mouseup', handlePointerUp);
+    window.addEventListener('touchmove', handlePointerMove, { passive: false });
+    window.addEventListener('touchend', handlePointerUp);
+
+    return () => {
+      window.removeEventListener('mousemove', handlePointerMove);
+      window.removeEventListener('mouseup', handlePointerUp);
+      window.removeEventListener('touchmove', handlePointerMove);
+      window.removeEventListener('touchend', handlePointerUp);
+    };
+  }, [isDraggingFooter, footerHeight]);
 
   // ──────────────────────────────────────────────────────────────────────────
   // Cloudflare R2 Video Templates & CTA Outro State
@@ -200,7 +302,18 @@ export default function SocialPublishPage() {
           if (existingBranding.header_height) setHeaderHeight(existingBranding.header_height);
           if (existingBranding.footer_image_path) setFooterPath(existingBranding.footer_image_path);
           if (existingBranding.footer_height) setFooterHeight(existingBranding.footer_height);
-          if (clipResult.edit_options?.branding_burned) setBrandingBurned(true);
+          if (existingBranding.footer_position) {
+            setFooterPosition(existingBranding.footer_position);
+            if (existingBranding.footer_position.startsWith('custom:')) {
+              const parts = existingBranding.footer_position.split(':');
+              const parsedY = parseFloat(parts[parts.length - 1]);
+              if (!isNaN(parsedY)) setFooterPos({ y: parsedY });
+            }
+          }
+          if (clipResult.edit_options?.branding_burned || clipResult.storage_path?.includes('_branded_')) {
+            setBrandingBurned(true);
+            setHasRenderedOnce(true);
+          }
         }
 
         // Restore existing outro configuration
@@ -324,7 +437,7 @@ export default function SocialPublishPage() {
   };
 
   // ──────────────────────────────────────────────────────────────────────────
-  // Branding Image Handlers (Logo, Header, Footer)
+  // Branding Image Handlers (Logo, Footer)
   // ──────────────────────────────────────────────────────────────────────────
   const handleBrandingUpload = async (event, assetType) => {
     const file = event.target.files?.[0];
@@ -332,20 +445,19 @@ export default function SocialPublishPage() {
     const localUrl = URL.createObjectURL(file);
     if (assetType === 'watermark') {
       setWatermarkPreviewUrl(localUrl);
-    } else if (assetType === 'header') {
-      setHeaderPreviewUrl(localUrl);
     } else if (assetType === 'footer') {
       setFooterPreviewUrl(localUrl);
     }
-    setBrandingBurned(false); // New image uploaded, live preview updated
+    if (!hasRenderedOnce) {
+      setBrandingBurned(false); // New image uploaded, live preview updated
+    }
     setMessageError(false);
     setMessage(`Uploading ${assetType} image…`);
     try {
       const res = await api.uploadBrandingImage(clipId, file, assetType);
       if (assetType === 'watermark') setWatermarkPath(res.storage_path);
-      else if (assetType === 'header') setHeaderPath(res.storage_path);
       else if (assetType === 'footer') setFooterPath(res.storage_path);
-      setMessage(`${assetType.charAt(0).toUpperCase() + assetType.slice(1)} image ready for preview & burn.`);
+      setMessage(`${assetType.charAt(0).toUpperCase() + assetType.slice(1)} image ready for live demo preview & render.`);
     } catch (err) {
       setMessageError(true);
       setMessage(`Failed to upload ${assetType}: ${err.response?.data?.detail || err.message}`);
@@ -357,16 +469,14 @@ export default function SocialPublishPage() {
       setWatermarkPreviewUrl(null);
       setWatermarkPath(null);
       if (watermarkInputRef.current) watermarkInputRef.current.value = '';
-    } else if (assetType === 'header') {
-      setHeaderPreviewUrl(null);
-      setHeaderPath(null);
-      if (headerInputRef.current) headerInputRef.current.value = '';
     } else if (assetType === 'footer') {
       setFooterPreviewUrl(null);
       setFooterPath(null);
       if (footerInputRef.current) footerInputRef.current.value = '';
     }
-    setBrandingBurned(false);
+    if (hasRenderedOnce) {
+      setBrandingBurned(true);
+    }
   };
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -378,14 +488,14 @@ export default function SocialPublishPage() {
     const isTemplateMode = outroMode === 'template' && selectedTemplate;
     const isCustomMode = outroMode === 'custom';
 
-    if (!watermarkPath && !headerPath && !footerPath && !isTemplateMode && !isCustomMode && !thumbnailPath) {
+    if (!watermarkPath && !footerPath && !isTemplateMode && !isCustomMode && !thumbnailPath) {
       setMessageError(true);
-      setMessage('Please select an outro template, upload a logo, or attach a thumbnail first.');
+      setMessage('Please upload a logo, footer banner, select an outro template, or attach a thumbnail first.');
       return;
     }
     setIsBurningBranding(true);
     setMessageError(false);
-    setMessage('Rendering customizations and burning into video with FFmpeg…');
+    setMessage('Rendering full video with watermark and footer via FFmpeg…');
     try {
       const payload = {
         watermark_path: watermarkPath || null,
@@ -393,10 +503,11 @@ export default function SocialPublishPage() {
         watermark_scale: Number(watermarkScale) / 100,
         watermark_opacity: Number(watermarkOpacity) / 100,
         watermark_mode: watermarkMode,
-        header_image_path: headerPath || null,
-        header_height: Number(headerHeight),
+        header_image_path: null,
+        header_height: 160,
         footer_image_path: footerPath || null,
         footer_height: Number(footerHeight),
+        footer_position: footerPosition,
         thumbnail_path: thumbnailPath || null,
         template_id: isTemplateMode ? selectedTemplate.id : null,
         template_storage_path: isTemplateMode ? selectedTemplate.storage_path : null,
@@ -412,12 +523,14 @@ export default function SocialPublishPage() {
       const updatedClip = await api.applyClipBranding(clipId, payload);
       setClip(updatedClip);
       setBrandingBurned(true);
+      setHasRenderedOnce(true);
 
       // Refresh the video stream to display burned output
       const newMediaUrl = await api.getClipMedia(clipId);
       setVideoUrl(newMediaUrl);
 
-      setMessage('Branding & outro successfully burned into video! The video player now reflects the final render.');
+      setMessage('Full video rendered successfully! Now choose your channels to publish.');
+      setCurrentStage('publish');
     } catch (err) {
       setMessageError(true);
       setMessage(`Failed to process video: ${err.response?.data?.detail || err.message}`);
@@ -436,20 +549,26 @@ export default function SocialPublishPage() {
       setMessage('This video is not ready to publish yet.');
       return;
     }
+    if (hasAnyCustomization && !brandingBurned && !hasRenderedOnce) {
+      setMessageError(true);
+      setMessage('Your watermark logo, banner or outro is in live demo mode. Please click "Render Full Video" first to burn them into the video before publishing.');
+      return;
+    }
     setWorkingPlatform(platform);
     setMessageError(false);
     setMessage(`Uploading to ${platforms.find((item) => item.id === platform)?.name}…`);
     try {
-      const brandingConfig = (watermarkPath || headerPath || footerPath) ? {
+      const brandingConfig = (watermarkPath || footerPath) ? {
         watermark_path: watermarkPath,
         watermark_position: watermarkPosition,
         watermark_scale: Number(watermarkScale) / 100,
         watermark_opacity: Number(watermarkOpacity) / 100,
         watermark_mode: watermarkMode,
-        header_image_path: headerPath,
-        header_height: Number(headerHeight),
+        header_image_path: null,
+        header_height: 160,
         footer_image_path: footerPath,
         footer_height: Number(footerHeight),
+        footer_position: footerPosition,
       } : null;
 
       await api.publishClip(
@@ -484,27 +603,34 @@ export default function SocialPublishPage() {
   };
 
   const getWatermarkPositionStyle = (pos) => {
+    if (pos && (pos.startsWith('custom:') || pos.startsWith('coords:'))) {
+      return {
+        left: `${watermarkPos.x}%`,
+        top: `${watermarkPos.y}%`,
+        transform: 'translate(-50%, -50%)',
+      };
+    }
     switch (pos) {
       case 'top-left':
-        return { top: '3.5%', left: '4%' };
+        return { left: `${watermarkPos.x || 16}%`, top: `${watermarkPos.y || 8}%`, transform: 'translate(-50%, -50%)' };
       case 'top-right':
-        return { top: '3.5%', right: '4%' };
+        return { left: `${watermarkPos.x || 84}%`, top: `${watermarkPos.y || 8}%`, transform: 'translate(-50%, -50%)' };
       case 'bottom-left':
-        return { bottom: '3.5%', left: '4%' };
+        return { left: `${watermarkPos.x || 16}%`, top: `${watermarkPos.y || 90}%`, transform: 'translate(-50%, -50%)' };
       case 'bottom-right':
-        return { bottom: '3.5%', right: '4%' };
+        return { left: `${watermarkPos.x || 84}%`, top: `${watermarkPos.y || 90}%`, transform: 'translate(-50%, -50%)' };
+      case 'center':
+      case 'middle':
+        return { left: `${watermarkPos.x || 50}%`, top: `${watermarkPos.y || 50}%`, transform: 'translate(-50%, -50%)' };
       case 'footer':
       case 'bottom':
-        return { bottom: '3.5%', left: '50%', transform: 'translateX(-50%)' };
-      case 'header_and_footer':
-        return { top: '3.5%', left: '50%', transform: 'translateX(-50%)' };
-      case 'header':
+        return { left: `${watermarkPos.x || 50}%`, top: `${watermarkPos.y || 90}%`, transform: 'translate(-50%, -50%)' };
       default:
-        return { top: '3.5%', left: '50%', transform: 'translateX(-50%)' };
+        return { left: `${watermarkPos.x || 84}%`, top: `${watermarkPos.y || 8}%`, transform: 'translate(-50%, -50%)' };
     }
   };
 
-  const hasAnyBranding = Boolean(watermarkPreviewUrl || headerPreviewUrl || footerPreviewUrl || watermarkPath || headerPath || footerPath);
+  const hasAnyBranding = Boolean(watermarkPreviewUrl || watermarkPath || footerPreviewUrl || footerPath);
   const selectedTemplate = templates.find((t) => t.id === selectedTemplateId);
   const hasAnyOutro = Boolean((outroMode === 'template' && selectedTemplate) || outroMode === 'custom');
   const hasAnyCustomization = Boolean(hasAnyBranding || hasAnyOutro);
@@ -572,9 +698,75 @@ export default function SocialPublishPage() {
             <button type="button" style={primaryButton} onClick={() => navigate(returnTo)}>Choose a video in Studio</button>
           </section>
         ) : (
-          <div className="harvest-publish-layout" style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.35fr) minmax(320px, 390px)', alignItems: 'start', gap: '1.4rem' }}>
-            {/* Left Column: Form & Tools */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+          <>
+            {/* Two-Stage Progress Tabs: 1. Customize & Brand vs 2. Channels & Publish */}
+            <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '1.25rem' }}>
+              <button
+                type="button"
+                onClick={() => setCurrentStage('customize')}
+                style={{
+                  flex: 1,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '0.6rem',
+                  padding: '0.85rem 1rem',
+                  borderRadius: 10,
+                  border: currentStage === 'customize' ? '2px solid #1f6f4a' : '1px solid #d9dcd8',
+                  background: currentStage === 'customize' ? '#fff' : '#f4f5f3',
+                  color: currentStage === 'customize' ? '#1f6f4a' : '#586273',
+                  fontWeight: 700,
+                  fontSize: '0.94rem',
+                  cursor: 'pointer',
+                  boxShadow: currentStage === 'customize' ? '0 2px 8px rgba(31,111,74,0.1)' : 'none',
+                  transition: 'all 0.15s ease',
+                }}
+              >
+                <Sliders size={18} />
+                <span>1. Customize &amp; Brand</span>
+                {(hasAnyCustomization || hasRenderedOnce) && (
+                  <span style={{ fontSize: '0.72rem', background: (brandingBurned || hasRenderedOnce) ? '#dcfce7' : '#fef3c7', color: (brandingBurned || hasRenderedOnce) ? '#15803d' : '#b45309', padding: '0.15rem 0.5rem', borderRadius: 99, fontWeight: 700 }}>
+                    {(brandingBurned || hasRenderedOnce) ? 'Rendered' : 'Edits Active'}
+                  </span>
+                )}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setCurrentStage('publish')}
+                style={{
+                  flex: 1,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '0.6rem',
+                  padding: '0.85rem 1rem',
+                  borderRadius: 10,
+                  border: currentStage === 'publish' ? '2px solid #1f6f4a' : '1px solid #d9dcd8',
+                  background: currentStage === 'publish' ? '#fff' : '#f4f5f3',
+                  color: currentStage === 'publish' ? '#1f6f4a' : '#586273',
+                  fontWeight: 700,
+                  fontSize: '0.94rem',
+                  cursor: 'pointer',
+                  boxShadow: currentStage === 'publish' ? '0 2px 8px rgba(31,111,74,0.1)' : 'none',
+                  transition: 'all 0.15s ease',
+                }}
+              >
+                <UploadCloud size={18} />
+                <span>2. Channels &amp; Publish</span>
+                {(hasRenderedOnce || !hasAnyCustomization) && (
+                  <span style={{ fontSize: '0.72rem', background: '#dcfce7', color: '#15803d', padding: '0.15rem 0.5rem', borderRadius: 99, fontWeight: 700 }}>
+                    Ready
+                  </span>
+                )}
+              </button>
+            </div>
+
+            <div className="harvest-publish-layout" style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.35fr) minmax(320px, 390px)', alignItems: 'start', gap: '1.4rem' }}>
+              {/* Left Column: Form & Tools */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+                {currentStage === 'customize' ? (
+                  <>
 
               {/* 1. Post Details */}
               <section style={{ padding: '1.35rem', background: '#fff', border: '1px solid #e6e6e1', borderRadius: 12 }}>
@@ -667,31 +859,30 @@ export default function SocialPublishPage() {
                 )}
               </section>
 
-              {/* 3. Watermark, Header & Footer Branding Studio */}
+              {/* 3. Watermark & Footer Branding Studio */}
               <section style={{ padding: '1.35rem', background: '#fff', border: '1px solid #e6e6e1', borderRadius: 12 }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.4rem' }}>
                   <h2 style={{ margin: 0, fontSize: '1.18rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                    <Layers size={20} color="#1f6f4a" /> 3. Watermark & Branding Studio
+                    <Layers size={20} color="#1f6f4a" /> 3. Logo Watermark &amp; Footer Banner
                   </h2>
                   {brandingBurned ? (
                     <span style={{ fontSize: '0.74rem', background: '#eef6f0', color: '#1f6f4a', border: '1px solid #cce5d4', padding: '0.2rem 0.6rem', borderRadius: 99, fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}>
-                      <Check size={12} /> Branding Burned In
+                      <Check size={12} /> Full Video Rendered
                     </span>
                   ) : hasAnyBranding ? (
                     <span style={{ fontSize: '0.74rem', background: '#fff8ea', color: '#b45309', border: '1px solid #fde68a', padding: '0.2rem 0.6rem', borderRadius: 99, fontWeight: 700 }}>
-                      Previewing Overlay
+                      Live Demo Preview (Unrendered)
                     </span>
                   ) : null}
                 </div>
                 <p style={{ margin: '0 0 1.1rem', color: '#657080', fontSize: '0.88rem' }}>
-                  Add your channel logo (e.g. "nb"), custom header banner, or footer banner with custom sizing and interval timing.
+                  Add your brand logo watermark (e.g. "nb") and bottom footer banner. See the live demo on the preview player, then click render to create the full video.
                 </p>
 
-                {/* Tab Switcher */}
+                {/* Tab Switcher (Only Logo and Footer) */}
                 <div style={{ display: 'flex', gap: '0.35rem', padding: '0.3rem', background: '#f4f5f3', borderRadius: 8, marginBottom: '1.25rem' }}>
                   {[
                     { id: 'watermark', label: 'Logo / Watermark' },
-                    { id: 'header', label: 'Header Banner' },
                     { id: 'footer', label: 'Footer Banner' },
                   ].map((tab) => (
                     <button
@@ -727,13 +918,6 @@ export default function SocialPublishPage() {
                 />
                 <input
                   type="file"
-                  ref={headerInputRef}
-                  accept="image/png,image/jpeg,image/webp,image/gif"
-                  style={{ display: 'none' }}
-                  onChange={(e) => handleBrandingUpload(e, 'header')}
-                />
-                <input
-                  type="file"
                   ref={footerInputRef}
                   accept="image/png,image/jpeg,image/webp,image/gif"
                   style={{ display: 'none' }}
@@ -750,13 +934,13 @@ export default function SocialPublishPage() {
                             <img src={watermarkPreviewUrl} alt="Logo" style={{ maxWidth: '90%', maxHeight: '90%', objectFit: 'contain' }} />
                           </div>
                           <div>
-                            <div style={{ fontWeight: 700, fontSize: '0.9rem' }}>Channel Logo Ready</div>
-                            <div style={{ fontSize: '0.8rem', color: '#657080' }}>Visible across video or every 2 sec</div>
+                            <div style={{ fontWeight: 700, fontSize: '0.9rem' }}>Logo / Watermark Active</div>
+                            <div style={{ fontSize: '0.8rem', color: '#657080' }}>Shown live in real time on the video player</div>
                           </div>
                         </div>
                       ) : (
                         <div>
-                          <div style={{ fontWeight: 700, fontSize: '0.9rem' }}>Upload Logo / Watermark</div>
+                          <div style={{ fontWeight: 700, fontSize: '0.9rem' }}>Upload Brand Logo</div>
                           <div style={{ fontSize: '0.8rem', color: '#657080' }}>e.g. "nb" channel icon with transparent background</div>
                         </div>
                       )}
@@ -773,40 +957,54 @@ export default function SocialPublishPage() {
                     </div>
 
                     {/* Watermark Placement */}
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '0.5rem' }}>
-                      {[
-                        { id: 'header', label: 'Header (Top)' },
-                        { id: 'footer', label: 'Footer (Bottom)' },
-                        { id: 'top-left', label: 'Top Left' },
-                        { id: 'top-right', label: 'Top Right' },
-                        { id: 'bottom-left', label: 'Bottom Left' },
-                        { id: 'bottom-right', label: 'Bottom Right' },
-                        { id: 'header_and_footer', label: 'Both Top & Bottom' },
-                      ].map((p) => (
-                        <button
-                          key={p.id}
-                          type="button"
-                          onClick={() => { setWatermarkPosition(p.id); setBrandingBurned(false); }}
-                          style={{
-                            padding: '0.55rem 0.65rem',
-                            borderRadius: 6,
-                            border: `1px solid ${watermarkPosition === p.id ? '#1f6f4a' : '#d9dcd8'}`,
-                            background: watermarkPosition === p.id ? '#eef6f0' : '#fff',
-                            color: watermarkPosition === p.id ? '#1f6f4a' : '#343943',
-                            fontWeight: watermarkPosition === p.id ? 700 : 500,
-                            fontSize: '0.8rem',
-                            cursor: 'pointer',
-                          }}
-                        >
-                          {p.label}
-                        </button>
-                      ))}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.45rem' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.4rem' }}>
+                        <span style={{ fontSize: '0.84rem', fontWeight: 600, color: '#586273' }}>
+                          Placement <span style={{ fontWeight: 400, color: '#1f6f4a' }}>(click preset or drag directly on the video!)</span>
+                        </span>
+                        {watermarkPosition.startsWith('custom:') && (
+                          <span style={{ fontSize: '0.74rem', background: '#eef6f0', color: '#1f6f4a', padding: '0.15rem 0.5rem', borderRadius: 99, fontWeight: 700 }}>
+                            Custom Position: {Math.round(watermarkPos.x)}%, {Math.round(watermarkPos.y)}%
+                          </span>
+                        )}
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(115px, 1fr))', gap: '0.45rem' }}>
+                        {[
+                          { id: 'top-right', label: 'Top Right', x: 84, y: 8 },
+                          { id: 'top-left', label: 'Top Left', x: 16, y: 8 },
+                          { id: 'center', label: 'Center', x: 50, y: 50 },
+                          { id: 'bottom-right', label: 'Bottom Right', x: 84, y: 90 },
+                          { id: 'bottom-left', label: 'Bottom Left', x: 16, y: 90 },
+                          { id: 'footer', label: 'Bottom Center', x: 50, y: 90 },
+                        ].map((p) => (
+                          <button
+                            key={p.id}
+                            type="button"
+                            onClick={() => {
+                              setWatermarkPos({ x: p.x, y: p.y });
+                              setWatermarkPosition(p.id);
+                            }}
+                            style={{
+                              padding: '0.55rem 0.65rem',
+                              borderRadius: 6,
+                              border: `1px solid ${watermarkPosition === p.id ? '#1f6f4a' : '#d9dcd8'}`,
+                              background: watermarkPosition === p.id ? '#eef6f0' : '#fff',
+                              color: watermarkPosition === p.id ? '#1f6f4a' : '#343943',
+                              fontWeight: watermarkPosition === p.id ? 700 : 500,
+                              fontSize: '0.8rem',
+                              cursor: 'pointer',
+                            }}
+                          >
+                            {p.label}
+                          </button>
+                        ))}
+                      </div>
                     </div>
 
-                    {/* Watermark Display Interval Mode */}
+                    {/* Watermark Display Interval Mode (Live time demo) */}
                     <div style={{ background: '#fcfcfb', border: '1px solid #e6e6e1', borderRadius: 9, padding: '0.9rem' }}>
                       <div style={{ fontWeight: 650, fontSize: '0.88rem', marginBottom: '0.4rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                        <Clock size={16} color="#1f6f4a" /> Watermark Timing Mode
+                        <Clock size={16} color="#1f6f4a" /> Watermark Timing Mode (Live Demo)
                       </div>
                       <div style={{ display: 'flex', gap: '0.75rem', marginTop: '0.5rem' }}>
                         <label style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', fontSize: '0.85rem', cursor: 'pointer', fontWeight: watermarkMode === 'interval_2s' ? 700 : 500 }}>
@@ -814,7 +1012,7 @@ export default function SocialPublishPage() {
                             type="radio"
                             name="watermarkMode"
                             checked={watermarkMode === 'interval_2s'}
-                            onChange={() => { setWatermarkMode('interval_2s'); setBrandingBurned(false); }}
+                            onChange={() => setWatermarkMode('interval_2s')}
                           />
                           Every 2 Seconds (Pulsing / 2s on-off)
                         </label>
@@ -823,10 +1021,13 @@ export default function SocialPublishPage() {
                             type="radio"
                             name="watermarkMode"
                             checked={watermarkMode === 'always'}
-                            onChange={() => { setWatermarkMode('always'); setBrandingBurned(false); }}
+                            onChange={() => setWatermarkMode('always')}
                           />
                           Always Visible
                         </label>
+                      </div>
+                      <div style={{ fontSize: '0.76rem', color: '#657080', marginTop: '0.45rem' }}>
+                        Watch the player on the right to see the live timing demo in action.
                       </div>
                     </div>
 
@@ -837,9 +1038,9 @@ export default function SocialPublishPage() {
                         <input
                           type="range"
                           min="8"
-                          max="40"
+                          max="100"
                           value={watermarkScale}
-                          onChange={(e) => { setWatermarkScale(Number(e.target.value)); setBrandingBurned(false); }}
+                          onChange={(e) => setWatermarkScale(Number(e.target.value))}
                           style={{ width: '100%', marginTop: '0.4rem', accentColor: '#1f6f4a' }}
                         />
                       </label>
@@ -850,7 +1051,7 @@ export default function SocialPublishPage() {
                           min="40"
                           max="100"
                           value={watermarkOpacity}
-                          onChange={(e) => { setWatermarkOpacity(Number(e.target.value)); setBrandingBurned(false); }}
+                          onChange={(e) => setWatermarkOpacity(Number(e.target.value))}
                           style={{ width: '100%', marginTop: '0.4rem', accentColor: '#1f6f4a' }}
                         />
                       </label>
@@ -858,54 +1059,7 @@ export default function SocialPublishPage() {
                   </div>
                 )}
 
-                {/* Tab 2: Header Banner */}
-                {activeBrandingTab === 'header' && (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '1.1rem' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '1rem', background: '#fcfcfb', border: '1px solid #e6e6e1', borderRadius: 9, padding: '0.9rem' }}>
-                      {headerPreviewUrl ? (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.85rem' }}>
-                          <div style={{ width: 80, height: 36, borderRadius: 6, background: '#1c1e24', overflow: 'hidden' }}>
-                            <img src={headerPreviewUrl} alt="Header" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                          </div>
-                          <div>
-                            <div style={{ fontWeight: 700, fontSize: '0.9rem' }}>Header Banner Active</div>
-                            <div style={{ fontSize: '0.8rem', color: '#657080' }}>Overlaid across the top of video</div>
-                          </div>
-                        </div>
-                      ) : (
-                        <div>
-                          <div style={{ fontWeight: 700, fontSize: '0.9rem' }}>Upload Header Banner</div>
-                          <div style={{ fontSize: '0.8rem', color: '#657080' }}>Shows title or banner at the top of the video</div>
-                        </div>
-                      )}
-                      <div style={{ display: 'flex', gap: '0.5rem' }}>
-                        <button type="button" onClick={() => headerInputRef.current?.click()} style={secondaryButton}>
-                          <UploadCloud size={14} /> {headerPreviewUrl ? 'Replace' : 'Upload Banner'}
-                        </button>
-                        {headerPreviewUrl && (
-                          <button type="button" onClick={() => clearBrandingAsset('header')} style={{ ...secondaryButton, color: '#b91c1c' }}>
-                            <Trash2 size={14} />
-                          </button>
-                        )}
-                      </div>
-                    </div>
-
-                    <label style={{ fontSize: '0.85rem', fontWeight: 600, color: '#586273' }}>
-                      Header Banner Height: <strong style={{ color: '#16181d' }}>{headerHeight}px</strong>
-                      <input
-                        type="range"
-                        min="60"
-                        max="260"
-                        step="10"
-                        value={headerHeight}
-                        onChange={(e) => { setHeaderHeight(Number(e.target.value)); setBrandingBurned(false); }}
-                        style={{ width: '100%', marginTop: '0.4rem', accentColor: '#1f6f4a' }}
-                      />
-                    </label>
-                  </div>
-                )}
-
-                {/* Tab 3: Footer Banner */}
+                {/* Tab 2: Footer Banner */}
                 {activeBrandingTab === 'footer' && (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '1.1rem' }}>
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '1rem', background: '#fcfcfb', border: '1px solid #e6e6e1', borderRadius: 9, padding: '0.9rem' }}>
@@ -945,12 +1099,93 @@ export default function SocialPublishPage() {
                         max="260"
                         step="10"
                         value={footerHeight}
-                        onChange={(e) => { setFooterHeight(Number(e.target.value)); setBrandingBurned(false); }}
+                        onChange={(e) => setFooterHeight(Number(e.target.value))}
                         style={{ width: '100%', marginTop: '0.4rem', accentColor: '#1f6f4a' }}
                       />
                     </label>
+
+                    {/* Position Presets & Draggable Indicator */}
+                    <div style={{ background: '#fcfcfb', border: '1px solid #e6e6e1', borderRadius: 9, padding: '0.85rem' }}>
+                      <div style={{ fontWeight: 650, fontSize: '0.85rem', marginBottom: '0.4rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <span style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                          <Move size={15} color="#1f6f4a" /> Banner Position ({Math.round(footerPos.y)}% from top)
+                        </span>
+                        <span style={{ fontSize: '0.74rem', color: '#1f6f4a', fontWeight: 600 }}>Interactive Draggable</span>
+                      </div>
+                      <div style={{ display: 'flex', gap: '0.4rem', marginTop: '0.35rem' }}>
+                        {[
+                          { id: 'bottom', label: 'Bottom (Default)', y: 94 },
+                          { id: 'lower-third', label: 'Lower Third', y: 78 },
+                          { id: 'center', label: 'Center', y: 50 },
+                          { id: 'top', label: 'Top', y: 8 },
+                        ].map((preset) => (
+                          <button
+                            key={preset.id}
+                            type="button"
+                            onClick={() => {
+                              setFooterPos({ y: preset.y });
+                              setFooterPosition(`custom:${preset.y}`);
+                            }}
+                            style={{
+                              flex: 1,
+                              padding: '0.4rem 0.5rem',
+                              borderRadius: 6,
+                              border: `1px solid ${Math.abs(footerPos.y - preset.y) < 3 ? '#1f6f4a' : '#d9dcd8'}`,
+                              background: Math.abs(footerPos.y - preset.y) < 3 ? '#eef6f0' : '#fff',
+                              color: Math.abs(footerPos.y - preset.y) < 3 ? '#1f6f4a' : '#343943',
+                              fontWeight: Math.abs(footerPos.y - preset.y) < 3 ? 700 : 500,
+                              fontSize: '0.78rem',
+                              cursor: 'pointer',
+                            }}
+                          >
+                            {preset.label}
+                          </button>
+                        ))}
+                      </div>
+                      <div style={{ fontSize: '0.75rem', color: '#657080', marginTop: '0.45rem' }}>
+                        Tip: You can also click and drag the banner directly up and down on the live video player!
+                      </div>
+                    </div>
                   </div>
                 )}
+
+                {/* Branding Status Guide */}
+                <div style={{
+                  marginTop: '1.25rem',
+                  padding: '1rem 1.1rem',
+                  borderRadius: 10,
+                  backgroundColor: brandingBurned ? '#f0fdf4' : (hasAnyBranding ? '#fffbeb' : '#f9fafb'),
+                  border: `1.5px solid ${brandingBurned ? '#86efac' : (hasAnyBranding ? '#fde68a' : '#e5e7eb')}`,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: '0.85rem'
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
+                    <Sparkles size={20} color={brandingBurned ? '#16a34a' : (hasAnyBranding ? '#d97706' : '#6b7280')} style={{ flexShrink: 0 }} />
+                    <div>
+                      <div style={{ fontWeight: 700, fontSize: '0.9rem', color: brandingBurned ? '#166534' : (hasAnyBranding ? '#92400e' : '#1f2937') }}>
+                        {brandingBurned ? 'Full Video Rendered & Burned' : (hasAnyBranding ? 'Live Movable Demo Active' : 'Watermark & Branding Ready')}
+                      </div>
+                      <div style={{ fontSize: '0.81rem', color: brandingBurned ? '#15803d' : (hasAnyBranding ? '#78350f' : '#6b7280'), marginTop: 2 }}>
+                        {brandingBurned
+                          ? 'Your watermark and styling are burned into the MP4 and ready to publish.'
+                          : (hasAnyBranding
+                            ? 'Drag your logo anywhere on the preview video on the right, then click Render.'
+                            : 'Upload your logo watermark or footer banner above, then click Render or Proceed to Publish.')}
+                      </div>
+                    </div>
+                  </div>
+                  {brandingBurned ? (
+                    <span style={{ fontSize: '0.74rem', background: '#dcfce7', color: '#166534', border: '1px solid #86efac', padding: '0.2rem 0.6rem', borderRadius: 99, fontWeight: 700, whiteSpace: 'nowrap' }}>
+                      <Check size={12} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 2 }} /> Ready
+                    </span>
+                  ) : hasAnyBranding ? (
+                    <span style={{ fontSize: '0.74rem', background: '#fef3c7', color: '#b45309', border: '1px solid #fde68a', padding: '0.25rem 0.65rem', borderRadius: 99, fontWeight: 700, whiteSpace: 'nowrap' }}>
+                      Render on Right ↗
+                    </span>
+                  ) : null}
+                </div>
               </section>
 
               {/* 4. Creator Outro & Call to Action Cards */}
@@ -989,7 +1224,12 @@ export default function SocialPublishPage() {
                       <button
                         key={tab.id}
                         type="button"
-                        onClick={() => { setOutroMode(tab.id); setBrandingBurned(false); }}
+                        onClick={() => {
+                          setOutroMode(tab.id);
+                          if (tab.id === 'none' && hasRenderedOnce) {
+                            setBrandingBurned(true);
+                          }
+                        }}
                         style={{
                           flex: 1,
                           padding: '0.55rem 0.75rem',
@@ -1057,7 +1297,7 @@ export default function SocialPublishPage() {
                           return (
                             <div
                               key={tmpl.id}
-                              onClick={() => { setSelectedTemplateId(tmpl.id); setBrandingBurned(false); }}
+                              onClick={() => setSelectedTemplateId(tmpl.id)}
                               style={{
                                 border: isSelected ? '2px solid #1f6f4a' : '1px solid #e2e8f0',
                                 borderRadius: 10,
@@ -1115,7 +1355,7 @@ export default function SocialPublishPage() {
                         <button
                           key={idx}
                           type="button"
-                          onClick={() => { btn.toggle(); setBrandingBurned(false); }}
+                          onClick={() => btn.toggle()}
                           style={{
                             padding: '0.45rem 0.8rem',
                             borderRadius: 6,
@@ -1141,7 +1381,7 @@ export default function SocialPublishPage() {
                           max="5.0"
                           step="0.5"
                           value={outroDuration}
-                          onChange={(e) => { setOutroDuration(Number(e.target.value)); setBrandingBurned(false); }}
+                          onChange={(e) => setOutroDuration(Number(e.target.value))}
                           style={{ width: '100%', marginTop: '0.35rem', accentColor: '#1f6f4a' }}
                         />
                       </label>
@@ -1149,7 +1389,7 @@ export default function SocialPublishPage() {
                         Music Style:
                         <select
                           value={outroMusicStyle}
-                          onChange={(e) => { setOutroMusicStyle(e.target.value); setBrandingBurned(false); }}
+                          onChange={(e) => setOutroMusicStyle(e.target.value)}
                           style={{ display: 'block', width: '100%', marginTop: '0.35rem', padding: '0.45rem', borderRadius: 6, border: '1px solid #d9dcd8', background: '#fff', fontSize: '0.82rem' }}
                         >
                           <option value="upbeat">Upbeat / Energetic</option>
@@ -1166,7 +1406,7 @@ export default function SocialPublishPage() {
                         type="text"
                         placeholder="e.g. Follow @harvestai for more tips!"
                         value={outroLongText}
-                        onChange={(e) => { setOutroLongText(e.target.value); setBrandingBurned(false); }}
+                        onChange={(e) => setOutroLongText(e.target.value)}
                         style={{ display: 'block', width: '100%', boxSizing: 'border-box', marginTop: '0.35rem', padding: '0.55rem 0.7rem', border: '1px solid #d9dcd8', borderRadius: 6, fontSize: '0.84rem' }}
                       />
                     </label>
@@ -1181,44 +1421,75 @@ export default function SocialPublishPage() {
                   </div>
                 )}
 
-                {/* Combined Burn / Render Customizations Button */}
-                <div style={{ marginTop: '1.25rem', paddingTop: '1.1rem', borderTop: '1px solid #f0f0ed', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.8rem' }}>
-                  <div style={{ fontSize: '0.82rem', color: '#657080' }}>
-                    {brandingBurned
-                      ? '✓ Customizations are burned into the video and reflected in the player.'
-                      : hasAnyCustomization
-                      ? 'Customizations ready. Click to render & burn into video with FFmpeg.'
-                      : 'Customize logo, branding, or outro above, then click to burn.'}
+              </section>
+            </>
+          ) : (
+            <>
+              {/* STAGE 2: PUBLISH VIEW */}
+              <section style={{ padding: '1.25rem 1.4rem', background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 12, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '1rem', flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                  <CheckCircle2 size={24} color="#16a34a" style={{ flexShrink: 0 }} />
+                  <div>
+                    <div style={{ fontWeight: 700, fontSize: '1rem', color: '#166534' }}>Video Ready to Publish</div>
+                    <div style={{ fontSize: '0.84rem', color: '#15803d', marginTop: 2 }}>
+                      Upload directly to your connected YouTube, Facebook, or Instagram accounts.
+                    </div>
                   </div>
-                  <button
-                    type="button"
-                    disabled={isBurningBranding || (!hasAnyCustomization && !thumbnailPath)}
-                    onClick={burnBrandingIntoVideo}
-                    style={{
-                      ...primaryButton,
-                      background: brandingBurned ? '#2563eb' : '#1f6f4a',
-                      borderColor: brandingBurned ? '#2563eb' : '#1f6f4a',
-                      opacity: (!hasAnyCustomization && !thumbnailPath) ? 0.6 : 1,
-                      cursor: (!hasAnyCustomization && !thumbnailPath) ? 'not-allowed' : 'pointer',
-                    }}
-                  >
-                    {isBurningBranding ? (
-                      <><LoaderCircle size={16} className="harvest-publish-spin" /> Rendering with FFmpeg…</>
-                    ) : (
-                      <><Sparkles size={16} /> {brandingBurned ? 'Re-Apply Customizations' : 'Burn Branding & Outro into Video'}</>
-                    )}
-                  </button>
                 </div>
+                <button
+                  type="button"
+                  onClick={() => setCurrentStage('customize')}
+                  style={{
+                    ...secondaryButton,
+                    fontSize: '0.84rem',
+                    padding: '0.5rem 0.85rem',
+                    background: '#fff',
+                    color: '#166534',
+                    borderColor: '#86efac',
+                  }}
+                >
+                  <Sliders size={14} /> Back to Customize
+                </button>
               </section>
 
-              {/* 4. Social Channels Connection & Upload */}
+              {/* Post Details (Quick Review & Edit) */}
               <section style={{ padding: '1.35rem', background: '#fff', border: '1px solid #e6e6e1', borderRadius: 12 }}>
-                <h2 style={{ margin: '0 0 0.35rem', fontSize: '1.18rem' }}>4. Channels & Upload</h2>
+                <h2 style={{ margin: '0 0 1rem', fontSize: '1.18rem' }}>Post Details</h2>
+                <label style={{ display: 'block', marginBottom: '0.9rem', color: '#586273', fontSize: '0.88rem', fontWeight: 600 }}>Video title
+                  <input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={100} style={{ display: 'block', width: '100%', boxSizing: 'border-box', marginTop: '0.35rem', padding: '0.7rem 0.75rem', border: '1px solid #d9dcd8', borderRadius: 7, color: '#16181d', font: 'inherit' }} />
+                </label>
+                <label style={{ display: 'block', marginBottom: '0.9rem', color: '#586273', fontSize: '0.88rem', fontWeight: 600 }}>Description
+                  <textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={3} maxLength={5000} style={{ display: 'block', width: '100%', boxSizing: 'border-box', resize: 'vertical', marginTop: '0.35rem', padding: '0.7rem 0.75rem', border: '1px solid #d9dcd8', borderRadius: 7, color: '#16181d', font: 'inherit' }} />
+                </label>
+                <label style={{ display: 'block', color: '#586273', fontSize: '0.88rem', fontWeight: 600 }}>YouTube visibility
+                  <select value={privacy} onChange={(event) => setPrivacy(event.target.value)} style={{ display: 'block', marginTop: '0.35rem', padding: '0.65rem 0.75rem', border: '1px solid #d9dcd8', borderRadius: 7, background: '#fff', color: '#16181d', font: 'inherit' }}>
+                    <option value="public">Public</option>
+                    <option value="unlisted">Unlisted</option>
+                    <option value="private">Private</option>
+                  </select>
+                </label>
+              </section>
+
+              {/* Thumbnail summary in Publish view */}
+              {thumbnailPreviewUrl && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.85rem', padding: '0.9rem 1.1rem', background: '#fff', border: '1px solid #e6e6e1', borderRadius: 10 }}>
+                  <img src={thumbnailPreviewUrl} alt="Thumbnail preview" style={{ width: 68, height: 40, objectFit: 'cover', borderRadius: 6, border: '1px solid #d9dcd8' }} />
+                  <div>
+                    <div style={{ fontWeight: 650, fontSize: '0.86rem', color: '#16181d' }}>Custom Thumbnail Attached</div>
+                    <div style={{ fontSize: '0.78rem', color: '#657080' }}>Will be uploaded to YouTube &amp; social platforms with your video.</div>
+                  </div>
+                </div>
+              )}
+
+              {/* Channels & Upload Section (Only visible in Publish stage) */}
+              <section style={{ padding: '1.35rem', background: '#fff', border: '1px solid #e6e6e1', borderRadius: 12 }}>
+                <h2 style={{ margin: '0 0 0.35rem', fontSize: '1.18rem' }}>Channels &amp; Upload</h2>
                 <p style={{ margin: '0 0 1rem', color: '#657080', fontSize: '0.9rem' }}>Connect your accounts once. Your video will be uploaded with your title, custom thumbnail, and branding.</p>
                 <div style={{ display: 'grid', gap: '0.75rem' }}>
                   {platforms.map(({ id, name, Icon, hint }) => {
                     const connection = connectionByPlatform[id];
                     const busy = workingPlatform === id;
+                    const canUpload = clip?.status === 'completed' && (!hasAnyCustomization || brandingBurned || hasRenderedOnce) && !workingPlatform;
                     return (
                       <article key={id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '1rem', padding: '1rem', border: '1px solid #e6e6e1', borderRadius: 9, background: '#fff' }}>
                         <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.75rem', minWidth: 0 }}>
@@ -1231,13 +1502,13 @@ export default function SocialPublishPage() {
                         {connection ? (
                           <button
                             type="button"
-                            disabled={Boolean(workingPlatform) || clip?.status !== 'completed'}
+                            disabled={!canUpload}
                             onClick={() => publishToPlatform(id)}
                             style={{
                               ...primaryButton,
                               minWidth: 118,
-                              opacity: (workingPlatform && !busy) || clip?.status !== 'completed' ? 0.55 : 1,
-                              cursor: workingPlatform || clip?.status !== 'completed' ? 'not-allowed' : 'pointer'
+                              opacity: canUpload ? 1 : 0.5,
+                              cursor: canUpload ? 'pointer' : 'not-allowed'
                             }}
                           >
                             {busy ? <><LoaderCircle size={16} className="harvest-publish-spin" /> Uploading…</> : <><UploadCloud size={16} /> Upload</>}
@@ -1270,7 +1541,9 @@ export default function SocialPublishPage() {
                   })}
                 </div>
               </section>
-            </div>
+            </>
+          )}
+        </div>
 
             {/* Right Column: Live Interactive Video & Thumbnail Preview */}
             <aside style={{ padding: '1.25rem', background: '#fff', border: '1px solid #e6e6e1', borderRadius: 12, position: 'sticky', top: 24 }}>
@@ -1289,7 +1562,21 @@ export default function SocialPublishPage() {
               </div>
 
               {/* Video Player Container with Live Overlay Layers */}
-              <div style={{ position: 'relative', width: '100%', maxHeight: '64vh', aspectRatio: '9 / 16', background: '#0e1014', borderRadius: 10, overflow: 'hidden', margin: '0 auto', boxShadow: '0 8px 24px rgba(0,0,0,0.15)' }}>
+              <div
+                ref={videoContainerRef}
+                style={{
+                  position: 'relative',
+                  width: '100%',
+                  maxHeight: '64vh',
+                  aspectRatio: '9 / 16',
+                  background: '#0e1014',
+                  borderRadius: 10,
+                  overflow: 'hidden',
+                  margin: '0 auto',
+                  boxShadow: '0 8px 24px rgba(0,0,0,0.15)',
+                  userSelect: (isDraggingWatermark || isDraggingFooter) ? 'none' : 'auto',
+                }}
+              >
                 {videoUrl ? (
                   <>
                     <video
@@ -1302,56 +1589,135 @@ export default function SocialPublishPage() {
                     {/* Live Preview Layers (Overlayed in browser before burning) */}
                     {!brandingBurned && (
                       <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', overflow: 'hidden' }}>
-                        {/* Header Banner */}
-                        {headerPreviewUrl && (
-                          <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: `${(headerHeight / 1920) * 100}%`, minHeight: '6%', maxHeight: '25%', zIndex: 12 }}>
-                            <img src={headerPreviewUrl} alt="Header Banner" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                          </div>
-                        )}
-
-                        {/* Footer Banner */}
+                        {/* Footer Banner (DRAGGABLE & MOVABLE ANYWHERE VERTICALLY ON THE VIDEO) */}
                         {footerPreviewUrl && (
-                          <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: `${(footerHeight / 1920) * 100}%`, minHeight: '6%', maxHeight: '25%', zIndex: 12 }}>
-                            <img src={footerPreviewUrl} alt="Footer Banner" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                          <div
+                            onMouseDown={handleFooterMouseDown}
+                            onTouchStart={handleFooterTouchStart}
+                            style={{
+                              position: 'absolute',
+                              top: `${footerPos.y}%`,
+                              transform: 'translateY(-50%)',
+                              left: 0,
+                              right: 0,
+                              height: `${(footerHeight / 1920) * 100}%`,
+                              minHeight: '6%',
+                              maxHeight: '28%',
+                              zIndex: 25,
+                              pointerEvents: 'auto',
+                              cursor: isDraggingFooter ? 'grabbing' : 'grab',
+                              userSelect: 'none',
+                              touchAction: 'none',
+                            }}
+                          >
+                            <div style={{
+                              position: 'relative',
+                              width: '100%',
+                              height: '100%',
+                              outline: isDraggingFooter ? '2px dashed #22c55e' : '1px dashed rgba(255,255,255,0.7)',
+                              outlineOffset: -1,
+                              transition: 'outline 0.15s ease',
+                            }}>
+                              <img
+                                src={footerPreviewUrl}
+                                alt="Footer Banner"
+                                draggable={false}
+                                style={{
+                                  width: '100%',
+                                  height: '100%',
+                                  objectFit: 'cover',
+                                  display: 'block',
+                                  pointerEvents: 'none',
+                                  filter: 'drop-shadow(0 2px 8px rgba(0,0,0,0.6))',
+                                }}
+                              />
+                              {/* Floating drag handle indicator */}
+                              <div style={{
+                                position: 'absolute',
+                                top: -22,
+                                left: '50%',
+                                transform: 'translateX(-50%)',
+                                background: 'rgba(0,0,0,0.85)',
+                                color: '#fff',
+                                padding: '2px 8px',
+                                borderRadius: 12,
+                                fontSize: '0.66rem',
+                                fontWeight: 650,
+                                whiteSpace: 'nowrap',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 4,
+                                pointerEvents: 'none',
+                                backdropFilter: 'blur(4px)',
+                                zIndex: 35,
+                              }}>
+                                <Move size={10} /> {isDraggingFooter ? `${Math.round(footerPos.y)}% from top` : 'Drag to reposition banner'}
+                              </div>
+                            </div>
                           </div>
                         )}
 
-                        {/* Watermark Logo */}
+                        {/* Watermark Logo (DRAGGABLE & MOVABLE ANYWHERE ON THE VIDEO) */}
                         {watermarkPreviewUrl && (
-                          <>
-                            <div
-                              className={watermarkMode === 'interval_2s' ? 'harvest-watermark-pulse' : ''}
-                              style={{
-                                position: 'absolute',
-                                zIndex: 14,
-                                opacity: watermarkOpacity / 100,
-                                width: `${watermarkScale}%`,
-                                maxWidth: '40%',
-                                ...getWatermarkPositionStyle(watermarkPosition),
-                              }}
-                            >
-                              <img src={watermarkPreviewUrl} alt="Watermark" style={{ width: '100%', height: 'auto', display: 'block', filter: 'drop-shadow(0 2px 6px rgba(0,0,0,0.5))' }} />
-                            </div>
-
-                            {/* Second logo instance if Both Top & Bottom selected */}
-                            {watermarkPosition === 'header_and_footer' && (
-                              <div
-                                className={watermarkMode === 'interval_2s' ? 'harvest-watermark-pulse' : ''}
+                          <div
+                            onMouseDown={handleWatermarkMouseDown}
+                            onTouchStart={handleWatermarkTouchStart}
+                            className={watermarkMode === 'interval_2s' && !isDraggingWatermark ? 'harvest-watermark-pulse' : ''}
+                            style={{
+                              position: 'absolute',
+                              zIndex: 30,
+                              opacity: watermarkOpacity / 100,
+                              width: `${watermarkScale}%`,
+                              maxWidth: '96%',
+                              pointerEvents: 'auto',
+                              cursor: isDraggingWatermark ? 'grabbing' : 'grab',
+                              userSelect: 'none',
+                              touchAction: 'none',
+                              ...getWatermarkPositionStyle(watermarkPosition),
+                            }}
+                          >
+                            <div style={{
+                              position: 'relative',
+                              outline: isDraggingWatermark ? '2px dashed #22c55e' : '1px dashed rgba(255,255,255,0.7)',
+                              outlineOffset: 3,
+                              borderRadius: 6,
+                              transition: 'outline 0.15s ease',
+                            }}>
+                              <img
+                                src={watermarkPreviewUrl}
+                                alt="Watermark"
+                                draggable={false}
                                 style={{
-                                  position: 'absolute',
-                                  zIndex: 14,
-                                  bottom: '3.5%',
-                                  left: '50%',
-                                  transform: 'translateX(-50%)',
-                                  opacity: watermarkOpacity / 100,
-                                  width: `${watermarkScale}%`,
-                                  maxWidth: '40%',
+                                  width: '100%',
+                                  height: 'auto',
+                                  display: 'block',
+                                  filter: 'drop-shadow(0 2px 8px rgba(0,0,0,0.6))',
+                                  pointerEvents: 'none',
                                 }}
-                              >
-                                <img src={watermarkPreviewUrl} alt="Watermark Bottom" style={{ width: '100%', height: 'auto', display: 'block', filter: 'drop-shadow(0 2px 6px rgba(0,0,0,0.5))' }} />
+                              />
+                              {/* Floating drag handle indicator */}
+                              <div style={{
+                                position: 'absolute',
+                                bottom: -22,
+                                left: '50%',
+                                transform: 'translateX(-50%)',
+                                background: 'rgba(0,0,0,0.82)',
+                                color: '#fff',
+                                padding: '2px 8px',
+                                borderRadius: 12,
+                                fontSize: '0.66rem',
+                                fontWeight: 650,
+                                whiteSpace: 'nowrap',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 4,
+                                pointerEvents: 'none',
+                                backdropFilter: 'blur(4px)',
+                              }}>
+                                <Move size={10} /> {isDraggingWatermark ? `${Math.round(watermarkPos.x)}%, ${Math.round(watermarkPos.y)}%` : 'Drag to place'}
                               </div>
-                            )}
-                          </>
+                            </div>
+                          </div>
                         )}
                       </div>
                     )}
@@ -1368,6 +1734,143 @@ export default function SocialPublishPage() {
                 <span>Status: <strong style={{ color: '#16181d' }}>{clip?.status || 'ready'}</strong></span>
                 <span>Aspect: <strong>9:16</strong></span>
               </div>
+
+              {/* Action Buttons: Render / Proceed to Publish / Back to Customize */}
+              {currentStage === 'customize' ? (
+                <>
+                  {hasRenderedOnce ? (
+                    <>
+                      {/* Once rendered, it stays rendered! Direct publish option is primary */}
+                      <button
+                        type="button"
+                        onClick={() => setCurrentStage('publish')}
+                        style={{
+                          ...primaryButton,
+                          width: '100%',
+                          boxSizing: 'border-box',
+                          marginTop: '0.95rem',
+                          justifyContent: 'center',
+                          background: '#1f6f4a',
+                          padding: '0.85rem 1.1rem',
+                          fontWeight: 700,
+                          fontSize: '0.94rem',
+                          boxShadow: '0 4px 14px rgba(31, 111, 74, 0.3)',
+                        }}
+                      >
+                        <span>Proceed to Publish Options</span> <ArrowRight size={18} />
+                      </button>
+                      {hasAnyCustomization && (
+                        <button
+                          type="button"
+                          disabled={isBurningBranding}
+                          onClick={burnBrandingIntoVideo}
+                          style={{
+                            ...secondaryButton,
+                            width: '100%',
+                            boxSizing: 'border-box',
+                            marginTop: '0.5rem',
+                            justifyContent: 'center',
+                            fontSize: '0.84rem',
+                            color: '#15803d',
+                            borderColor: '#bbf7d0',
+                            cursor: isBurningBranding ? 'not-allowed' : 'pointer',
+                          }}
+                        >
+                          {isBurningBranding ? (
+                            <><LoaderCircle size={15} className="harvest-publish-spin" /> Rendering Updates…</>
+                          ) : (
+                            <><Sparkles size={15} /> Re-Render with Updates</>
+                          )}
+                        </button>
+                      )}
+                    </>
+                  ) : !hasAnyCustomization ? (
+                    <>
+                      {/* Zero edits made or reversed: Directly show publish option */}
+                      <button
+                        type="button"
+                        onClick={() => setCurrentStage('publish')}
+                        style={{
+                          ...primaryButton,
+                          width: '100%',
+                          boxSizing: 'border-box',
+                          marginTop: '0.95rem',
+                          justifyContent: 'center',
+                          background: '#1f6f4a',
+                          padding: '0.85rem 1.1rem',
+                          fontWeight: 700,
+                          fontSize: '0.94rem',
+                          boxShadow: '0 4px 14px rgba(31, 111, 74, 0.3)',
+                        }}
+                      >
+                        <span>Proceed to Publish Options</span> <ArrowRight size={18} />
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      {/* Custom edits added: Render Full Video */}
+                      <button
+                        type="button"
+                        disabled={isBurningBranding}
+                        onClick={burnBrandingIntoVideo}
+                        style={{
+                          ...primaryButton,
+                          width: '100%',
+                          boxSizing: 'border-box',
+                          marginTop: '0.95rem',
+                          justifyContent: 'center',
+                          background: '#16a34a',
+                          borderColor: '#15803d',
+                          padding: '0.85rem 1.1rem',
+                          fontWeight: 700,
+                          fontSize: '0.94rem',
+                          boxShadow: '0 4px 14px rgba(22, 163, 74, 0.3)',
+                          cursor: isBurningBranding ? 'not-allowed' : 'pointer',
+                        }}
+                      >
+                        {isBurningBranding ? (
+                          <><LoaderCircle size={18} className="harvest-publish-spin" /> Rendering Full Video with FFmpeg…</>
+                        ) : (
+                          <><Sparkles size={18} /> Render Full Video</>
+                        )}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setCurrentStage('publish')}
+                        style={{
+                          ...secondaryButton,
+                          width: '100%',
+                          boxSizing: 'border-box',
+                          marginTop: '0.5rem',
+                          justifyContent: 'center',
+                          fontSize: '0.84rem',
+                        }}
+                      >
+                        Skip Branding &amp; Publish Directly →
+                      </button>
+                    </>
+                  )}
+                </>
+              ) : (
+                <>
+                  {/* Publish stage action: Back to customize button */}
+                  <button
+                    type="button"
+                    onClick={() => setCurrentStage('customize')}
+                    style={{
+                      ...secondaryButton,
+                      width: '100%',
+                      boxSizing: 'border-box',
+                      marginTop: '0.95rem',
+                      justifyContent: 'center',
+                      fontWeight: 650,
+                      fontSize: '0.88rem',
+                    }}
+                  >
+                    <ArrowLeft size={16} /> Back to Customize Video
+                  </button>
+                </>
+              )}
 
               {videoUrl && (
                 <a
@@ -1387,7 +1890,8 @@ export default function SocialPublishPage() {
               )}
             </aside>
           </div>
-        )}
+        </>
+      )}
       </main>
     </div>
   );
