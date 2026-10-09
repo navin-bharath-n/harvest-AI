@@ -128,10 +128,10 @@ export default function StudioPage() {
   const [modalBrandingTab, setModalBrandingTab] = useState('watermark'); // 'watermark' | 'header' | 'footer'
   const [modalWatermarkPath, setModalWatermarkPath] = useState(null);
   const [modalWatermarkPreview, setModalWatermarkPreview] = useState(null);
-  const [modalWatermarkPos, setModalWatermarkPos] = useState('header');
-  const [modalWatermarkScale, setModalWatermarkScale] = useState(20);
-  const [modalWatermarkOpacity, setModalWatermarkOpacity] = useState(90);
-  const [modalWatermarkMode, setModalWatermarkMode] = useState('interval_2s'); // 'interval_2s' | 'always'
+  const [modalWatermarkPos, setModalWatermarkPos] = useState('top-right');
+  const [modalWatermarkScale, setModalWatermarkScale] = useState(16);
+  const [modalWatermarkOpacity, setModalWatermarkOpacity] = useState(85);
+  const [modalWatermarkMode, setModalWatermarkMode] = useState('always'); // 'always' | 'interval_2s'
   const [isUploadingModalWatermark, setIsUploadingModalWatermark] = useState(false);
 
   const [modalHeaderPath, setModalHeaderPath] = useState(null);
@@ -800,10 +800,10 @@ export default function StudioPage() {
         templateStoragePath: isTemplateMode ? selectedTemplate.storage_path : null,
         thumbnailPath: modalThumbnailPath || null,
         watermarkPath: modalWatermarkPath || null,
-        watermarkPosition: modalWatermarkPos || 'header',
-        watermarkScale: (Number(modalWatermarkScale) || 20) / 100,
-        watermarkOpacity: (Number(modalWatermarkOpacity) || 90) / 100,
-        watermarkMode: modalWatermarkMode || 'interval_2s',
+        watermarkPosition: modalWatermarkPos || 'top-right',
+        watermarkScale: (Number(modalWatermarkScale) || 16) / 100,
+        watermarkOpacity: (Number(modalWatermarkOpacity) || 85) / 100,
+        watermarkMode: modalWatermarkMode || 'always',
         headerImagePath: modalHeaderPath || null,
         headerHeight: Number(modalHeaderHeight) || 160,
         footerImagePath: modalFooterPath || null,
