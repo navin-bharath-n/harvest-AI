@@ -80,11 +80,20 @@ def _resolve_cookiefile() -> Optional[str]:
     content = getattr(settings, "YOUTUBE_COOKIES_CONTENT", None) or os.getenv("YOUTUBE_COOKIES_CONTENT") or os.getenv("YOUTUBE_COOKIE_DATA")
     if content and content.strip():
         try:
-            temp_cookie = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False)
-            temp_cookie.write(content.strip())
+            raw_text = content.strip()
+            # Handle base64 encoded format
+            if raw_text.startswith("base64:"):
+                import base64
+                raw_text = base64.b64decode(raw_text[7:]).decode("utf-8", errors="ignore")
+            # Handle escaped newlines from single-line environment variable inputs
+            elif "\\n" in raw_text and "\n" not in raw_text:
+                raw_text = raw_text.replace("\\n", "\n").replace("\\r", "\r")
+
+            temp_cookie = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8")
+            temp_cookie.write(raw_text)
             temp_cookie.flush()
             temp_cookie.close()
-            logger.info("Created temporary cookie file from YOUTUBE_COOKIES_CONTENT env var")
+            logger.info("Successfully loaded YouTube cookies from YOUTUBE_COOKIES_CONTENT environment variable")
             return temp_cookie.name
         except Exception as e:
             logger.warning(f"Could not write temporary cookie file from YOUTUBE_COOKIES_CONTENT: {e}")
