@@ -461,12 +461,13 @@ class CTAOverlayService:
                 )
                 concat_cmd = [
                     "ffmpeg", "-y", "-loglevel", "error",
+                    "-threads", "1", "-filter_threads", "1", "-filter_complex_threads", "1",
                     "-i", video_path,
                     "-i", outro_clip_path,
                     "-filter_complex", concat_filter,
                     "-map", "[outv]",
                     "-map", "[outa]",
-                    "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "22",
                     "-c:a", "aac", "-b:a", "128k",
                     "-movflags", "+faststart",
                     merged_path
@@ -480,17 +481,20 @@ class CTAOverlayService:
                 )
                 concat_cmd = [
                     "ffmpeg", "-y", "-loglevel", "error",
+                    "-threads", "1", "-filter_threads", "1", "-filter_complex_threads", "1",
                     "-i", video_path,
                     "-i", outro_clip_path,
                     "-filter_complex", concat_filter,
                     "-map", "[outv]",
                     "-map", "[outa]",
-                    "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "22",
                     "-c:a", "aac", "-b:a", "128k",
                     "-movflags", "+faststart",
                     merged_path
                 ]
 
+            import gc
+            gc.collect()
             logger.info(f"Concatenating 9:16 outro ({outro_dur}s) to {video_path}")
             res_concat = subprocess.run(concat_cmd, capture_output=True, text=True)
             if res_concat.returncode != 0:

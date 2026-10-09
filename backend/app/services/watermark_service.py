@@ -185,18 +185,23 @@ class WatermarkService:
 
         cmd = [
             "ffmpeg", "-y",
+            "-threads", "1",
+            "-filter_threads", "1",
+            "-filter_complex_threads", "1",
             *inputs,
             "-filter_complex", filter_complex_str,
             "-map", f"[{current_stream}]",
             "-map", "0:a?",
             "-c:v", "libx264",
-            "-preset", "fast",
-            "-crf", "20",
+            "-preset", "ultrafast",
+            "-crf", "22",
             "-c:a", "copy",
             "-movflags", "+faststart",
             output_video_path
         ]
 
+        import gc
+        gc.collect()
         logger.info(f"Executing FFmpeg branding filter: {' '.join(cmd[:12])}...")
         res = subprocess.run(cmd, capture_output=True, text=True)
         if res.returncode != 0:

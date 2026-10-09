@@ -579,13 +579,14 @@ class TemplateService:
                     )
                     concat_cmd = [
                         "ffmpeg", "-y", "-loglevel", "error",
+                        "-threads", "1", "-filter_threads", "1", "-filter_complex_threads", "1",
                         "-i", video_path,
                         "-i", cached_template_file,
                         "-f", "lavfi", "-t", f"{tmpl_dur:.2f}", "-i", "anullsrc=r=44100:cl=stereo",
                         "-filter_complex", concat_filter,
                         "-map", "[outv]",
                         "-map", "[outa]",
-                        "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+                        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "22",
                         "-c:a", "aac", "-b:a", "128k",
                         "-movflags", "+faststart",
                         merged_path
@@ -598,11 +599,12 @@ class TemplateService:
                     )
                     concat_cmd = [
                         "ffmpeg", "-y", "-loglevel", "error",
+                        "-threads", "1", "-filter_threads", "1", "-filter_complex_threads", "1",
                         "-i", video_path,
                         "-i", cached_template_file,
                         "-filter_complex", concat_filter,
                         "-map", "[outv]",
-                        "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+                        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "22",
                         "-movflags", "+faststart",
                         merged_path
                     ]
@@ -618,12 +620,13 @@ class TemplateService:
                 )
                 concat_cmd = [
                     "ffmpeg", "-y", "-loglevel", "error",
+                    "-threads", "1", "-filter_threads", "1", "-filter_complex_threads", "1",
                     "-i", video_path,
                     "-i", cached_template_file,
                     "-filter_complex", concat_filter,
                     "-map", "[outv]",
                     "-map", "[outa]",
-                    "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "22",
                     "-c:a", "aac", "-b:a", "128k",
                     "-movflags", "+faststart",
                     merged_path
@@ -641,13 +644,14 @@ class TemplateService:
                     )
                     concat_cmd = [
                         "ffmpeg", "-y", "-loglevel", "error",
+                        "-threads", "1", "-filter_threads", "1", "-filter_complex_threads", "1",
                         "-i", video_path,
                         "-i", cached_template_file,
                         "-ss", "5.0", "-i", fallback_audio,
                         "-filter_complex", concat_filter,
                         "-map", "[outv]",
                         "-map", "[outa]",
-                        "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+                        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "22",
                         "-c:a", "aac", "-b:a", "128k",
                         "-movflags", "+faststart",
                         merged_path
@@ -662,13 +666,14 @@ class TemplateService:
                     )
                     concat_cmd = [
                         "ffmpeg", "-y", "-loglevel", "error",
+                        "-threads", "1", "-filter_threads", "1", "-filter_complex_threads", "1",
                         "-i", video_path,
                         "-i", cached_template_file,
                         "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
                         "-filter_complex", concat_filter,
                         "-map", "[outv]",
                         "-map", "[outa]",
-                        "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+                        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "22",
                         "-c:a", "aac", "-b:a", "128k",
                         "-movflags", "+faststart",
                         merged_path
@@ -681,15 +686,18 @@ class TemplateService:
                 )
                 concat_cmd = [
                     "ffmpeg", "-y", "-loglevel", "error",
+                    "-threads", "1", "-filter_threads", "1", "-filter_complex_threads", "1",
                     "-i", video_path,
                     "-i", cached_template_file,
                     "-filter_complex", concat_filter,
                     "-map", "[outv]",
-                    "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "22",
                     "-movflags", "+faststart",
                     merged_path
                 ]
 
+            import gc
+            gc.collect()
             res = subprocess.run(concat_cmd, capture_output=True, text=True)
             if res.returncode != 0:
                 logger.error(f"FFmpeg template concat error: {res.stderr}")

@@ -1168,6 +1168,8 @@ def render_clip_task(clip_id: int):
             # ─────────────────────────────────────────────────────────────────
             extended_video = temp_video_source
             if has_outro:
+                import gc
+                gc.collect()
                 if template_id or template_storage_path:
                     target_tmpl = template_storage_path or template_id
                     logger.info(f"Extending video with R2 template '{target_tmpl}' for clip {clip_id} (bg music will cover extended length)")
@@ -1193,6 +1195,8 @@ def render_clip_task(clip_id: int):
 
             # Apply bg music / uploaded audio over the FULL extended video length
             try:
+                import gc
+                gc.collect()
                 vol = instructions.get("music_volume")
                 vol_val = float(vol) if vol is not None else (0.18 if (len(shifted_words) > 0 and audio_mode != "replace") else 1.0)
                 logger.info(f"Mixing bg/uploaded music track over extended video ({extended_video}) -> {output_path}")
@@ -1225,6 +1229,8 @@ def render_clip_task(clip_id: int):
                 shutil.copyfile(temp_video_source, output_path)
 
             if has_outro:
+                import gc
+                gc.collect()
                 if template_id or template_storage_path:
                     target_tmpl = template_storage_path or template_id
                     logger.info(f"Appending Cloudflare R2 template outro '{target_tmpl}' WITH dedicated outro audio to clip {clip_id}")
@@ -1275,6 +1281,8 @@ def render_clip_task(clip_id: int):
         ftr_path = instructions.get("footer_image_path") or edit_options.get("footer_image_path") or branding_data.get("footer_image_path")
 
         if wm_path or hdr_path or ftr_path:
+            import gc
+            gc.collect()
             branded_tmp = os.path.join(clips_dir, f"branded_{clip_id}_{uuid.uuid4().hex[:8]}.mp4")
             try:
                 logger.info(f"Applying branding (watermark/header/footer) directly to rendered clip {clip_id}")
