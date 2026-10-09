@@ -69,6 +69,9 @@ class Settings(BaseSettings):
     META_APP_SECRET: Optional[str] = None
     META_REDIRECT_URI: str = "https://localhost:8000/api/v1/users/auth/facebook/callback"
     INSTAGRAM_REDIRECT_URI: str = "https://localhost:8000/api/v1/users/auth/instagram/callback"
+    YOUTUBE_COOKIES_PATH: Optional[str] = None
+    YOUTUBE_COOKIES_CONTENT: Optional[str] = None
+    YOUTUBE_PROXY: Optional[str] = None
 
     @property
     def SQLALCHEMY_DATABASE_URI(self) -> str:
