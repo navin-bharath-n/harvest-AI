@@ -32,7 +32,7 @@ def _resolve_path(path_str: str) -> str:
     if os.path.exists(candidate):
         return os.path.abspath(candidate)
     fname = os.path.basename(path_str)
-    for sub in ("uploads", os.path.join("uploads", "clips")):
+    for sub in ("uploads", os.path.join("uploads", "clips"), os.path.join("uploads", "audio")):
         c = os.path.join(str(_BACKEND_DIR), sub, fname)
         if os.path.exists(c):
             return os.path.abspath(c)
@@ -304,6 +304,134 @@ async def upload_video(
 
     return db_video
 
+@router.post("/import-url", response_model=schemas.Video)
+def import_video_from_url(
+    request: schemas.VideoImportUrlRequest,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    # Verify project exists and belongs to current user
+    db_project = db.query(models.Project).filter(
+        models.Project.id == request.project_id,
+        models.Project.owner_id == current_user.id
+    ).first()
+    if not db_project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    from app.services.url_downloader import download_video_from_url, UrlDownloadError
+    try:
+        download_result = download_video_from_url(request.url, UPLOAD_DIR)
+    except UrlDownloadError as ude:
+        raise HTTPException(status_code=400, detail=str(ude))
+    except Exception as exc:
+        logger.error(f"Failed to import video from URL {request.url}: {exc}")
+        raise HTTPException(status_code=500, detail="Failed to download video from the provided link.")
+
+    initial_status = models.VideoStatus.PROCESSING if request.auto_analyze else models.VideoStatus.COMPLETED
+
+    db_video = models.Video(
+        original_filename=download_result["title"],
+        storage_path=download_result["storage_path"],
+        project_id=request.project_id,
+        duration=download_result["duration"],
+        resolution=download_result["resolution"],
+        fps=download_result["fps"],
+        status=initial_status,
+        transcription_status=models.TranscriptionStatus.PENDING,
+        analysis_status=models.ContentAnalysisStatus.PENDING,
+        highlight_status=models.HighlightDetectionStatus.PENDING
+    )
+    db.add(db_video)
+    db.commit()
+    db.refresh(db_video)
+
+    if request.auto_analyze:
+        from app.tasks.video_tasks import extract_top5_highlights_task
+        try:
+            dispatch_required_queue(extract_top5_highlights_task, db_video.id, request.length)
+        except HTTPException:
+            db_video.status = models.VideoStatus.FAILED
+            db_video.highlight_status = models.HighlightDetectionStatus.FAILED
+            db.commit()
+            raise
+
+    return db_video
+
+AUDIO_UPLOAD_DIR = os.path.join(UPLOAD_DIR, "audio")
+
+@router.post("/upload-audio")
+async def upload_custom_audio(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    ALLOWED_AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac"}
+    file_ext = os.path.splitext(file.filename)[1].lower()
+    if file_ext not in ALLOWED_AUDIO_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid audio format. Supported: {', '.join(sorted(ALLOWED_AUDIO_EXTENSIONS))}"
+        )
+
+    os.makedirs(AUDIO_UPLOAD_DIR, exist_ok=True)
+    unique_audio_name = f"audio_{uuid.uuid4().hex[:12]}{file_ext}"
+    local_path = os.path.join(AUDIO_UPLOAD_DIR, unique_audio_name)
+    MAX_AUDIO_SIZE = 50 * 1024 * 1024  # 50 MB
+
+    from app.services import object_storage
+    if object_storage.enabled():
+        try:
+            file.file.seek(0, os.SEEK_END)
+            upload_size = file.file.tell()
+            file.file.seek(0)
+            if upload_size > MAX_AUDIO_SIZE:
+                raise HTTPException(status_code=413, detail="Audio file too large. Maximum size is 50 MB.")
+            storage_path = object_storage.upload_fileobj(
+                file.file, f"audio/{unique_audio_name}", file.content_type or "audio/mpeg"
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to upload audio to remote storage: {e}")
+            raise HTTPException(status_code=502, detail="Failed to store audio file")
+    else:
+        storage_path = f"uploads/audio/{unique_audio_name}"
+        bytes_written = 0
+        with open(local_path, "wb") as buffer:
+            while chunk := await file.read(1024 * 1024):
+                bytes_written += len(chunk)
+                if bytes_written > MAX_AUDIO_SIZE:
+                    buffer.close()
+                    if os.path.exists(local_path):
+                        os.remove(local_path)
+                    raise HTTPException(status_code=413, detail="Audio file too large. Maximum size is 50 MB.")
+                buffer.write(chunk)
+
+    return {
+        "filename": file.filename,
+        "storage_path": storage_path,
+        "audio_name": os.path.splitext(file.filename)[0]
+    }
+
+@router.get("/music-presets/{preset}/audio")
+def get_music_preset_audio(preset: str):
+    """
+    Returns an audio stream for a preset music style so creators can audition
+    and listen to the exact track before choosing it.
+    """
+    clean_preset = preset.lower().strip()
+    from app.services.music_agent import music_agent
+    track_path = music_agent.recommend_music({"style": clean_preset})
+    if not track_path or not os.path.isfile(track_path):
+        raise HTTPException(status_code=404, detail=f"Music preset '{preset}' not found")
+
+    return FileResponse(
+        track_path,
+        media_type="audio/mpeg",
+        filename=f"preset-{clean_preset}.mp3",
+        headers={"Accept-Ranges": "bytes", "Cache-Control": "public, max-age=86400"}
+    )
+
 @router.post("/{video_id}/extract-highlights", response_model=schemas.Video)
 def extract_highlights(
     video_id: int,
@@ -534,6 +662,21 @@ def select_moment(
         and (existing.edit_options or {}).get("caption_language", "original") == request.caption_language
         and bool((existing.edit_options or {}).get("dub_voice", False)) == request.dub_voice
         and (existing.edit_options or {}).get("speaker_gender", "female") == request.speaker_gender
+        and (existing.edit_options or {}).get("audio_mode", "original") == request.audio_mode
+        and (existing.edit_options or {}).get("custom_audio_path") == request.custom_audio_path
+        and (existing.edit_options or {}).get("music_preset", "none") == request.music_preset
+        and (existing.edit_options or {}).get("cta_template", "none") == (request.cta_template or "none")
+        and (existing.edit_options or {}).get("cta_text", "") == (request.cta_text or "")
+        and (existing.edit_options or {}).get("cta_placement", "outro") == (request.cta_placement or "outro")
+        and bool((existing.edit_options or {}).get("enable_outro", False)) == bool(request.enable_outro)
+        and (existing.edit_options or {}).get("outro_like_text", "") == (request.outro_like_text or "")
+        and (existing.edit_options or {}).get("outro_comment_text", "") == (request.outro_comment_text or "")
+        and (existing.edit_options or {}).get("outro_subscribe_text", "") == (request.outro_subscribe_text or "")
+        and (existing.edit_options or {}).get("outro_follow_text", "") == (request.outro_follow_text or "")
+        and (existing.edit_options or {}).get("outro_custom_text", "") == (request.outro_custom_text or "")
+        and abs(float((existing.edit_options or {}).get("outro_duration", 3.0)) - float(request.outro_duration or 3.0)) < 0.01
+        and (existing.edit_options or {}).get("template_id") == (request.template_id or None)
+        and (existing.edit_options or {}).get("template_storage_path") == (request.template_storage_path or None)
     ):
         db.commit()
         return existing
@@ -559,8 +702,23 @@ def select_moment(
         "translate_language": request.translate_language,
         "dub_voice": request.dub_voice,
         "speaker_gender": request.speaker_gender,
-        "music_preset": "none",
-        "music_style": "none",
+        "audio_mode": request.audio_mode,
+        "custom_audio_path": request.custom_audio_path,
+        "music_preset": request.music_preset,
+        "music_volume": request.music_volume,
+        "cta_template": request.cta_template or "none",
+        "cta_text": (request.cta_text or "").strip()[:100],
+        "cta_placement": request.cta_placement or "outro",
+        "enable_outro": bool(request.enable_outro),
+        "outro_like_text": (request.outro_like_text or "").strip()[:60],
+        "outro_comment_text": (request.outro_comment_text or "").strip()[:60],
+        "outro_subscribe_text": (request.outro_subscribe_text or "").strip()[:60],
+        "outro_follow_text": (request.outro_follow_text or "").strip()[:60],
+        "outro_custom_text": (request.outro_custom_text or "").strip()[:200],
+        "outro_duration": max(1.5, min(10.0, float(request.outro_duration or 3.0))),
+        "outro_music_style": (request.outro_music_style or "upbeat").strip().lower(),
+        "template_id": request.template_id or None,
+        "template_storage_path": request.template_storage_path or None,
         "framing_mode": "fit_blur",
     }
     if existing:

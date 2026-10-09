@@ -281,6 +281,341 @@ def delete_user_connection(
     db.commit()
     return {"message": f"Successfully disconnected platform {platform}"}
 
+@router.get("/auth/google/login")
+def google_auth_login(request: Request):
+    """Initiates Google OAuth for both User Login and YouTube Channel authorization."""
+    from app.core.config import settings
+
+    if not settings.GOOGLE_CLIENT_ID or not settings.GOOGLE_CLIENT_SECRET:
+        raise HTTPException(
+            status_code=400,
+            detail="Google OAuth credentials are not configured in backend .env. Please set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET."
+        )
+
+    # Scopes needed for both Login (identity/profile) AND YouTube video upload & read
+    scopes = [
+        "openid",
+        "https://www.googleapis.com/auth/userinfo.email",
+        "https://www.googleapis.com/auth/userinfo.profile",
+        "https://www.googleapis.com/auth/youtube.upload",
+        "https://www.googleapis.com/auth/youtube.readonly",
+    ]
+
+    redirect_uri = settings.GOOGLE_AUTH_REDIRECT_URI
+    if not redirect_uri:
+        base_url = str(request.base_url).rstrip("/")
+        redirect_uri = f"{base_url}/api/v1/users/auth/google/callback"
+
+    auth_url = (
+        "https://accounts.google.com/o/oauth2/v2/auth"
+        "?response_type=code"
+        f"&client_id={settings.GOOGLE_CLIENT_ID}"
+        f"&redirect_uri={redirect_uri}"
+        f"&scope={'%20'.join(scopes)}"
+        "&access_type=offline&prompt=consent"
+    )
+    return RedirectResponse(url=auth_url)
+
+
+@router.get("/auth/google/callback", response_class=HTMLResponse)
+def google_auth_callback(
+    request: Request,
+    code: Optional[str] = None,
+    error: Optional[str] = None,
+    error_description: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """Handles Google OAuth callback, logs in / registers the user, and connects YouTube channel."""
+    import requests
+    import secrets
+    from app.core.config import settings
+    _origin = _get_frontend_origin()
+
+    if error or error_description:
+        err_msg = error_description or error or "Google login was cancelled or failed."
+        err_json = _json.dumps(str(err_msg))
+        return f"""
+        <html>
+          <body>
+            <script>
+              window.opener ? window.opener.postMessage({{
+                type: 'HARVEST_GOOGLE_LOGIN_FAILURE',
+                error: {err_json}
+              }}, {_json.dumps(_origin)}) : alert({err_json});
+              window.close();
+            </script>
+          </body>
+        </html>
+        """
+
+    if not code:
+        raise HTTPException(status_code=400, detail="Missing authorization code from Google.")
+
+    try:
+        redirect_uri = settings.GOOGLE_AUTH_REDIRECT_URI
+        if not redirect_uri:
+            base_url = str(request.base_url).rstrip("/")
+            redirect_uri = f"{base_url}/api/v1/users/auth/google/callback"
+
+        # Exchange code for tokens
+        token_url = "https://oauth2.googleapis.com/token"
+        data = {
+            "client_id": settings.GOOGLE_CLIENT_ID,
+            "client_secret": settings.GOOGLE_CLIENT_SECRET,
+            "code": code,
+            "grant_type": "authorization_code",
+            "redirect_uri": redirect_uri
+        }
+        res = requests.post(token_url, data=data, timeout=15)
+        res.raise_for_status()
+        token_data = res.json()
+
+        google_access_token = token_data.get("access_token")
+        google_refresh_token = token_data.get("refresh_token")
+
+        # Fetch user profile from Google UserInfo
+        userinfo_url = "https://www.googleapis.com/oauth2/v3/userinfo"
+        userinfo_res = requests.get(
+            userinfo_url,
+            headers={"Authorization": f"Bearer {google_access_token}"},
+            timeout=10
+        )
+        userinfo_res.raise_for_status()
+        user_info = userinfo_res.json()
+
+        email = user_info.get("email", "").strip().lower()
+        if not email:
+            raise ValueError("No email address provided by Google account.")
+
+        full_name = user_info.get("name") or email.split("@")[0]
+        avatar_url = user_info.get("picture")
+
+        # Find or create user in Harvest DB
+        db_user = db.query(models.User).filter(models.User.email == email).first()
+        if not db_user:
+            random_pw = secrets.token_urlsafe(32)
+            db_user = models.User(
+                email=email,
+                full_name=full_name,
+                hashed_password=security.get_password_hash(random_pw),
+                is_active=True
+            )
+            db.add(db_user)
+            db.commit()
+            db.refresh(db_user)
+            logger.info(f"New user created via Google OAuth: id={db_user.id}, email={email}")
+        else:
+            if full_name and not db_user.full_name:
+                db_user.full_name = full_name
+                db.commit()
+                db.refresh(db_user)
+
+        # Connect YouTube if YouTube scopes were granted
+        try:
+            from app.services.social_publish_service import SocialPublishService
+            youtube_details = SocialPublishService.verify_connection("youtube", {
+                "youtube_access_token": google_access_token,
+                "youtube_refresh_token": google_refresh_token
+            })
+            if youtube_details:
+                db_conn = db.query(models.SocialConnection).filter(
+                    models.SocialConnection.user_id == db_user.id,
+                    models.SocialConnection.platform == "youtube"
+                ).first()
+                new_creds = youtube_details.get("credentials") or {}
+                if db_conn:
+                    if not new_creds.get("youtube_refresh_token") and db_conn.credentials:
+                        new_creds["youtube_refresh_token"] = db_conn.credentials.get("youtube_refresh_token")
+                    db_conn.account_name = youtube_details["account_name"]
+                    db_conn.account_handle = youtube_details["account_handle"]
+                    db_conn.account_avatar = youtube_details["account_avatar"]
+                    db_conn.credentials = new_creds
+                    from sqlalchemy.orm.attributes import flag_modified
+                    flag_modified(db_conn, "credentials")
+                else:
+                    db_conn = models.SocialConnection(
+                        user_id=db_user.id,
+                        platform="youtube",
+                        account_name=youtube_details["account_name"],
+                        account_handle=youtube_details["account_handle"],
+                        account_avatar=youtube_details["account_avatar"],
+                        credentials=new_creds
+                    )
+                    db.add(db_conn)
+                db.commit()
+                logger.info(f"Linked YouTube channel '{youtube_details.get('account_name')}' for user {db_user.id} during Google Sign-In.")
+        except Exception as yt_err:
+            logger.warning(f"Could not automatically link YouTube channel during Google sign-in (non-fatal): {yt_err}")
+
+        # Determine frontend origin for redirect fallback
+        frontend_url = "https://localhost:5173"
+        try:
+            if settings.FRONTEND_ORIGIN and settings.FRONTEND_ORIGIN not in ("*", ""):
+                frontend_url = settings.FRONTEND_ORIGIN.rstrip("/")
+        except Exception:
+            pass
+
+        # Generate JWT token
+        jwt_token = security.create_access_token(subject=db_user.id)
+        user_dict = {
+            "id": db_user.id,
+            "email": db_user.email,
+            "full_name": db_user.full_name,
+            "avatar": avatar_url
+        }
+
+        token_json = _json.dumps(jwt_token)
+        user_json = _json.dumps(user_dict)
+        user_json_str = _json.dumps(_json.dumps(user_dict))
+        frontend_url_json = _json.dumps(frontend_url)
+
+        return f"""
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <meta charset="utf-8">
+            <title>Harvest AI - Signing In</title>
+            <style>
+              body {{
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                background: #0d0f12;
+                color: #f3f4f6;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                height: 100vh;
+                margin: 0;
+              }}
+              .card {{
+                background: #16181d;
+                border: 1px solid #282c37;
+                border-radius: 12px;
+                padding: 28px 36px;
+                text-align: center;
+                max-width: 360px;
+                box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+              }}
+              .spinner {{
+                width: 32px;
+                height: 32px;
+                border: 3px solid rgba(59, 130, 246, 0.2);
+                border-top-color: #3b82f6;
+                border-radius: 50%;
+                animation: spin 0.8s linear infinite;
+                margin: 0 auto 16px;
+              }}
+              @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
+              h3 {{ margin: 0 0 6px; font-size: 17px; font-weight: 600; color: #ffffff; }}
+              p {{ margin: 0; font-size: 13px; color: #9ca3af; }}
+            </style>
+          </head>
+          <body>
+            <div class="card">
+              <div class="spinner"></div>
+              <h3>Signing into Harvest AI…</h3>
+              <p>Authentication successful. Taking you to your studio…</p>
+            </div>
+            <script>
+              const payload = {{
+                type: 'HARVEST_GOOGLE_LOGIN_SUCCESS',
+                token: {token_json},
+                user: {user_json}
+              }};
+
+              const targetFrontend = {frontend_url_json};
+              let openerNotified = false;
+
+              if (window.opener && !window.opener.closed) {{
+                try {{
+                  window.opener.postMessage(payload, '*');
+                  openerNotified = true;
+                }} catch (e) {{
+                  console.error('postMessage error:', e);
+                }}
+              }}
+
+              setTimeout(() => {{
+                if (openerNotified && window.opener && !window.opener.closed) {{
+                  window.close();
+                }} else {{
+                  window.location.href = targetFrontend + '/login?google_token=' + encodeURIComponent({token_json}) + '&google_user=' + encodeURIComponent({user_json_str});
+                }}
+              }}, 400);
+            </script>
+          </body>
+        </html>
+        """
+
+    except Exception as e:
+        logger.error(f"Google OAuth callback error: {e}", exc_info=True)
+        raw_err = str(e)
+        if "invalid_grant" in raw_err.lower():
+            friendly_err = "Google authorization code expired or was already used. Please return to the login screen and click 'Continue with Google' again."
+        else:
+            friendly_err = f"Google sign-in error: {raw_err}"
+        err_json = _json.dumps(friendly_err)
+        return f"""
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <meta charset="utf-8">
+            <title>Harvest AI - Sign In Error</title>
+            <style>
+              body {{
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                background: #0d0f12;
+                color: #f3f4f6;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                height: 100vh;
+                margin: 0;
+              }}
+              .card {{
+                background: #16181d;
+                border: 1px solid rgba(239, 68, 68, 0.4);
+                border-radius: 12px;
+                padding: 28px 36px;
+                text-align: center;
+                max-width: 420px;
+                box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+              }}
+              h3 {{ margin: 0 0 10px; font-size: 18px; font-weight: 600; color: #ef4444; }}
+              p {{ margin: 0 0 20px; font-size: 14px; color: #d1d5db; line-height: 1.5; }}
+              button {{
+                background: #2563eb;
+                color: #ffffff;
+                border: none;
+                padding: 10px 20px;
+                border-radius: 8px;
+                font-weight: 500;
+                cursor: pointer;
+              }}
+              button:hover {{ background: #1d4ed8; }}
+            </style>
+          </head>
+          <body>
+            <div class="card">
+              <h3>Authentication Error</h3>
+              <p>{friendly_err}</p>
+              <button onclick="window.close()">Close Window</button>
+            </div>
+            <script>
+              if (window.opener && !window.opener.closed) {{
+                try {{
+                  window.opener.postMessage({{
+                    type: 'HARVEST_GOOGLE_LOGIN_FAILURE',
+                    error: {err_json}
+                  }}, '*');
+                }} catch (e) {{}}
+                setTimeout(() => window.close(), 3000);
+              }}
+            </script>
+          </body>
+        </html>
+        """
+
+
 @router.get("/auth/{platform}/login")
 def platform_login(
     platform: str,

@@ -87,7 +87,10 @@ export default function SocialPublishPage() {
 
   useEffect(() => {
     const handleOAuthMessage = async (event) => {
-      if (event.origin !== api.getSocialOAuthOrigin() || event.source !== oauthPopupRef.current) return;
+      const isAllowed =
+        api.isAllowedOAuthOrigin(event.origin) ||
+        (oauthPopupRef.current && event.source === oauthPopupRef.current);
+      if (!isAllowed) return;
       oauthPopupRef.current = null;
       if (event.data?.type === 'HARVEST_AUTH_FAILURE') {
         setMessageError(true);

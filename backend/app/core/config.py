@@ -64,6 +64,7 @@ class Settings(BaseSettings):
     GOOGLE_CLIENT_ID: Optional[str] = None
     GOOGLE_CLIENT_SECRET: Optional[str] = None
     GOOGLE_REDIRECT_URI: str = "https://localhost:8000/api/v1/users/auth/youtube/callback"
+    GOOGLE_AUTH_REDIRECT_URI: str = "http://localhost:8000/api/v1/users/auth/google/callback"
     META_APP_ID: Optional[str] = None
     META_APP_SECRET: Optional[str] = None
     META_REDIRECT_URI: str = "https://localhost:8000/api/v1/users/auth/facebook/callback"

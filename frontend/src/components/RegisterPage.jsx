@@ -1,13 +1,14 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
   Scissors, Lock, Mail, User, Eye, EyeOff, ArrowRight,
   AlertCircle, Loader, Check, ShieldCheck
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { api } from '../api/client';
 
 export default function RegisterPage() {
-  const { register, isAuthenticated } = useAuth();
+  const { register, loginWithGoogleData, isAuthenticated } = useAuth();
   const navigate = useNavigate();
 
   const [fullName, setFullName] = useState('');
@@ -19,7 +20,68 @@ export default function RegisterPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [googleLoading, setGoogleLoading] = useState(false);
   const [error, setError] = useState('');
+  const googlePopupRef = useRef(null);
+
+  // Listen for Google OAuth popup messages
+  useEffect(() => {
+    const handleOAuthMessage = (event) => {
+      const isAllowed =
+        api.isAllowedOAuthOrigin(event.origin) ||
+        (googlePopupRef.current && event.source === googlePopupRef.current);
+      if (!isAllowed) return;
+
+      if (event.data?.type === 'HARVEST_GOOGLE_LOGIN_SUCCESS') {
+        const { token: userToken, user: userData } = event.data;
+        loginWithGoogleData(userToken, userData);
+        setGoogleLoading(false);
+        if (googlePopupRef.current && !googlePopupRef.current.closed) {
+          try { googlePopupRef.current.close(); } catch (e) {}
+        }
+        navigate('/studio', { replace: true });
+      } else if (event.data?.type === 'HARVEST_GOOGLE_LOGIN_FAILURE') {
+        setError(event.data.error || 'Google registration failed. Please try again.');
+        setGoogleLoading(false);
+      }
+    };
+    window.addEventListener('message', handleOAuthMessage);
+    return () => window.removeEventListener('message', handleOAuthMessage);
+  }, [loginWithGoogleData, navigate]);
+
+  // Support redirect URL params fallback (e.g., if popup was blocked or redirected)
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const googleToken = params.get('google_token');
+    const googleUser = params.get('google_user');
+    if (googleToken) {
+      try {
+        let parsedUser = null;
+        if (googleUser) {
+          parsedUser = typeof googleUser === 'object' ? googleUser : JSON.parse(decodeURIComponent(googleUser));
+        }
+        loginWithGoogleData(googleToken, parsedUser);
+        navigate('/studio', { replace: true });
+      } catch (err) {
+        console.error('Failed to parse Google OAuth credentials from URL:', err);
+      }
+    }
+  }, [loginWithGoogleData, navigate]);
+
+  const handleGoogleLogin = () => {
+    setError('');
+    setGoogleLoading(true);
+    const googleUrl = api.getGoogleLoginUrl();
+    const width = 500;
+    const height = 650;
+    const left = window.screenX + (window.outerWidth - width) / 2;
+    const top = window.screenY + (window.outerHeight - height) / 2;
+    googlePopupRef.current = window.open(
+      googleUrl,
+      'harvest_google_auth',
+      `width=${width},height=${height},left=${left},top=${top},status=0,toolbar=0,menubar=0`
+    );
+  };
 
   useEffect(() => {
     if (isAuthenticated) {
@@ -553,6 +615,45 @@ export default function RegisterPage() {
                 <ArrowRight size={16} />
               </>
             )}
+          </button>
+
+          {/* Divider */}
+          <div style={{ display: 'flex', alignItems: 'center', margin: '1.15rem 0', gap: '0.75rem' }}>
+            <div style={{ flex: 1, height: '1px', backgroundColor: '#e6e6e1' }} />
+            <span style={{ fontSize: '0.74rem', color: '#7a808a', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 650 }}>or</span>
+            <div style={{ flex: 1, height: '1px', backgroundColor: '#e6e6e1' }} />
+          </div>
+
+          {/* Google Sign In Button */}
+          <button
+            type="button"
+            onClick={handleGoogleLogin}
+            disabled={googleLoading || loading}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '0.75rem',
+              width: '100%',
+              padding: '0.75rem',
+              borderRadius: '6px',
+              backgroundColor: '#ffffff',
+              color: '#16181d',
+              border: '1px solid #d7d7d1',
+              fontSize: '0.92rem',
+              fontWeight: 600,
+              cursor: (googleLoading || loading) ? 'not-allowed' : 'pointer',
+              transition: 'all 0.15s ease',
+              boxShadow: '0 1px 2px rgba(0,0,0,0.04)',
+            }}
+          >
+            <svg width="18" height="18" viewBox="0 0 18 18">
+              <path fill="#4285F4" d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844c-.209 1.125-.843 2.078-1.796 2.717v2.258h2.908c1.702-1.567 2.684-3.874 2.684-6.616z" />
+              <path fill="#34A853" d="M9 18c2.43 0 4.467-.806 5.956-2.184l-2.908-2.258c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332C2.438 15.983 5.482 18 9 18z" />
+              <path fill="#FBBC05" d="M3.964 10.707c-.18-.54-.282-1.117-.282-1.707s.102-1.167.282-1.707V4.961H.957C.347 6.173 0 7.548 0 9s.347 2.827.957 4.039l3.007-2.332z" />
+              <path fill="#EA4335" d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0 5.482 0 2.438 2.017.957 4.961L3.964 7.293C4.672 5.166 6.656 3.58 9 3.58z" />
+            </svg>
+            <span>{googleLoading ? 'Connecting to Google…' : 'Continue with Google'}</span>
           </button>
         </form>
 

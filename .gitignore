@@ -39,6 +39,8 @@ backend/assets/
 *.pt
 *.pth
 *.onnx
+test_*.mp4
+
 
 # SSL certificate files
 *.pem

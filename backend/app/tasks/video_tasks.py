@@ -1117,35 +1117,156 @@ def render_clip_task(clip_id: int):
                     except Exception:
                         pass
 
-        # 7. Mix music track
-        music_style = instructions.get("music_style", "none")
-        music_preset = instructions.get("music_preset", music_style)
+        # 7. Check outro options & music configuration
+        template_id = instructions.get("template_id") or edit_options.get("template_id")
+        template_storage_path = instructions.get("template_storage_path") or edit_options.get("template_storage_path")
+        enable_outro = instructions.get("enable_outro") or edit_options.get("enable_outro", False)
+        has_outro = bool(template_id or template_storage_path or enable_outro)
+
+        audio_mode = instructions.get("audio_mode", "original")  # "original", "mix", "replace"
+        custom_audio_path = instructions.get("custom_audio_path")
+        music_preset = instructions.get("music_preset", instructions.get("music_style", "none"))
         music_track = None
         disable_music = True
 
-        if music_preset and music_preset != "none":
-            from app.services.music_agent import music_agent
-            music_track = music_agent.recommend_music({"style": music_preset})
-            disable_music = False
+        if audio_mode in ("mix", "replace"):
+            if custom_audio_path:
+                from app.api.api_v1.endpoints.videos import _resolve_path
+                resolved_custom = _resolve_path(custom_audio_path)
+                from app.services import object_storage
+                if object_storage.is_remote(custom_audio_path):
+                    try:
+                        resolved_custom = object_storage.local_path(custom_audio_path)
+                    except Exception as oe:
+                        logger.warning(f"Could not resolve remote audio track {custom_audio_path}: {oe}")
+                if os.path.exists(resolved_custom):
+                    music_track = resolved_custom
+                    disable_music = False
+                    logger.info(f"Using custom uploaded audio track for clip {clip_id}: {resolved_custom} (mode={audio_mode})")
+                else:
+                    logger.warning(f"Custom audio file not found: {custom_audio_path} ({resolved_custom})")
+            elif music_preset and music_preset != "none":
+                from app.services.music_agent import music_agent
+                music_track = music_agent.recommend_music({"style": music_preset})
+                if music_track and os.path.exists(music_track):
+                    disable_music = False
+
+        has_bg_or_uploaded_music = (not disable_music) and (music_track is not None)
 
         from app.services.music_agent import music_agent
-        try:
-            vol = instructions.get("music_volume")
-            vol_val = float(vol) if vol is not None else (0.15 if len(shifted_words) > 0 else 1.0)
-            music_agent.apply_music(
-                video_path=temp_video_source,
-                music_path=music_track,
-                output_path=output_path,
-                options={
-                    "disable_music": disable_music,
-                    "has_voice": len(shifted_words) > 0,
-                    "volume": vol_val
-                }
-            )
-        except Exception as me:
-            logger.error(f"Music mix failed, copying directly: {me}")
-            import subprocess
-            subprocess.run(["ffmpeg", "-y", "-i", temp_video_source, "-c", "copy", output_path], capture_output=True)
+        from app.services.template_service import template_service
+        from app.services.cta_overlay_service import cta_overlay_service
+        import subprocess
+
+        if has_bg_or_uploaded_music:
+            # ─────────────────────────────────────────────────────────────────
+            # USER SELECTED BG AUDIO OR UPLOADED AUDIO:
+            # The background music / uploaded track extends across the ENTIRE
+            # extended video length (clip + outro screen).
+            # The outro screen/template appends visuals with silence underneath
+            # so the bg music or uploaded audio flows smoothly across the extended length.
+            # ─────────────────────────────────────────────────────────────────
+            extended_video = temp_video_source
+            if has_outro:
+                if template_id or template_storage_path:
+                    target_tmpl = template_storage_path or template_id
+                    logger.info(f"Extending video with R2 template '{target_tmpl}' for clip {clip_id} (bg music will cover extended length)")
+                    template_service.append_template_to_video(extended_video, target_tmpl, with_audio=False)
+                elif enable_outro:
+                    like_text = instructions.get("outro_like_text", edit_options.get("outro_like_text", "Like"))
+                    comment_text = instructions.get("outro_comment_text", edit_options.get("outro_comment_text", "Comment"))
+                    subscribe_text = instructions.get("outro_subscribe_text", edit_options.get("outro_subscribe_text", "Subscribe"))
+                    follow_text = instructions.get("outro_follow_text", edit_options.get("outro_follow_text", ""))
+                    long_text = instructions.get("outro_custom_text", edit_options.get("outro_custom_text", ""))
+                    dur = float(instructions.get("outro_duration", edit_options.get("outro_duration", 3.0)))
+                    logger.info(f"Extending video with 9:16 creator outro ({dur}s) for clip {clip_id} (bg music will cover extended length)")
+                    cta_overlay_service.append_9_16_outro(
+                        video_path=extended_video,
+                        like_text=like_text,
+                        comment_text=comment_text,
+                        subscribe_text=subscribe_text,
+                        follow_text=follow_text,
+                        long_text=long_text,
+                        duration=dur,
+                        with_audio=False,
+                    )
+
+            # Apply bg music / uploaded audio over the FULL extended video length
+            try:
+                vol = instructions.get("music_volume")
+                vol_val = float(vol) if vol is not None else (0.18 if (len(shifted_words) > 0 and audio_mode != "replace") else 1.0)
+                logger.info(f"Mixing bg/uploaded music track over extended video ({extended_video}) -> {output_path}")
+                music_agent.apply_music(
+                    video_path=extended_video,
+                    music_path=music_track,
+                    output_path=output_path,
+                    options={
+                        "disable_music": False,
+                        "remove_original_audio": (audio_mode == "replace"),
+                        "has_voice": len(shifted_words) > 0 and audio_mode != "replace",
+                        "volume": vol_val
+                    }
+                )
+            except Exception as me:
+                logger.error(f"Music mix on extended video failed, copying directly: {me}")
+                subprocess.run(["ffmpeg", "-y", "-i", extended_video, "-c", "copy", output_path], capture_output=True)
+
+        else:
+            # ─────────────────────────────────────────────────────────────────
+            # USER SELECTED ORIGINAL AUDIO:
+            # The clip retains its original audio.
+            # The outro screen / template plays its dedicated outro audio
+            # during the extended outro section so it is never a blank/silent screen!
+            # ─────────────────────────────────────────────────────────────────
+            try:
+                subprocess.run(["ffmpeg", "-y", "-i", temp_video_source, "-c", "copy", output_path], capture_output=True)
+            except Exception as ce:
+                import shutil
+                shutil.copyfile(temp_video_source, output_path)
+
+            if has_outro:
+                if template_id or template_storage_path:
+                    target_tmpl = template_storage_path or template_id
+                    logger.info(f"Appending Cloudflare R2 template outro '{target_tmpl}' WITH dedicated outro audio to clip {clip_id}")
+                    template_service.append_template_to_video(output_path, target_tmpl, with_audio=True)
+                elif enable_outro:
+                    like_text = instructions.get("outro_like_text", edit_options.get("outro_like_text", "Like"))
+                    comment_text = instructions.get("outro_comment_text", edit_options.get("outro_comment_text", "Comment"))
+                    subscribe_text = instructions.get("outro_subscribe_text", edit_options.get("outro_subscribe_text", "Subscribe"))
+                    follow_text = instructions.get("outro_follow_text", edit_options.get("outro_follow_text", ""))
+                    long_text = instructions.get("outro_custom_text", edit_options.get("outro_custom_text", ""))
+                    dur = float(instructions.get("outro_duration", edit_options.get("outro_duration", 3.0)))
+                    outro_music_style = instructions.get("outro_music_style", edit_options.get("outro_music_style", "upbeat"))
+                    logger.info(f"Appending 9:16 creator outro ({dur}s, style={outro_music_style}) WITH dedicated outro audio to clip {clip_id}")
+                    cta_overlay_service.append_9_16_outro(
+                        video_path=output_path,
+                        like_text=like_text,
+                        comment_text=comment_text,
+                        subscribe_text=subscribe_text,
+                        follow_text=follow_text,
+                        long_text=long_text,
+                        duration=dur,
+                        music_preset=outro_music_style,
+                        with_audio=True,
+                    )
+
+        # Optional: in-video CTA overlay if no outro was chosen
+        if not has_outro:
+            cta_template = instructions.get("cta_template") or edit_options.get("cta_template", "none")
+            cta_text = instructions.get("cta_text") or edit_options.get("cta_text", "")
+            cta_placement = instructions.get("cta_placement") or edit_options.get("cta_placement", "outro")
+
+            if cta_template and cta_template != "none":
+                try:
+                    logger.info(f"Applying creator CTA overlay '{cta_template}' with text '{cta_text}' to clip {clip_id}")
+                    cta_overlay_service.apply_cta_overlay(
+                        video_path=output_path,
+                        template=cta_template,
+                        custom_text=cta_text,
+                        placement=cta_placement,
+                    )
+                except Exception as cta_err:
+                    logger.error(f"Failed to apply CTA overlay ({cta_template}): {cta_err}", exc_info=True)
 
         # Cleanup intermediate files
         for fpath in [cropped_path, ass_path, subbed_path]:

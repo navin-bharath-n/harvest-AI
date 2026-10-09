@@ -115,6 +115,14 @@ export function AuthProvider({ children }) {
     setIsAuthModalOpen(false);
   }, []);
 
+  const loginWithGoogleData = useCallback((accessToken, userData) => {
+    localStorage.setItem('harvest_token', accessToken);
+    localStorage.setItem('harvest_user', JSON.stringify(userData));
+    setToken(accessToken);
+    setUser(userData);
+    setIsAuthModalOpen(false);
+  }, []);
+
   const value = {
     user,
     token,
@@ -124,6 +132,7 @@ export function AuthProvider({ children }) {
     authModalMode,
     setAuthModalMode,
     login,
+    loginWithGoogleData,
     register,
     logout,
     openLogin,

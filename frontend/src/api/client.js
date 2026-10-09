@@ -159,6 +159,17 @@ export const api = {
     return response.data;
   },
 
+  // Import and process a video directly from a URL (YouTube, Instagram, Facebook, TikTok, etc.)
+  importVideoUrl: async (projectId, url, autoAnalyze = false, length = 30.0) => {
+    const response = await client.post('/videos/import-url', {
+      project_id: projectId,
+      url,
+      auto_analyze: autoAnalyze,
+      length,
+    });
+    return response.data;
+  },
+
   // Trigger 1-Click Master Generation (full AI pipeline: transcribe -> hooks -> crop -> render variations)
   masterGenerate: async (videoId, config = {}) => {
     const payload = {
@@ -183,6 +194,18 @@ export const api = {
     return response.data;
   },
 
+  // Upload custom audio file (MP3, WAV, M4A, etc.) for mixing or replacing
+  uploadAudio: async (file) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const response = await client.post('/videos/upload-audio', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+    });
+    return response.data;
+  },
+
   selectMoment: async (videoId, momentId, captionStyle, options = {}) => {
     const response = await client.post(`/videos/${videoId}/select-moment`, {
       moment_id: momentId,
@@ -191,7 +214,40 @@ export const api = {
       caption_language: options.captionLanguage || 'original',
       dub_voice: Boolean(options.dubVoice),
       speaker_gender: options.speakerGender || 'female',
+      audio_mode: options.audioMode || 'original',
+      custom_audio_path: options.customAudioPath || null,
+      music_preset: options.musicPreset || 'none',
+      music_volume: typeof options.musicVolume === 'number' ? options.musicVolume : 0.18,
+      cta_template: options.ctaTemplate || 'none',
+      cta_text: options.ctaText || '',
+      cta_placement: options.ctaPlacement || 'outro',
+      enable_outro: Boolean(options.enableOutro),
+      outro_like_text: options.outroLikeText ?? 'Like',
+      outro_comment_text: options.outroCommentText ?? 'Comment',
+      outro_subscribe_text: options.outroSubscribeText ?? 'Subscribe',
+      outro_follow_text: options.outroFollowText ?? '',
+      outro_custom_text: options.outroCustomText ?? '',
+      outro_duration: typeof options.outroDuration === 'number' ? options.outroDuration : 3.0,
+      outro_music_style: options.outroMusicStyle || 'upbeat',
+      template_id: options.templateId || null,
+      template_storage_path: options.templateStoragePath || null,
     });
+    return response.data;
+  },
+
+  // Cloudflare R2 Video Templates
+  getTemplates: async () => {
+    const response = await client.get('/templates/');
+    return response.data || [];
+  },
+
+  getTemplate: async (templateId) => {
+    const response = await client.get(`/templates/${templateId}`);
+    return response.data;
+  },
+
+  syncTemplates: async (force = false) => {
+    const response = await client.post('/templates/sync', null, { params: { force } });
     return response.data;
   },
 
@@ -205,6 +261,12 @@ export const api = {
   getMomentAudio: async (videoId, momentId) => {
     const response = await authFetch(`/videos/${videoId}/moments/${momentId}/audio`);
     if (!response.ok) throw new Error(`Unable to load moment preview (${response.status})`);
+    return URL.createObjectURL(await response.blob());
+  },
+
+  getMusicPresetAudio: async (preset) => {
+    const response = await authFetch(`/videos/music-presets/${encodeURIComponent(preset)}/audio`);
+    if (!response.ok) throw new Error(`Unable to load music preset preview (${response.status})`);
     return URL.createObjectURL(await response.blob());
   },
 
@@ -290,11 +352,44 @@ export const api = {
       : `${window.location.origin}${API_BASE_URL.startsWith('/') ? '' : '/'}${API_BASE_URL}`;
     return `${baseUrl}/users/auth/${encodeURIComponent(platform)}/login?user_id=${encodeURIComponent(userId)}`;
   },
-  getSocialOAuthOrigin: () => {
+  getGoogleLoginUrl: () => {
     const baseUrl = API_BASE_URL.startsWith('http')
       ? API_BASE_URL
       : `${window.location.origin}${API_BASE_URL.startsWith('/') ? '' : '/'}${API_BASE_URL}`;
-    return new URL(baseUrl).origin;
+    return `${baseUrl}/users/auth/google/login`;
+  },
+  getSocialOAuthOrigin: () => {
+    if (typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')) {
+      return window.location.protocol === 'https:' ? 'https://localhost:8000' : 'http://localhost:8000';
+    }
+    const baseUrl = API_BASE_URL.startsWith('http')
+      ? API_BASE_URL
+      : (SERVER_URL || window.location.origin);
+    try {
+      return new URL(baseUrl).origin;
+    } catch {
+      return window.location.origin;
+    }
+  },
+  isAllowedOAuthOrigin: (origin) => {
+    if (!origin) return false;
+    const allowed = new Set([
+      window.location.origin,
+      'https://localhost:8000',
+      'http://localhost:8000',
+      'https://127.0.0.1:8000',
+      'http://127.0.0.1:8000',
+      'https://localhost:5173',
+      'http://localhost:5173',
+      'https://harvest-ai-soql.onrender.com'
+    ]);
+    if (SERVER_URL) {
+      try { allowed.add(new URL(SERVER_URL).origin); } catch {}
+    }
+    if (API_BASE_URL.startsWith('http')) {
+      try { allowed.add(new URL(API_BASE_URL).origin); } catch {}
+    }
+    return allowed.has(origin);
   },
 
   // Get details of a single clip

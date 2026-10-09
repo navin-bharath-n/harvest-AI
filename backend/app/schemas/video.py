@@ -13,6 +13,12 @@ class VideoCreate(VideoBase):
 class VideoUpdate(BaseModel):
     status: Optional[VideoStatus] = None
 
+class VideoImportUrlRequest(BaseModel):
+    project_id: int
+    url: str
+    auto_analyze: bool = False
+    length: float = Field(default=30.0, ge=10.0, le=60.0, description="Target maximum duration for suggested moments if auto_analyze is true")
+
 class SmartCropRequest(BaseModel):
     target_fps: int = 1
 
@@ -49,6 +55,23 @@ class SelectMomentRequest(BaseModel):
     caption_language: Literal["original", "translated", "none"] = "original"
     dub_voice: bool = False
     speaker_gender: Literal["female", "male"] = "female"
+    audio_mode: Literal["original", "mix", "replace"] = "original"
+    custom_audio_path: Optional[str] = None
+    music_preset: Optional[str] = "none"
+    music_volume: Optional[float] = 0.18
+    cta_template: Optional[Literal["youtube", "instagram", "tiktok", "minimal", "none"]] = "none"
+    cta_text: Optional[str] = ""
+    cta_placement: Optional[Literal["outro", "overlay"]] = "outro"
+    enable_outro: Optional[bool] = False
+    outro_like_text: Optional[str] = "Like"
+    outro_comment_text: Optional[str] = "Comment"
+    outro_subscribe_text: Optional[str] = "Subscribe"
+    outro_follow_text: Optional[str] = ""
+    outro_custom_text: Optional[str] = ""
+    outro_duration: Optional[float] = 3.0
+    outro_music_style: Optional[str] = "upbeat"
+    template_id: Optional[str] = None
+    template_storage_path: Optional[str] = None
 
 class HighlightAnalysisRequest(BaseModel):
     length: float = Field(default=30.0, ge=10.0, le=60.0, description="Target maximum duration for suggested moments")
