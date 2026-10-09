@@ -1170,28 +1170,35 @@ def render_clip_task(clip_id: int):
             if has_outro:
                 import gc
                 gc.collect()
-                if template_id or template_storage_path:
-                    target_tmpl = template_storage_path or template_id
-                    logger.info(f"Extending video with R2 template '{target_tmpl}' for clip {clip_id} (bg music will cover extended length)")
-                    template_service.append_template_to_video(extended_video, target_tmpl, with_audio=False)
-                elif enable_outro:
-                    like_text = instructions.get("outro_like_text", edit_options.get("outro_like_text", "Like"))
-                    comment_text = instructions.get("outro_comment_text", edit_options.get("outro_comment_text", "Comment"))
-                    subscribe_text = instructions.get("outro_subscribe_text", edit_options.get("outro_subscribe_text", "Subscribe"))
-                    follow_text = instructions.get("outro_follow_text", edit_options.get("outro_follow_text", ""))
-                    long_text = instructions.get("outro_custom_text", edit_options.get("outro_custom_text", ""))
-                    dur = float(instructions.get("outro_duration", edit_options.get("outro_duration", 3.0)))
-                    logger.info(f"Extending video with 9:16 creator outro ({dur}s) for clip {clip_id} (bg music will cover extended length)")
-                    cta_overlay_service.append_9_16_outro(
-                        video_path=extended_video,
-                        like_text=like_text,
-                        comment_text=comment_text,
-                        subscribe_text=subscribe_text,
-                        follow_text=follow_text,
-                        long_text=long_text,
-                        duration=dur,
-                        with_audio=False,
-                    )
+                try:
+                    if template_id or template_storage_path:
+                        target_tmpl = template_storage_path or template_id
+                        logger.info(f"Extending video with R2 template '{target_tmpl}' for clip {clip_id} (bg music will cover extended length)")
+                        ok = template_service.append_template_to_video(extended_video, target_tmpl, with_audio=False)
+                        if not ok:
+                            logger.warning(f"Template append skipped/failed; continuing with original clip {clip_id}")
+                    elif enable_outro:
+                        like_text = instructions.get("outro_like_text", edit_options.get("outro_like_text", "Like"))
+                        comment_text = instructions.get("outro_comment_text", edit_options.get("outro_comment_text", "Comment"))
+                        subscribe_text = instructions.get("outro_subscribe_text", edit_options.get("outro_subscribe_text", "Subscribe"))
+                        follow_text = instructions.get("outro_follow_text", edit_options.get("outro_follow_text", ""))
+                        long_text = instructions.get("outro_custom_text", edit_options.get("outro_custom_text", ""))
+                        dur = float(instructions.get("outro_duration", edit_options.get("outro_duration", 3.0)))
+                        logger.info(f"Extending video with 9:16 creator outro ({dur}s) for clip {clip_id} (bg music will cover extended length)")
+                        ok = cta_overlay_service.append_9_16_outro(
+                            video_path=extended_video,
+                            like_text=like_text,
+                            comment_text=comment_text,
+                            subscribe_text=subscribe_text,
+                            follow_text=follow_text,
+                            long_text=long_text,
+                            duration=dur,
+                            with_audio=False,
+                        )
+                        if not ok:
+                            logger.warning(f"CTA outro append skipped/failed; continuing with original clip {clip_id}")
+                except Exception as oe:
+                    logger.warning(f"Error during outro extension on clip {clip_id}: {oe}; proceeding with original clip.")
 
             # Apply bg music / uploaded audio over the FULL extended video length
             try:
@@ -1231,30 +1238,36 @@ def render_clip_task(clip_id: int):
             if has_outro:
                 import gc
                 gc.collect()
-                if template_id or template_storage_path:
-                    target_tmpl = template_storage_path or template_id
-                    logger.info(f"Appending Cloudflare R2 template outro '{target_tmpl}' WITH dedicated outro audio to clip {clip_id}")
-                    template_service.append_template_to_video(output_path, target_tmpl, with_audio=True)
-                elif enable_outro:
-                    like_text = instructions.get("outro_like_text", edit_options.get("outro_like_text", "Like"))
-                    comment_text = instructions.get("outro_comment_text", edit_options.get("outro_comment_text", "Comment"))
-                    subscribe_text = instructions.get("outro_subscribe_text", edit_options.get("outro_subscribe_text", "Subscribe"))
-                    follow_text = instructions.get("outro_follow_text", edit_options.get("outro_follow_text", ""))
-                    long_text = instructions.get("outro_custom_text", edit_options.get("outro_custom_text", ""))
-                    dur = float(instructions.get("outro_duration", edit_options.get("outro_duration", 3.0)))
-                    outro_music_style = instructions.get("outro_music_style", edit_options.get("outro_music_style", "upbeat"))
-                    logger.info(f"Appending 9:16 creator outro ({dur}s, style={outro_music_style}) WITH dedicated outro audio to clip {clip_id}")
-                    cta_overlay_service.append_9_16_outro(
-                        video_path=output_path,
-                        like_text=like_text,
-                        comment_text=comment_text,
-                        subscribe_text=subscribe_text,
-                        follow_text=follow_text,
-                        long_text=long_text,
-                        duration=dur,
-                        music_preset=outro_music_style,
-                        with_audio=True,
-                    )
+                try:
+                    if template_id or template_storage_path:
+                        target_tmpl = template_storage_path or template_id
+                        logger.info(f"Appending Cloudflare R2 template outro '{target_tmpl}' WITH dedicated outro audio to clip {clip_id}")
+                        ok = template_service.append_template_to_video(output_path, target_tmpl, with_audio=True)
+                        if not ok:
+                            logger.warning(f"Template append returned False; keeping output clip {clip_id} intact.")
+                    elif enable_outro:
+                        like_text = instructions.get("outro_like_text", edit_options.get("outro_like_text", "Like"))
+                        comment_text = instructions.get("outro_comment_text", edit_options.get("outro_comment_text", "Comment"))
+                        subscribe_text = instructions.get("outro_subscribe_text", edit_options.get("outro_subscribe_text", "Subscribe"))
+                        follow_text = instructions.get("outro_follow_text", edit_options.get("outro_follow_text", ""))
+                        long_text = instructions.get("outro_custom_text", edit_options.get("outro_custom_text", ""))
+                        dur = float(instructions.get("outro_duration", edit_options.get("outro_duration", 3.0)))
+                        outro_music_style = instructions.get("outro_music_style", edit_options.get("outro_music_style", "upbeat"))
+                        logger.info(f"Appending 9:16 creator outro ({dur}s, style={outro_music_style}) WITH dedicated outro audio to clip {clip_id}")
+                        ok = cta_overlay_service.append_9_16_outro(
+                            video_path=output_path,
+                            like_text=like_text,
+                            comment_text=comment_text,
+                            subscribe_text=subscribe_text,
+                            follow_text=follow_text,
+                            long_text=long_text,
+                            duration=dur,
+                            music_preset=outro_music_style,
+                        )
+                        if not ok:
+                            logger.warning(f"CTA outro append returned False; keeping output clip {clip_id} intact.")
+                except Exception as oe:
+                    logger.warning(f"Error during outro appending on clip {clip_id}: {oe}; keeping output clip intact.")
 
         # Optional: in-video CTA overlay if no outro was chosen
         if not has_outro:

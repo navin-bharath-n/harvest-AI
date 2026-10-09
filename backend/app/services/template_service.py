@@ -565,148 +565,86 @@ class TemplateService:
 
             logger.info(f"Concatenating video (audio={has_input_audio}) + R2 template (audio={has_tmpl_audio}, with_audio={with_audio}, dur={tmpl_dur}s)")
 
-            # IF with_audio is False: User is using BG music or uploaded audio.
-            # We extend the video and append silence for the template portion so the bg music covers it.
-            if not with_audio:
-                if has_input_audio:
-                    concat_filter = (
-                        "[0:v]fps=30,scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[v0];"
-                        "[1:v]fps=30,scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[v1];"
-                        "[0:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[a0];"
-                        "[2:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[a1];"
-                        "[v0][v1]concat=n=2:v=1:a=0[outv];"
-                        "[a0][a1]concat=n=2:v=0:a=1[outa]"
-                    )
-                    concat_cmd = [
-                        "ffmpeg", "-y", "-loglevel", "error",
-                        "-threads", "1", "-filter_threads", "1", "-filter_complex_threads", "1",
-                        "-i", video_path,
-                        "-i", cached_template_file,
-                        "-f", "lavfi", "-t", f"{tmpl_dur:.2f}", "-i", "anullsrc=r=44100:cl=stereo",
-                        "-filter_complex", concat_filter,
-                        "-map", "[outv]",
-                        "-map", "[outa]",
-                        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "22",
-                        "-c:a", "aac", "-b:a", "128k",
-                        "-movflags", "+faststart",
-                        merged_path
-                    ]
-                else:
-                    concat_filter = (
-                        "[0:v]fps=30,scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[v0];"
-                        "[1:v]fps=30,scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[v1];"
-                        "[v0][v1]concat=n=2:v=1:a=0[outv]"
-                    )
-                    concat_cmd = [
-                        "ffmpeg", "-y", "-loglevel", "error",
-                        "-threads", "1", "-filter_threads", "1", "-filter_complex_threads", "1",
-                        "-i", video_path,
-                        "-i", cached_template_file,
-                        "-filter_complex", concat_filter,
-                        "-map", "[outv]",
-                        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "22",
-                        "-movflags", "+faststart",
-                        merged_path
-                    ]
-            # ELSE with_audio is True: User is using Original Audio.
-            # We preserve and play the template's dedicated audio track during the outro!
-            elif has_input_audio and has_tmpl_audio:
-                concat_filter = (
-                    "[0:v]fps=30,scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[v0];"
-                    "[1:v]fps=30,scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[v1];"
-                    "[0:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[a0];"
-                    "[1:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[a1];"
-                    "[v0][a0][v1][a1]concat=n=2:v=1:a=1[outv][outa]"
-                )
-                concat_cmd = [
+            # ─────────────────────────────────────────────────────────────
+            # METHOD 1: Fast stream-copy Concat Demuxer (-c copy)
+            # Memory footprint: < 10 MB RAM, time: < 0.5s
+            # Eliminates multi-stream frame decoding buffers that trigger Render 512MB OOM!
+            # ─────────────────────────────────────────────────────────────
+            template_to_concat = cached_template_file
+
+            # Normalize template audio if input has audio but template doesn't, or vice-versa
+            if has_input_audio and not has_tmpl_audio:
+                tmpl_with_silence = os.path.join(temp_dir, "tmpl_silence.mp4")
+                silence_cmd = [
                     "ffmpeg", "-y", "-loglevel", "error",
-                    "-threads", "1", "-filter_threads", "1", "-filter_complex_threads", "1",
-                    "-i", video_path,
+                    "-threads", "1",
                     "-i", cached_template_file,
-                    "-filter_complex", concat_filter,
-                    "-map", "[outv]",
-                    "-map", "[outa]",
-                    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "22",
+                    "-f", "lavfi", "-t", f"{tmpl_dur:.2f}", "-i", "anullsrc=r=44100:cl=stereo",
+                    "-c:v", "copy",
                     "-c:a", "aac", "-b:a", "128k",
-                    "-movflags", "+faststart",
-                    merged_path
+                    "-shortest",
+                    tmpl_with_silence
                 ]
-            elif has_input_audio and not has_tmpl_audio:
-                # In case template lacks audio, mix upbeat outro audio instead of silence
-                fallback_audio = self._resolve_audio_track("audius_afe9d6715219.mp3")
-                if fallback_audio and os.path.exists(fallback_audio):
-                    concat_filter = (
-                        "[0:v]fps=30,scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[v0];"
-                        "[1:v]fps=30,scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[v1];"
-                        "[0:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[a0];"
-                        "[2:a]afade=t=in:ss=0:d=0.2,afade=t=out:st=4.5:d=0.5,volume=0.85,aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[a1];"
-                        "[v0][a0][v1][a1]concat=n=2:v=1:a=1[outv][outa]"
-                    )
-                    concat_cmd = [
-                        "ffmpeg", "-y", "-loglevel", "error",
-                        "-threads", "1", "-filter_threads", "1", "-filter_complex_threads", "1",
-                        "-i", video_path,
-                        "-i", cached_template_file,
-                        "-ss", "5.0", "-i", fallback_audio,
-                        "-filter_complex", concat_filter,
-                        "-map", "[outv]",
-                        "-map", "[outa]",
-                        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "22",
-                        "-c:a", "aac", "-b:a", "128k",
-                        "-movflags", "+faststart",
-                        merged_path
-                    ]
-                else:
-                    concat_filter = (
-                        "[0:v]fps=30,scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[v0];"
-                        "[1:v]fps=30,scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[v1];"
-                        "[0:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[a0];"
-                        "[2:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[a1];"
-                        "[v0][a0][v1][a1]concat=n=2:v=1:a=1[outv][outa]"
-                    )
-                    concat_cmd = [
-                        "ffmpeg", "-y", "-loglevel", "error",
-                        "-threads", "1", "-filter_threads", "1", "-filter_complex_threads", "1",
-                        "-i", video_path,
-                        "-i", cached_template_file,
-                        "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
-                        "-filter_complex", concat_filter,
-                        "-map", "[outv]",
-                        "-map", "[outa]",
-                        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "22",
-                        "-c:a", "aac", "-b:a", "128k",
-                        "-movflags", "+faststart",
-                        merged_path
-                    ]
-            else:
-                concat_filter = (
-                    "[0:v]fps=30,scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[v0];"
-                    "[1:v]fps=30,scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[v1];"
-                    "[v0][v1]concat=n=2:v=1:a=0[outv]"
-                )
-                concat_cmd = [
-                    "ffmpeg", "-y", "-loglevel", "error",
-                    "-threads", "1", "-filter_threads", "1", "-filter_complex_threads", "1",
-                    "-i", video_path,
-                    "-i", cached_template_file,
-                    "-filter_complex", concat_filter,
-                    "-map", "[outv]",
-                    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "22",
-                    "-movflags", "+faststart",
-                    merged_path
-                ]
+                try:
+                    s_res = subprocess.run(silence_cmd, capture_output=True, text=True, timeout=15)
+                    if s_res.returncode == 0 and os.path.exists(tmpl_with_silence):
+                        template_to_concat = tmpl_with_silence
+                except Exception as se:
+                    logger.warning(f"Could not add silence to template: {se}")
+
+            concat_list = os.path.join(temp_dir, "concat_list.txt")
+            with open(concat_list, "w", encoding="utf-8") as f:
+                f.write(f"file '{video_path.replace(os.sep, '/')}'\n")
+                f.write(f"file '{template_to_concat.replace(os.sep, '/')}'\n")
+
+            copy_cmd = [
+                "ffmpeg", "-y", "-loglevel", "error",
+                "-f", "concat", "-safe", "0",
+                "-i", concat_list,
+                "-c", "copy",
+                "-movflags", "+faststart",
+                merged_path
+            ]
 
             import gc
             gc.collect()
-            res = subprocess.run(concat_cmd, capture_output=True, text=True)
-            if res.returncode != 0:
-                logger.error(f"FFmpeg template concat error: {res.stderr}")
-                return False
 
-            if os.path.exists(merged_path) and os.path.getsize(merged_path) > 1000:
+            copy_res = subprocess.run(copy_cmd, capture_output=True, text=True, timeout=30)
+            if copy_res.returncode == 0 and os.path.exists(merged_path) and os.path.getsize(merged_path) > 1000:
                 shutil.move(merged_path, video_path)
-                logger.info(f"Successfully appended R2 template '{template_id_or_path}' to {video_path}")
+                logger.info(f"Successfully appended R2 template '{template_id_or_path}' via stream-copy demuxer!")
                 return True
+            else:
+                logger.warning(f"Fast stream-copy demuxer failed ({copy_res.stderr.strip() if copy_res.stderr else 'unknown'}), falling back to template-only normalization")
+
+            # ─────────────────────────────────────────────────────────────
+            # METHOD 2: Template-only normalization + concat demuxer
+            # Normalize ONLY the short 5s template (fast, tiny memory), then copy!
+            # We NEVER decode/re-encode the full 60s input video here!
+            # ─────────────────────────────────────────────────────────────
+            norm_tmpl = os.path.join(temp_dir, "norm_tmpl.mp4")
+            norm_cmd = [
+                "ffmpeg", "-y", "-loglevel", "error",
+                "-threads", "1",
+                "-i", cached_template_file,
+                "-vf", "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p",
+                "-c:v", "libx264", "-preset", "ultrafast", "-crf", "22",
+                "-c:a", "aac", "-ar", "44100", "-ac", "2", "-b:a", "128k",
+                "-t", f"{tmpl_dur:.2f}",
+                norm_tmpl
+            ]
+            norm_res = subprocess.run(norm_cmd, capture_output=True, text=True, timeout=20)
+            if norm_res.returncode == 0 and os.path.exists(norm_tmpl):
+                with open(concat_list, "w", encoding="utf-8") as f:
+                    f.write(f"file '{video_path.replace(os.sep, '/')}'\n")
+                    f.write(f"file '{norm_tmpl.replace(os.sep, '/')}'\n")
+                copy_res2 = subprocess.run(copy_cmd, capture_output=True, text=True, timeout=30)
+                if copy_res2.returncode == 0 and os.path.exists(merged_path) and os.path.getsize(merged_path) > 1000:
+                    shutil.move(merged_path, video_path)
+                    logger.info(f"Successfully appended normalized R2 template '{template_id_or_path}'!")
+                    return True
+
+            logger.warning(f"Template concatenation could not be completed safely under memory limits; preserving original clip.")
             return False
 
         except Exception as e:

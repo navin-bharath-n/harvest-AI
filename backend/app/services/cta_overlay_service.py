@@ -450,7 +450,32 @@ class CTAOverlayService:
             except Exception:
                 has_audio = True
 
-            # 4. Concatenate input video + outro clip (strictly enforcing 1080x1920, 30fps, SAR 1:1, stereo 44.1kHz)
+            # 4. Concatenate input video + outro clip (using stream-copy concat demuxer)
+            concat_list = os.path.join(temp_dir, "concat_list.txt")
+            with open(concat_list, "w", encoding="utf-8") as f:
+                f.write(f"file '{video_path.replace(os.sep, '/')}'\n")
+                f.write(f"file '{outro_clip_path.replace(os.sep, '/')}'\n")
+
+            copy_cmd = [
+                "ffmpeg", "-y", "-loglevel", "error",
+                "-f", "concat", "-safe", "0",
+                "-i", concat_list,
+                "-c", "copy",
+                "-movflags", "+faststart",
+                merged_path
+            ]
+
+            import gc
+            gc.collect()
+            logger.info(f"Concatenating 9:16 outro ({outro_dur}s) to {video_path} via stream-copy demuxer")
+            res_concat = subprocess.run(copy_cmd, capture_output=True, text=True, timeout=30)
+            if res_concat.returncode == 0 and os.path.exists(merged_path) and os.path.getsize(merged_path) > 1000:
+                shutil.move(merged_path, video_path)
+                logger.info(f"Successfully appended 9:16 outro to {video_path}")
+                return True
+
+            logger.warning(f"Fast demuxer concat failed ({res_concat.stderr.strip() if res_concat.stderr else 'unknown'}), falling back to single-thread filter")
+
             if has_audio:
                 concat_filter = (
                     "[0:v]fps=30,scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[v0];"
@@ -467,7 +492,7 @@ class CTAOverlayService:
                     "-filter_complex", concat_filter,
                     "-map", "[outv]",
                     "-map", "[outa]",
-                    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "22",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "24",
                     "-c:a", "aac", "-b:a", "128k",
                     "-movflags", "+faststart",
                     merged_path
@@ -487,24 +512,20 @@ class CTAOverlayService:
                     "-filter_complex", concat_filter,
                     "-map", "[outv]",
                     "-map", "[outa]",
-                    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "22",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "24",
                     "-c:a", "aac", "-b:a", "128k",
                     "-movflags", "+faststart",
                     merged_path
                 ]
 
-            import gc
             gc.collect()
-            logger.info(f"Concatenating 9:16 outro ({outro_dur}s) to {video_path}")
-            res_concat = subprocess.run(concat_cmd, capture_output=True, text=True)
-            if res_concat.returncode != 0:
-                logger.error(f"FFmpeg outro concat failed: {res_concat.stderr}")
-                return False
-
-            if os.path.exists(merged_path) and os.path.getsize(merged_path) > 1000:
+            res_concat2 = subprocess.run(concat_cmd, capture_output=True, text=True, timeout=45)
+            if res_concat2.returncode == 0 and os.path.exists(merged_path) and os.path.getsize(merged_path) > 1000:
                 shutil.move(merged_path, video_path)
-                logger.info(f"Successfully appended 9:16 outro to {video_path}")
+                logger.info(f"Successfully appended 9:16 outro via fallback filter to {video_path}")
                 return True
+
+            logger.warning("Could not append 9:16 outro; preserving original clip.")
             return False
 
         except Exception as e:

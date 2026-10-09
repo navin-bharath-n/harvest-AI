@@ -101,10 +101,10 @@ export default function StudioPage() {
   const [playingTemplateCardId, setPlayingTemplateCardId] = useState(null);
   const [templateFilterCategory, setTemplateFilterCategory] = useState('all');
   // Outro Mode: 'template' (Cloudflare R2 video) | 'custom' (9:16 interactive builder) | 'none'
-  const [outroMode, setOutroMode] = useState('template');
+  const [outroMode, setOutroMode] = useState('none');
 
   // 9:16 Creator Outro Screen State (Custom builder)
-  const [enableOutro, setEnableOutro] = useState(true);
+  const [enableOutro, setEnableOutro] = useState(false);
   const [outroDuration, setOutroDuration] = useState(3.0); // 2, 3, 4 seconds
   const [showLikeAction, setShowLikeAction] = useState(true);
   const [outroLikeText, setOutroLikeText] = useState('Like');
