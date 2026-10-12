@@ -89,6 +89,11 @@ export default function SocialPublishPage() {
   const oauthPopupRef = useRef(null);
   const currentUserId = user?.id;
 
+  // Multi-platform selection & in-button status feedback
+  const [selectedPlatforms, setSelectedPlatforms] = useState([]);
+  const [platformButtonStatus, setPlatformButtonStatus] = useState({});
+  const [batchActionStatus, setBatchActionStatus] = useState('idle'); // 'idle' | 'working' | 'succeeded' | 'error'
+
   // ──────────────────────────────────────────────────────────────────────────
   // Scheduled Publishing State
   // ──────────────────────────────────────────────────────────────────────────
@@ -416,6 +421,29 @@ export default function SocialPublishPage() {
     return Object.fromEntries((connections || []).map((connection) => [connection.platform, connection]));
   }, [connections]);
 
+  // Keep selectedPlatforms synced with all connected platforms
+  useEffect(() => {
+    if (connections && connections.length > 0) {
+      const connIds = connections.map((c) => c.platform);
+      setSelectedPlatforms((prev) => {
+        if (!prev || prev.length === 0) return connIds;
+        const valid = prev.filter((p) => connIds.includes(p));
+        // If all valid were unselected, retain, else combine
+        const combined = Array.from(new Set([...valid, ...connIds]));
+        return combined.length > 0 ? combined : connIds;
+      });
+    }
+  }, [connections]);
+
+  const togglePlatformSelection = (platformId) => {
+    setSelectedPlatforms((prev) => {
+      if (prev.includes(platformId)) {
+        return prev.filter((p) => p !== platformId);
+      }
+      return [...prev, platformId];
+    });
+  };
+
   const connectPlatform = (platform) => {
     if (!user?.id) return;
     const popup = window.open(
@@ -663,8 +691,13 @@ export default function SocialPublishPage() {
   // ──────────────────────────────────────────────────────────────────────────
   // Social Publish Handler
   // ──────────────────────────────────────────────────────────────────────────
-  const publishToPlatform = async (platform) => {
+  const executePublish = async (targetPlatforms) => {
     if (!clipId || workingPlatform) return;
+    if (!targetPlatforms || targetPlatforms.length === 0) {
+      setMessageError(true);
+      setMessage('Please select at least one connected channel to publish or schedule.');
+      return;
+    }
     if (clip?.status !== 'completed') {
       setMessageError(true);
       setMessage('This video is not ready to publish yet.');
@@ -675,7 +708,14 @@ export default function SocialPublishPage() {
       setMessage('Your watermark logo, banner or outro is in live demo mode. Please click "Render Full Video" first to burn them into the video before publishing.');
       return;
     }
-    setWorkingPlatform(platform);
+
+    setWorkingPlatform(targetPlatforms.join(','));
+    setBatchActionStatus('working');
+    setPlatformButtonStatus((prev) => {
+      const next = { ...prev };
+      targetPlatforms.forEach((p) => { next[p] = 'working'; });
+      return next;
+    });
     setMessageError(false);
 
     try {
@@ -698,6 +738,12 @@ export default function SocialPublishPage() {
           setMessageError(true);
           setMessage('Please select a date and time for scheduled publishing.');
           setWorkingPlatform('');
+          setBatchActionStatus('idle');
+          setPlatformButtonStatus((prev) => {
+            const next = { ...prev };
+            targetPlatforms.forEach((p) => { next[p] = 'idle'; });
+            return next;
+          });
           return;
         }
         const schedTimeMs = new Date(scheduleDate).getTime();
@@ -705,15 +751,22 @@ export default function SocialPublishPage() {
           setMessageError(true);
           setMessage('Please choose a future date and time for scheduled publishing.');
           setWorkingPlatform('');
+          setBatchActionStatus('idle');
+          setPlatformButtonStatus((prev) => {
+            const next = { ...prev };
+            targetPlatforms.forEach((p) => { next[p] = 'idle'; });
+            return next;
+          });
           return;
         }
 
         const scheduledUtcIso = new Date(scheduleDate).toISOString();
-        setMessage(`Scheduling video for ${platforms.find((item) => item.id === platform)?.name}…`);
+        const platNames = targetPlatforms.map((p) => platforms.find((item) => item.id === p)?.name || p).join(', ');
+        setMessage(`Scheduling video for ${platNames}…`);
 
         await api.publishClip(
           clipId,
-          [platform],
+          targetPlatforms,
           title.trim() || 'Harvest short',
           description.trim(),
           privacy,
@@ -725,15 +778,28 @@ export default function SocialPublishPage() {
 
         const updatedClip = await api.getClip(clipId);
         setClip(updatedClip);
-        setMessage(`Video scheduled successfully for ${formatScheduledDate(scheduledUtcIso)}! It will automatically publish at that time.`);
+        
+        setBatchActionStatus('succeeded');
+        setPlatformButtonStatus((prev) => {
+          const next = { ...prev };
+          targetPlatforms.forEach((p) => { next[p] = 'succeeded'; });
+          return next;
+        });
+
+        setMessage(`Video scheduled successfully for ${formatScheduledDate(scheduledUtcIso)} across ${platNames}! It will automatically release to all selected platforms at that exact time.`);
+        
+        setTimeout(() => {
+          setBatchActionStatus('idle');
+        }, 5000);
         return;
       }
 
       // PUBLISH NOW MODE
-      setMessage(`Uploading to ${platforms.find((item) => item.id === platform)?.name}…`);
+      const platNames = targetPlatforms.map((p) => platforms.find((item) => item.id === p)?.name || p).join(', ');
+      setMessage(`Uploading to ${platNames}…`);
       await api.publishClip(
         clipId,
-        [platform],
+        targetPlatforms,
         title.trim() || 'Harvest short',
         description.trim(),
         privacy,
@@ -743,24 +809,67 @@ export default function SocialPublishPage() {
         null
       );
 
-      // Publishing runs in background; poll for result
+      // Publishing runs in background; poll for results
       for (let attempt = 0; attempt < 90; attempt += 1) {
         await new Promise((resolve) => window.setTimeout(resolve, 2000));
         const updatedClip = await api.getClip(clipId);
-        const result = updatedClip?.published_urls?.[platform];
-        if (typeof result === 'string' && result) {
-          if (result.startsWith('error:')) throw new Error(result.slice(6).trim());
-          setMessage(`Published successfully to ${platforms.find((item) => item.id === platform)?.name}!`);
+        
+        let allDone = true;
+        const nextStatuses = {};
+        for (const p of targetPlatforms) {
+          const result = updatedClip?.published_urls?.[p];
+          if (typeof result === 'string' && result) {
+            if (result.startsWith('error:')) {
+              nextStatuses[p] = 'error';
+            } else {
+              nextStatuses[p] = 'succeeded';
+            }
+          } else {
+            allDone = false;
+            nextStatuses[p] = 'working';
+          }
+        }
+
+        setPlatformButtonStatus((prev) => ({ ...prev, ...nextStatuses }));
+
+        if (allDone) {
           setClip(updatedClip);
+          const hasError = targetPlatforms.some((p) => nextStatuses[p] === 'error');
+          if (hasError) {
+            setMessageError(true);
+            setMessage('Upload completed with some errors. Please check channel status below.');
+            setBatchActionStatus('error');
+          } else {
+            setMessageError(false);
+            setMessage(`Published successfully to ${platNames}!`);
+            setBatchActionStatus('succeeded');
+          }
+          setTimeout(() => setBatchActionStatus('idle'), 6000);
           return;
         }
       }
-      setMessage('The upload is processing in the background. Check back shortly.');
+      setMessage('Uploads are processing in the background. Check back shortly.');
     } catch (error) {
       setMessageError(true);
       setMessage(`Upload failed: ${error.response?.data?.detail || error.message}`);
+      setBatchActionStatus('error');
+      setPlatformButtonStatus((prev) => {
+        const next = { ...prev };
+        targetPlatforms.forEach((p) => { next[p] = 'error'; });
+        return next;
+      });
     } finally {
       setWorkingPlatform('');
+    }
+  };
+
+  const handleIndividualPublish = (platformId) => {
+    if (publishMode === 'schedule') {
+      const currentScheduled = scheduledPublishInfo?.platforms || [];
+      const merged = Array.from(new Set([...currentScheduled, platformId]));
+      executePublish(merged);
+    } else {
+      executePublish([platformId]);
     }
   };
 
@@ -1880,51 +1989,270 @@ export default function SocialPublishPage() {
                   )}
                 </div>
 
+                {/* Multi-Platform Unified Batch Release Card */}
+                {connections && connections.length > 0 && (
+                  <div style={{
+                    background: isScheduleMode ? '#f0fdf4' : '#f8fafc',
+                    border: isScheduleMode ? '1.5px solid #86efac' : '1px solid #cbd5e1',
+                    borderRadius: 10,
+                    padding: '1.1rem 1.25rem',
+                    marginBottom: '1rem',
+                    boxShadow: '0 2px 8px rgba(0,0,0,0.03)'
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+                      <div>
+                        <div style={{ fontWeight: 700, fontSize: '0.96rem', color: '#0f172a', display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
+                          {isScheduleMode ? <Clock size={18} color="#15803d" /> : <UploadCloud size={18} color="#1f6f4a" />}
+                          {isScheduleMode ? 'Multi-Platform Scheduled Release' : 'Publish to Multiple Platforms Simultaneously'}
+                        </div>
+                        <div style={{ fontSize: '0.82rem', color: '#64748b', marginTop: '0.2rem' }}>
+                          {selectedPlatforms.length > 0
+                            ? `${selectedPlatforms.length} of ${connections.length} connected channel${connections.length > 1 ? 's' : ''} selected`
+                            : 'Select at least one connected channel below'}
+                        </div>
+                      </div>
+                      <div style={{ display: 'flex', gap: '0.5rem' }}>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedPlatforms(connections.map((c) => c.platform))}
+                          style={{ background: '#f1f5f9', border: '1px solid #cbd5e1', borderRadius: 5, color: '#1e293b', fontSize: '0.78rem', fontWeight: 650, cursor: 'pointer', padding: '0.25rem 0.55rem' }}
+                        >
+                          Select All
+                        </button>
+                        {selectedPlatforms.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => setSelectedPlatforms([])}
+                            style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 5, color: '#64748b', fontSize: '0.78rem', fontWeight: 600, cursor: 'pointer', padding: '0.25rem 0.55rem' }}
+                          >
+                            Clear
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      disabled={selectedPlatforms.length === 0 || !canUpload || Boolean(workingPlatform)}
+                      onClick={() => executePublish(selectedPlatforms)}
+                      style={{
+                        width: '100%',
+                        padding: '0.85rem 1.25rem',
+                        borderRadius: 8,
+                        fontWeight: 700,
+                        fontSize: '0.95rem',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: '0.6rem',
+                        border: 'none',
+                        cursor: (selectedPlatforms.length === 0 || !canUpload || Boolean(workingPlatform)) ? 'not-allowed' : 'pointer',
+                        opacity: (selectedPlatforms.length === 0 || !canUpload || Boolean(workingPlatform)) ? 0.6 : 1,
+                        color: '#fff',
+                        background: batchActionStatus === 'succeeded'
+                          ? '#10b981'
+                          : isScheduleMode
+                            ? '#1e3a8a'
+                            : '#1f6f4a',
+                        boxShadow: batchActionStatus === 'succeeded'
+                          ? '0 4px 12px rgba(16,185,129,0.35)'
+                          : isScheduleMode
+                            ? '0 4px 12px rgba(30,58,138,0.25)'
+                            : '0 4px 12px rgba(31,111,74,0.25)',
+                        transition: 'all 0.2s ease'
+                      }}
+                    >
+                      {batchActionStatus === 'working' ? (
+                        <>
+                          <LoaderCircle size={18} className="harvest-publish-spin" />
+                          {isScheduleMode
+                            ? `Scheduling for ${selectedPlatforms.length} Channel${selectedPlatforms.length > 1 ? 's' : ''}…`
+                            : `Publishing to ${selectedPlatforms.length} Channel${selectedPlatforms.length > 1 ? 's' : ''}…`}
+                        </>
+                      ) : batchActionStatus === 'succeeded' ? (
+                        <>
+                          <Check size={18} />
+                          {isScheduleMode
+                            ? `✓ Successfully Scheduled for ${selectedPlatforms.length} Channel${selectedPlatforms.length > 1 ? 's' : ''}!`
+                            : `✓ Successfully Published to ${selectedPlatforms.length} Channel${selectedPlatforms.length > 1 ? 's' : ''}!`}
+                        </>
+                      ) : isScheduleMode ? (
+                        <>
+                          <Clock size={18} />
+                          Schedule Video for {selectedPlatforms.length} Channel{selectedPlatforms.length === 1 ? '' : 's'} ({formatScheduledDate(new Date(scheduleDate).toISOString())})
+                        </>
+                      ) : (
+                        <>
+                          <UploadCloud size={18} />
+                          Upload to {selectedPlatforms.length} Selected Channel{selectedPlatforms.length === 1 ? '' : 's'} Now
+                        </>
+                      )}
+                    </button>
+                  </div>
+                )}
+
                 <div style={{ display: 'grid', gap: '0.75rem' }}>
                   {platforms.map(({ id, name, Icon, hint }) => {
                     const connection = connectionByPlatform[id];
-                    const busy = workingPlatform === id;
+                    const isSelected = selectedPlatforms.includes(id);
+                    const isBusy = (workingPlatform || '').split(',').includes(id);
+                    const isSuccess = platformButtonStatus[id] === 'succeeded';
+                    const isError = platformButtonStatus[id] === 'error' || Boolean(clip?.published_urls?.[id] && String(clip.published_urls[id]).startsWith('error:'));
+                    const isAlreadyPublished = Boolean(clip?.published_urls?.[id] && !String(clip.published_urls[id]).startsWith('error:'));
+                    const isAlreadyScheduled = Boolean(isCurrentlyScheduled && scheduledPublishInfo?.platforms?.includes(id));
                     const canUpload = clip?.status === 'completed' && (!hasAnyCustomization || brandingBurned || hasRenderedOnce) && !workingPlatform;
                     const isScheduleMode = publishMode === 'schedule';
 
                     return (
-                      <article key={id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '1rem', padding: '1rem', border: '1px solid #e6e6e1', borderRadius: 9, background: '#fff' }}>
-                        <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.75rem', minWidth: 0 }}>
-                          <div style={{ width: 40, height: 40, flex: '0 0 40px', display: 'grid', placeItems: 'center', background: '#f4f5f3', borderRadius: 9 }}><Icon size={21} /></div>
+                      <article
+                        key={id}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          gap: '1rem',
+                          padding: '1rem',
+                          border: isSelected && connection ? '1.5px solid #1f6f4a' : '1px solid #e6e6e1',
+                          borderRadius: 9,
+                          background: isSelected && connection ? 'rgba(31, 111, 74, 0.02)' : '#fff',
+                          transition: 'border 0.15s ease, background 0.15s ease'
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', minWidth: 0 }}>
+                          {connection ? (
+                            <input
+                              type="checkbox"
+                              id={`select-platform-${id}`}
+                              checked={isSelected}
+                              onChange={() => togglePlatformSelection(id)}
+                              title={isSelected ? 'Deselect platform' : 'Select platform'}
+                              style={{
+                                width: 20,
+                                height: 20,
+                                cursor: 'pointer',
+                                accentColor: '#1f6f4a',
+                                flexShrink: 0
+                              }}
+                            />
+                          ) : (
+                            <div style={{ width: 20, flexShrink: 0 }} />
+                          )}
+
+                          <div style={{ width: 40, height: 40, flex: '0 0 40px', display: 'grid', placeItems: 'center', background: '#f4f5f3', borderRadius: 9 }}>
+                            <Icon size={21} />
+                          </div>
+
                           <div style={{ minWidth: 0 }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', fontWeight: 700 }}>{name}{connection && <span style={{ color: '#1f6f4a', fontSize: '0.76rem', fontWeight: 650 }}>Connected</span>}</div>
-                            <div style={{ marginTop: '0.2rem', color: '#657080', fontSize: '0.84rem' }}>{connection ? (connection.account_name || connection.account_handle || 'Account connected') : hint}</div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', fontWeight: 700 }}>
+                              {name}
+                              {connection && (
+                                <span style={{ color: '#1f6f4a', fontSize: '0.76rem', fontWeight: 650 }}>
+                                  Connected
+                                </span>
+                              )}
+                              {isAlreadyScheduled && (
+                                <span style={{ color: '#1d4ed8', background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 4, padding: '0.1rem 0.35rem', fontSize: '0.72rem', fontWeight: 700 }}>
+                                  ⏰ Scheduled
+                                </span>
+                              )}
+                            </div>
+                            <div style={{ marginTop: '0.2rem', color: '#657080', fontSize: '0.84rem' }}>
+                              {connection ? (connection.account_name || connection.account_handle || 'Account connected') : hint}
+                            </div>
                           </div>
                         </div>
+
                         {connection ? (
-                          <button
-                            type="button"
-                            disabled={!canUpload}
-                            onClick={() => publishToPlatform(id)}
-                            style={{
-                              ...primaryButton,
-                              minWidth: 126,
-                              opacity: canUpload ? 1 : 0.5,
-                              cursor: canUpload ? 'pointer' : 'not-allowed',
-                              background: isScheduleMode ? '#1e3a8a' : primaryButton.background,
-                              boxShadow: isScheduleMode ? '0 2px 6px rgba(30,58,138,0.2)' : primaryButton.boxShadow
-                            }}
-                          >
-                            {busy ? (
-                              <>
-                                <LoaderCircle size={16} className="harvest-publish-spin" />
-                                {isScheduleMode ? 'Scheduling…' : 'Uploading…'}
-                              </>
-                            ) : isScheduleMode ? (
-                              <>
-                                <Clock size={16} /> Schedule
-                              </>
-                            ) : (
-                              <>
-                                <UploadCloud size={16} /> Upload
-                              </>
-                            )}
-                          </button>
+                          isAlreadyPublished ? (
+                            <a
+                              href={clip.published_urls[id]}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              style={{
+                                ...primaryButton,
+                                minWidth: 126,
+                                background: '#047857',
+                                borderColor: '#065f46',
+                                textDecoration: 'none',
+                                boxShadow: '0 2px 6px rgba(4,120,87,0.25)'
+                              }}
+                            >
+                              <CheckCircle2 size={16} /> Published <ExternalLink size={13} />
+                            </a>
+                          ) : isBusy ? (
+                            <button
+                              type="button"
+                              disabled
+                              style={{
+                                ...primaryButton,
+                                minWidth: 126,
+                                background: '#d97706',
+                                borderColor: '#b45309',
+                                cursor: 'wait'
+                              }}
+                            >
+                              <LoaderCircle size={16} className="harvest-publish-spin" />
+                              {isScheduleMode ? 'Scheduling…' : 'Uploading…'}
+                            </button>
+                          ) : isSuccess ? (
+                            <button
+                              type="button"
+                              style={{
+                                ...primaryButton,
+                                minWidth: 126,
+                                background: '#10b981',
+                                borderColor: '#059669',
+                                boxShadow: '0 2px 8px rgba(16,185,129,0.3)',
+                                cursor: 'default'
+                              }}
+                            >
+                              <Check size={16} /> {isScheduleMode ? 'Scheduled!' : 'Uploaded!'}
+                            </button>
+                          ) : isAlreadyScheduled ? (
+                            <button
+                              type="button"
+                              onClick={() => handleIndividualPublish(id)}
+                              style={{
+                                ...primaryButton,
+                                minWidth: 126,
+                                background: '#1d4ed8',
+                                borderColor: '#1e40af',
+                                boxShadow: '0 2px 6px rgba(29,78,216,0.25)'
+                              }}
+                            >
+                              <Check size={16} /> Scheduled
+                            </button>
+                          ) : isError ? (
+                            <button
+                              type="button"
+                              onClick={() => handleIndividualPublish(id)}
+                              style={{
+                                ...primaryButton,
+                                minWidth: 126,
+                                background: '#dc2626',
+                                borderColor: '#b91c1c'
+                              }}
+                            >
+                              <X size={16} /> Failed (Retry)
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              disabled={!canUpload}
+                              onClick={() => handleIndividualPublish(id)}
+                              style={{
+                                ...primaryButton,
+                                minWidth: 126,
+                                opacity: canUpload ? 1 : 0.5,
+                                cursor: canUpload ? 'pointer' : 'not-allowed',
+                                background: isScheduleMode ? '#1e3a8a' : primaryButton.background,
+                                boxShadow: isScheduleMode ? '0 2px 6px rgba(30,58,138,0.2)' : primaryButton.boxShadow
+                              }}
+                            >
+                              {isScheduleMode ? <Clock size={16} /> : <UploadCloud size={16} />}
+                              {isScheduleMode ? 'Schedule' : 'Upload'}
+                            </button>
+                          )
                         ) : (
                           <button
                             type="button"
