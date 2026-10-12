@@ -191,9 +191,9 @@ def _build_ydl_opts(
         "geo_bypass": True,
         "nocheckcertificate": True,
         "check_formats": False,
-        "socket_timeout": 45,
-        "retries": 10,
-        "fragment_retries": 10,
+        "socket_timeout": 20,
+        "retries": 3,
+        "fragment_retries": 5,
         "http_chunk_size": 10485760,  # 10MB chunking prevents YouTube 403 throttling
         "max_filesize": 2 * 1024 * 1024 * 1024,  # 2 GB max
         "allowed_extractors": ["default"],
@@ -273,6 +273,7 @@ def download_video_from_url(url: str, output_dir: str) -> Dict[str, Any]:
 
     last_error: Optional[Exception] = None
     info: Optional[Dict[str, Any]] = None
+    active_proxy = proxy
 
     for i, strat in enumerate(strategies):
         strat_name = strat["name"]
@@ -283,7 +284,7 @@ def download_video_from_url(url: str, output_dir: str) -> Dict[str, Any]:
             temp_template=temp_template,
             extractor_args=strat["extractor_args"],
             cookie_file=active_cookie_file,
-            proxy=proxy,
+            proxy=active_proxy,
         )
 
         try:
@@ -296,17 +297,54 @@ def download_video_from_url(url: str, output_dir: str) -> Dict[str, Any]:
             last_error = de
             err_msg = str(de)
             logger.warning(f"yt-dlp DownloadError on strategy '{strat_name}' for {cleaned_url}: {err_msg}")
+
+            # Check if failure was caused by a dead or unresponsive proxy
+            is_proxy_failure = active_proxy and any(term in err_msg.lower() for term in [
+                "unable to connect to proxy",
+                "proxyerror",
+                "connecttimeouterror",
+                "proxy connection refused",
+                "tunnel connection failed",
+                "failed to establish a new connection",
+            ])
+            if is_proxy_failure:
+                logger.warning(f"Configured proxy '{active_proxy}' failed or timed out. Disabling proxy and retrying directly...")
+                active_proxy = None
+                try:
+                    retry_opts = _build_ydl_opts(
+                        temp_template=temp_template,
+                        extractor_args=strat["extractor_args"],
+                        cookie_file=active_cookie_file,
+                        proxy=None,
+                    )
+                    with yt_dlp.YoutubeDL(retry_opts) as ydl:
+                        info = ydl.extract_info(cleaned_url, download=True)
+                        if info:
+                            logger.info(f"Successfully downloaded video with strategy '{strat_name}' directly (bypassing dead proxy)")
+                            break
+                except Exception as retry_err:
+                    last_error = retry_err
+                    logger.warning(f"Direct fallback without proxy for '{strat_name}' failed: {retry_err}")
+
             # If it's a private video or not found, no other strategy will help
             if any(term in err_msg.lower() for term in ["private video", "sign in to view", "video unavailable", "not found"]):
                 break
             continue
         except ExtractorError as ee:
             last_error = ee
+            err_msg = str(ee)
             logger.warning(f"yt-dlp ExtractorError on strategy '{strat_name}' for {cleaned_url}: {ee}")
+            if active_proxy and any(term in err_msg.lower() for term in ["unable to connect to proxy", "proxyerror", "connecttimeouterror"]):
+                logger.warning(f"Proxy failed during extraction. Disabling proxy for subsequent strategies...")
+                active_proxy = None
             continue
         except Exception as exc:
             last_error = exc
+            err_msg = str(exc)
             logger.warning(f"Unexpected error on strategy '{strat_name}': {exc}")
+            if active_proxy and any(term in err_msg.lower() for term in ["unable to connect to proxy", "proxyerror", "connecttimeouterror"]):
+                logger.warning(f"Proxy failed. Disabling proxy for subsequent strategies...")
+                active_proxy = None
             continue
 
     if not info:
@@ -317,6 +355,13 @@ def download_video_from_url(url: str, output_dir: str) -> Dict[str, Any]:
             raise UrlDownloadError("This video is private or requires a login. Please provide a public video link.")
         if "video unavailable" in msg.lower() or "not found" in msg.lower():
             raise UrlDownloadError("Video not found or unavailable at the provided link.")
+
+        # Specific diagnosis for proxy failure
+        if any(term in msg.lower() for term in ["unable to connect to proxy", "proxyerror", "connecttimeouterror"]):
+            raise UrlDownloadError(
+                "The proxy server configured in YOUTUBE_PROXY is offline or timing out. "
+                "Please remove or update YOUTUBE_PROXY in your Render dashboard environment variables."
+            )
 
         # Specific diagnosis for datacenter IP blocking
         if any(term in msg.lower() for term in ["player response", "bot", "sign in", "429", "confirm you're not a bot"]):
