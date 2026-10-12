@@ -206,6 +206,9 @@ async def upload_video(
     if not db_project:
         raise HTTPException(status_code=404, detail="Project not found")
 
+    # End read transaction so connection is not held "idle in transaction" during large file streaming/upload
+    db.commit()
+
     # Ensure upload directory exists
     os.makedirs(UPLOAD_DIR, exist_ok=True)
 
@@ -299,8 +302,14 @@ async def upload_video(
         analysis_status=models.ContentAnalysisStatus.PENDING,
         highlight_status=models.HighlightDetectionStatus.PENDING
     )
-    db.add(db_video)
-    db.commit()
+    try:
+        db.add(db_video)
+        db.commit()
+    except Exception as commit_err:
+        logger.warning(f"Initial DB commit failed ({commit_err}), rolling back and retrying with fresh connection...")
+        db.rollback()
+        db.add(db_video)
+        db.commit()
     db.refresh(db_video)
 
     return db_video
@@ -318,6 +327,10 @@ def import_video_from_url(
     ).first()
     if not db_project:
         raise HTTPException(status_code=404, detail="Project not found")
+
+    # End read transaction immediately so DB connection is not held "idle in transaction"
+    # during long external network operations (YouTube download & Cloudflare R2 upload)
+    db.commit()
 
     from app.services.url_downloader import download_video_from_url, UrlDownloadError
     try:
@@ -342,8 +355,14 @@ def import_video_from_url(
         analysis_status=models.ContentAnalysisStatus.PENDING,
         highlight_status=models.HighlightDetectionStatus.PENDING
     )
-    db.add(db_video)
-    db.commit()
+    try:
+        db.add(db_video)
+        db.commit()
+    except Exception as commit_err:
+        logger.warning(f"Initial DB commit failed ({commit_err}), rolling back and retrying with fresh connection...")
+        db.rollback()
+        db.add(db_video)
+        db.commit()
     db.refresh(db_video)
 
     if request.auto_analyze:
