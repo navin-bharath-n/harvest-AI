@@ -279,8 +279,11 @@ export default function SocialPublishPage() {
   }, [currentUserId]);
 
   useEffect(() => {
+    refreshConnections();
+  }, [refreshConnections]);
+
+  useEffect(() => {
     let active = true;
-    let createdVideoUrl = '';
     const load = async () => {
       if (!clipId) {
         setMessageError(true);
@@ -290,9 +293,8 @@ export default function SocialPublishPage() {
       }
       setLoading(true);
       try {
-        const [clipResult, , tmplData] = await Promise.all([
+        const [clipResult, tmplData] = await Promise.all([
           api.getClip(clipId),
-          refreshConnections(),
           api.getTemplates().catch(() => [])
         ]);
         if (!active) return;
@@ -369,10 +371,14 @@ export default function SocialPublishPage() {
         if (clipResult.status === 'completed' && clipResult.storage_path) {
           const mediaUrl = await api.getClipMedia(clipId);
           if (active) {
-            createdVideoUrl = mediaUrl;
-            setVideoUrl(mediaUrl);
+            setVideoUrl((prevUrl) => {
+              if (prevUrl && prevUrl !== mediaUrl) {
+                try { URL.revokeObjectURL(prevUrl); } catch {}
+              }
+              return mediaUrl;
+            });
           } else {
-            URL.revokeObjectURL(mediaUrl);
+            try { URL.revokeObjectURL(mediaUrl); } catch {}
           }
         }
       } catch (error) {
@@ -387,9 +393,25 @@ export default function SocialPublishPage() {
     load();
     return () => {
       active = false;
-      if (createdVideoUrl) URL.revokeObjectURL(createdVideoUrl);
     };
-  }, [clipId, refreshConnections]);
+  }, [clipId]);
+
+  useEffect(() => {
+    return () => {
+      setVideoUrl((currentUrl) => {
+        if (currentUrl) {
+          try { URL.revokeObjectURL(currentUrl); } catch {}
+        }
+        return '';
+      });
+      setThumbnailPreviewUrl((currentThumb) => {
+        if (currentThumb && currentThumb.startsWith('blob:')) {
+          try { URL.revokeObjectURL(currentThumb); } catch {}
+        }
+        return null;
+      });
+    };
+  }, []);
 
   useEffect(() => {
     const handleOAuthMessage = async (event) => {
@@ -656,6 +678,7 @@ export default function SocialPublishPage() {
     if (!isoStr) return '';
     try {
       const dt = new Date(isoStr);
+      if (isNaN(dt.getTime())) return '';
       return dt.toLocaleString(undefined, {
         weekday: 'short',
         month: 'short',
@@ -666,7 +689,7 @@ export default function SocialPublishPage() {
         hour12: true,
       });
     } catch {
-      return isoStr;
+      return '';
     }
   };
 
@@ -905,6 +928,9 @@ export default function SocialPublishPage() {
   const selectedTemplate = templates.find((t) => t.id === selectedTemplateId);
   const hasAnyOutro = Boolean((outroMode === 'template' && selectedTemplate) || outroMode === 'custom');
   const hasAnyCustomization = Boolean(hasAnyBranding || hasAnyOutro);
+
+  const isScheduleMode = publishMode === 'schedule';
+  const canUpload = clip?.status === 'completed' && (!hasAnyCustomization || brandingBurned || hasRenderedOnce) && !workingPlatform;
 
   return (
     <div style={{ minHeight: '100vh', background: '#f8f8f5', color: '#16181d', fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' }}>
@@ -2079,7 +2105,7 @@ export default function SocialPublishPage() {
                       ) : isScheduleMode ? (
                         <>
                           <Clock size={18} />
-                          Schedule Video for {selectedPlatforms.length} Channel{selectedPlatforms.length === 1 ? '' : 's'} ({formatScheduledDate(new Date(scheduleDate).toISOString())})
+                          Schedule Video for {selectedPlatforms.length} Channel{selectedPlatforms.length === 1 ? '' : 's'}{scheduleDate ? ` (${formatScheduledDate(scheduleDate)})` : ''}
                         </>
                       ) : (
                         <>
@@ -2100,8 +2126,6 @@ export default function SocialPublishPage() {
                     const isError = platformButtonStatus[id] === 'error' || Boolean(clip?.published_urls?.[id] && String(clip.published_urls[id]).startsWith('error:'));
                     const isAlreadyPublished = Boolean(clip?.published_urls?.[id] && !String(clip.published_urls[id]).startsWith('error:'));
                     const isAlreadyScheduled = Boolean(isCurrentlyScheduled && scheduledPublishInfo?.platforms?.includes(id));
-                    const canUpload = clip?.status === 'completed' && (!hasAnyCustomization || brandingBurned || hasRenderedOnce) && !workingPlatform;
-                    const isScheduleMode = publishMode === 'schedule';
 
                     return (
                       <article
