@@ -155,12 +155,18 @@ def _resolve_cookiefile() -> Optional[str]:
 
 
 def _resolve_proxy() -> Optional[str]:
-    return (
+    raw = (
         getattr(settings, "YOUTUBE_PROXY", None)
         or os.getenv("YOUTUBE_PROXY")
         or os.getenv("HTTP_PROXY")
         or os.getenv("HTTPS_PROXY")
     )
+    if not raw or not str(raw).strip():
+        return None
+    cleaned = str(raw).strip().rstrip("/")
+    if "://" not in cleaned:
+        cleaned = f"http://{cleaned}"
+    return cleaned
 
 
 def _get_js_runtimes() -> Dict[str, Any]:
