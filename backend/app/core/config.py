@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     FRONTEND_ORIGIN: Optional[str] = None
     AUTO_START_CELERY: bool = True
     AUTO_START_OLLAMA: bool = True
+    OLLAMA_BASE_URL: str = "http://localhost:11434/v1"
     # Number of independent background jobs/videos a worker may run at once.
     # Set to 2 or more to allow simultaneous parallel video processing across users.
     CELERY_CONCURRENCY: int = 2
@@ -63,12 +64,12 @@ class Settings(BaseSettings):
 
     GOOGLE_CLIENT_ID: Optional[str] = None
     GOOGLE_CLIENT_SECRET: Optional[str] = None
-    GOOGLE_REDIRECT_URI: str = "https://localhost:8000/api/v1/users/auth/youtube/callback"
-    GOOGLE_AUTH_REDIRECT_URI: str = "http://localhost:8000/api/v1/users/auth/google/callback"
+    GOOGLE_REDIRECT_URI: Optional[str] = None
+    GOOGLE_AUTH_REDIRECT_URI: Optional[str] = None
     META_APP_ID: Optional[str] = None
     META_APP_SECRET: Optional[str] = None
-    META_REDIRECT_URI: str = "https://localhost:8000/api/v1/users/auth/facebook/callback"
-    INSTAGRAM_REDIRECT_URI: str = "https://localhost:8000/api/v1/users/auth/instagram/callback"
+    META_REDIRECT_URI: Optional[str] = None
+    INSTAGRAM_REDIRECT_URI: Optional[str] = None
     YOUTUBE_COOKIES_PATH: Optional[str] = None
     YOUTUBE_COOKIES_CONTENT: Optional[str] = None
     YOUTUBE_PROXY: Optional[str] = None

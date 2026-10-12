@@ -36,6 +36,69 @@ def _get_frontend_origin() -> str:
     return "*"  # fallback for local dev only
 
 
+def _get_google_auth_redirect_uri(request: Request) -> str:
+    """Computes Google OAuth callback URL with robust handling of proxies and environment settings."""
+    from app.core.config import settings
+    configured = getattr(settings, "GOOGLE_AUTH_REDIRECT_URI", None)
+
+    # Extract real incoming scheme & host (handling reverse proxies like Render/Cloudflare/Nginx)
+    proto = request.headers.get("x-forwarded-proto") or (request.url.scheme if request.url else "https")
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host") or (request.url.netloc if request.url else "")
+    is_request_local = any(h in host.lower() for h in ("localhost", "127.0.0.1", "0.0.0.0")) if host else False
+
+    # If configured explicitly in environment:
+    if configured and configured.strip():
+        uri = configured.strip()
+        # Safeguard: If configured as localhost, but request arrived on a public domain (e.g. Render/Railway),
+        # prevent breaking the OAuth flow by auto-adapting to the public domain.
+        if not is_request_local and host and ("localhost" in uri or "127.0.0.1" in uri):
+            logger.warning(
+                f"GOOGLE_AUTH_REDIRECT_URI is set to localhost ('{uri}'), but traffic arrived from public host '{host}'. "
+                f"Auto-resolving redirect URI to '{proto}://{host}/api/v1/users/auth/google/callback'."
+            )
+            return f"{proto}://{host}/api/v1/users/auth/google/callback"
+        return uri
+
+    # Dynamic fallback based on incoming request
+    if host:
+        return f"{proto}://{host}/api/v1/users/auth/google/callback"
+    base_url = str(request.base_url).rstrip("/")
+    return f"{base_url}/api/v1/users/auth/google/callback"
+
+
+def _get_platform_oauth_redirect_uri(platform: str, request: Request) -> str:
+    """Computes OAuth callback URL for social platforms (youtube, facebook, instagram)."""
+    from app.core.config import settings
+
+    if platform == "youtube":
+        configured = getattr(settings, "GOOGLE_REDIRECT_URI", None)
+    elif platform == "facebook":
+        configured = getattr(settings, "META_REDIRECT_URI", None)
+    elif platform == "instagram":
+        configured = getattr(settings, "INSTAGRAM_REDIRECT_URI", None)
+    else:
+        configured = None
+
+    proto = request.headers.get("x-forwarded-proto") or (request.url.scheme if request.url else "https")
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host") or (request.url.netloc if request.url else "")
+    is_request_local = any(h in host.lower() for h in ("localhost", "127.0.0.1", "0.0.0.0")) if host else False
+
+    if configured and configured.strip():
+        uri = configured.strip()
+        if not is_request_local and host and ("localhost" in uri or "127.0.0.1" in uri):
+            logger.warning(
+                f"{platform.upper()} redirect URI is set to localhost ('{uri}'), but traffic arrived from '{host}'. "
+                f"Auto-resolving redirect URI to '{proto}://{host}/api/v1/users/auth/{platform}/callback'."
+            )
+            return f"{proto}://{host}/api/v1/users/auth/{platform}/callback"
+        return uri
+
+    if host:
+        return f"{proto}://{host}/api/v1/users/auth/{platform}/callback"
+    base_url = str(request.base_url).rstrip("/")
+    return f"{base_url}/api/v1/users/auth/{platform}/callback"
+
+
 @router.post("/register", response_model=schemas.Token)
 def register_user(
     user_in: schemas.UserCreate,
@@ -301,10 +364,7 @@ def google_auth_login(request: Request):
         "https://www.googleapis.com/auth/youtube.readonly",
     ]
 
-    redirect_uri = settings.GOOGLE_AUTH_REDIRECT_URI
-    if not redirect_uri:
-        base_url = str(request.base_url).rstrip("/")
-        redirect_uri = f"{base_url}/api/v1/users/auth/google/callback"
+    redirect_uri = _get_google_auth_redirect_uri(request)
 
     auth_url = (
         "https://accounts.google.com/o/oauth2/v2/auth"
@@ -352,10 +412,7 @@ def google_auth_callback(
         raise HTTPException(status_code=400, detail="Missing authorization code from Google.")
 
     try:
-        redirect_uri = settings.GOOGLE_AUTH_REDIRECT_URI
-        if not redirect_uri:
-            base_url = str(request.base_url).rstrip("/")
-            redirect_uri = f"{base_url}/api/v1/users/auth/google/callback"
+        redirect_uri = _get_google_auth_redirect_uri(request)
 
         # Exchange code for tokens
         token_url = "https://oauth2.googleapis.com/token"
@@ -448,10 +505,17 @@ def google_auth_callback(
             logger.warning(f"Could not automatically link YouTube channel during Google sign-in (non-fatal): {yt_err}")
 
         # Determine frontend origin for redirect fallback
-        frontend_url = "https://localhost:5173"
+        req_host = request.headers.get("x-forwarded-host") or request.headers.get("host") or (request.url.netloc if request.url else "")
+        req_is_local = any(h in req_host.lower() for h in ("localhost", "127.0.0.1", "0.0.0.0")) if req_host else False
+        frontend_url = "https://localhost:5173" if req_is_local else "https://harvest-ai-ebon.vercel.app"
         try:
             if settings.FRONTEND_ORIGIN and settings.FRONTEND_ORIGIN not in ("*", ""):
                 frontend_url = settings.FRONTEND_ORIGIN.rstrip("/")
+            elif request.headers.get("referer"):
+                from urllib.parse import urlparse
+                ref_parts = urlparse(request.headers.get("referer"))
+                if ref_parts.netloc and "localhost" not in ref_parts.netloc:
+                    frontend_url = f"{ref_parts.scheme or 'https'}://{ref_parts.netloc}".rstrip("/")
         except Exception:
             pass
 
@@ -620,6 +684,7 @@ def google_auth_callback(
 def platform_login(
     platform: str,
     user_id: int,
+    request: Request,
     db: Session = Depends(get_db)
 ):
     # Verify user exists
@@ -645,11 +710,12 @@ def platform_login(
 
     # If live keys are configured, generate OAuth authorize URL and redirect
     if platform == "youtube":
+        redirect_uri = _get_platform_oauth_redirect_uri("youtube", request)
         auth_url = (
             "https://accounts.google.com/o/oauth2/v2/auth"
             "?response_type=code"
             f"&client_id={settings.GOOGLE_CLIENT_ID}"
-            f"&redirect_uri={settings.GOOGLE_REDIRECT_URI}"
+            f"&redirect_uri={redirect_uri}"
             "&scope=https://www.googleapis.com/auth/youtube.upload%20https://www.googleapis.com/auth/youtube.readonly"
             f"&state={user_id}"
             "&access_type=offline&prompt=consent"
@@ -657,7 +723,7 @@ def platform_login(
         return RedirectResponse(url=auth_url)
 
     elif platform in ("facebook", "instagram"):
-        redirect_uri = settings.META_REDIRECT_URI if platform == "facebook" else settings.INSTAGRAM_REDIRECT_URI
+        redirect_uri = _get_platform_oauth_redirect_uri(platform, request)
         scope = "pages_show_list,pages_read_engagement,pages_manage_posts,publish_video"
         if platform == "instagram":
             scope += ",instagram_basic,instagram_content_publish"
@@ -676,6 +742,7 @@ def platform_login(
 @router.get("/auth/{platform}/callback", response_class=HTMLResponse)
 def platform_callback(
     platform: str,
+    request: Request,
     code: Optional[str] = None,
     state: Optional[str] = None,
     error: Optional[str] = None,
@@ -754,12 +821,13 @@ def platform_callback(
 
         if platform == "youtube":
             token_url = "https://oauth2.googleapis.com/token"
+            redirect_uri = _get_platform_oauth_redirect_uri("youtube", request)
             data = {
                 "client_id": settings.GOOGLE_CLIENT_ID,
                 "client_secret": settings.GOOGLE_CLIENT_SECRET,
                 "code": code,
                 "grant_type": "authorization_code",
-                "redirect_uri": settings.GOOGLE_REDIRECT_URI
+                "redirect_uri": redirect_uri
             }
             res = requests.post(token_url, data=data, timeout=15)
             res.raise_for_status()
@@ -775,7 +843,7 @@ def platform_callback(
             save_connection("youtube", details)
             
         elif platform in ("facebook", "instagram"):
-            redirect_uri = settings.META_REDIRECT_URI if platform == "facebook" else settings.INSTAGRAM_REDIRECT_URI
+            redirect_uri = _get_platform_oauth_redirect_uri(platform, request)
             token_url = "https://graph.facebook.com/v20.0/oauth/access_token"
             params = {
                 "client_id": settings.META_APP_ID,

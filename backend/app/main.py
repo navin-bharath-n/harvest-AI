@@ -188,9 +188,14 @@ init_db(engine)
 _bg_processes = {}
 
 def _is_ollama_running() -> bool:
-    """Check if Ollama is already listening on port 11434."""
+    """Check if Ollama is already listening on configured host and port."""
     try:
-        with socket.create_connection(("localhost", 11434), timeout=1):
+        from urllib.parse import urlparse
+        ollama_url = getattr(settings, "OLLAMA_BASE_URL", "http://localhost:11434/v1")
+        parsed = urlparse(ollama_url)
+        host = parsed.hostname or "localhost"
+        port = parsed.port or 11434
+        with socket.create_connection((host, port), timeout=1):
             return True
     except OSError:
         return False
@@ -386,6 +391,12 @@ else:
         allow_headers=["*"],
         expose_headers=["*"],
     )
+
+try:
+    from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+    app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
+except ImportError:
+    pass
 
 app.add_middleware(CORSMiddleware, **_cors_kwargs)
 app.add_middleware(GZipMiddleware, minimum_size=500)

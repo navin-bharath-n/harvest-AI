@@ -57,8 +57,10 @@ class MusicRecommendationAgent:
                 self.model = "qwen/qwen-2.5-72b-instruct"
                 self.is_openrouter = True
             else:
+                from app.core.config import settings
+                ollama_url = getattr(settings, "OLLAMA_BASE_URL", "http://localhost:11434/v1")
                 self.client = OpenAI(
-                    base_url="http://localhost:11434/v1",
+                    base_url=ollama_url,
                     api_key="ollama",
                 )
                 self.model = "qwen2.5"

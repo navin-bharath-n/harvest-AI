@@ -408,8 +408,8 @@ export const api = {
   },
   isAllowedOAuthOrigin: (origin) => {
     if (!origin) return false;
+    if (origin === window.location.origin) return true;
     const allowed = new Set([
-      window.location.origin,
       'https://localhost:8000',
       'http://localhost:8000',
       'https://127.0.0.1:8000',
@@ -424,7 +424,14 @@ export const api = {
     if (API_BASE_URL.startsWith('http')) {
       try { allowed.add(new URL(API_BASE_URL).origin); } catch {}
     }
-    return allowed.has(origin);
+    if (allowed.has(origin)) return true;
+    try {
+      const parsed = new URL(origin);
+      if (parsed.hostname.endsWith('.onrender.com') || parsed.hostname.endsWith('.vercel.app')) {
+        return true;
+      }
+    } catch {}
+    return false;
   },
 
   // Get details of a single clip

@@ -34,5 +34,5 @@ COPY backend/ .
 # Create uploads directory
 RUN mkdir -p uploads
 
-# Start application (dynamic $PORT support for Railway)
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+# Start application (dynamic $PORT support for Render/Railway)
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --proxy-headers --forwarded-allow-ips='*'"]
