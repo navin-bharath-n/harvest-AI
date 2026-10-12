@@ -3,6 +3,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
 from typing import List, Optional
 import json as _json
+import html as _html
 import logging
 from app.core.database import get_db
 from app import models, schemas
@@ -739,6 +740,228 @@ def platform_login(
 
     raise HTTPException(status_code=400, detail=f"Unsupported login platform: {platform}")
 
+def _render_oauth_callback_html(
+    status: str,
+    platform: str,
+    title: str,
+    message: str,
+    details: Optional[str] = None
+) -> str:
+    """Renders a clean, branded HTML response for popup OAuth callbacks with fallback controls."""
+    plat_name = {
+        "youtube": "YouTube",
+        "facebook": "Facebook",
+        "instagram": "Instagram"
+    }.get(platform.lower(), platform.capitalize())
+    
+    is_success = (status == "success")
+    icon_svg = (
+        """<svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>"""
+        if is_success else
+        """<svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#ef4444" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>"""
+    )
+    badge_bg = "rgba(16, 185, 129, 0.15)" if is_success else "rgba(239, 68, 68, 0.15)"
+    badge_border = "rgba(16, 185, 129, 0.3)" if is_success else "rgba(239, 68, 68, 0.3)"
+    btn_color = "#10b981" if is_success else "#3b82f6"
+    btn_text = "Close Window" if is_success else "Close Window & Try Again"
+    
+    safe_details_str = str(details or "")
+    payload_type = "HARVEST_AUTH_SUCCESS" if is_success else "HARVEST_AUTH_FAILURE"
+    
+    details_html = ""
+    if details:
+        escaped_details = _html.escape(safe_details_str)
+        details_html = f"""
+        <div class="details-box">
+          <div class="details-title">Details:</div>
+          <div class="details-content">{escaped_details}</div>
+        </div>
+        """
+        
+    tips_html = ""
+    if not is_success and platform.lower() in ("facebook", "instagram"):
+        tips_html = """
+        <div class="tips-box">
+          <div class="tips-title">Troubleshooting Checklist:</div>
+          <ul class="tips-list">
+            <li><strong>Facebook Page Required:</strong> Meta requires an active Facebook Page on your account to manage posts or connect Instagram.</li>
+            <li><strong>Instagram Professional Account:</strong> Your Instagram account must be switched to a <em>Professional (Creator or Business)</em> account and linked to your Facebook Page in <em>Page Settings &gt; Linked Accounts</em>.</li>
+            <li><strong>Meta App in Development Mode:</strong> If your Meta app is not Live, ensure your Facebook account is added to <em>App Roles &gt; Testers / Developers</em> in the Meta Developer Portal.</li>
+          </ul>
+        </div>
+        """
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Harvest AI - {plat_name} Connection</title>
+    <style>
+      * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+      body {{
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+        background: #090a0f;
+        background-image: radial-gradient(circle at 50% 20%, rgba(30, 41, 59, 0.5) 0%, rgba(9, 10, 15, 1) 100%);
+        color: #f3f4f6;
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 20px;
+      }}
+      .card {{
+        background: rgba(22, 24, 33, 0.95);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 16px;
+        padding: 32px 28px;
+        width: 100%;
+        max-width: 440px;
+        text-align: center;
+        box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6);
+        backdrop-filter: blur(12px);
+      }}
+      .icon-badge {{
+        width: 64px;
+        height: 64px;
+        border-radius: 50%;
+        background: {badge_bg};
+        border: 1px solid {badge_border};
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        margin-bottom: 20px;
+      }}
+      h2 {{
+        font-size: 20px;
+        font-weight: 700;
+        margin-bottom: 8px;
+        color: #ffffff;
+        letter-spacing: -0.01em;
+      }}
+      p.sub {{
+        font-size: 14px;
+        color: #94a3b8;
+        line-height: 1.5;
+        margin-bottom: 20px;
+      }}
+      .details-box {{
+        background: rgba(15, 23, 42, 0.6);
+        border: 1px solid rgba(239, 68, 68, 0.25);
+        border-radius: 10px;
+        padding: 12px 14px;
+        text-align: left;
+        margin-bottom: 18px;
+      }}
+      .details-title {{
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: #ef4444;
+        font-weight: 700;
+        margin-bottom: 6px;
+      }}
+      .details-content {{
+        font-size: 12px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        color: #fca5a5;
+        word-break: break-word;
+        line-height: 1.4;
+      }}
+      .tips-box {{
+        background: rgba(30, 41, 59, 0.4);
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        border-radius: 10px;
+        padding: 14px 16px;
+        text-align: left;
+        margin-bottom: 22px;
+      }}
+      .tips-title {{
+        font-size: 12px;
+        font-weight: 600;
+        color: #cbd5e1;
+        margin-bottom: 8px;
+      }}
+      .tips-list {{
+        font-size: 12px;
+        color: #94a3b8;
+        padding-left: 18px;
+        line-height: 1.5;
+      }}
+      .tips-list li {{ margin-bottom: 6px; }}
+      .btn {{
+        display: block;
+        width: 100%;
+        background: {btn_color};
+        color: #ffffff;
+        font-weight: 600;
+        font-size: 14px;
+        padding: 12px 16px;
+        border-radius: 10px;
+        border: none;
+        cursor: pointer;
+        transition: opacity 0.2s, transform 0.1s;
+      }}
+      .btn:hover {{ opacity: 0.9; }}
+      .btn:active {{ transform: scale(0.98); }}
+      .timer-note {{
+        font-size: 12px;
+        color: #64748b;
+        margin-top: 12px;
+      }}
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <div class="icon-badge">
+        {icon_svg}
+      </div>
+      <h2>{title}</h2>
+      <p class="sub">{message}</p>
+      {details_html}
+      {tips_html}
+      <button class="btn" onclick="closeWindow()">{btn_text}</button>
+      {"<div class='timer-note' id='timerText'>Closing window in 3 seconds...</div>" if is_success else ""}
+    </div>
+
+    <script>
+      const payload = {{
+        type: {_json.dumps(payload_type)},
+        platform: {_json.dumps(platform)},
+        error: {_json.dumps(safe_details_str)}
+      }};
+
+      if (window.opener && !window.opener.closed) {{
+        try {{
+          window.opener.postMessage(payload, '*');
+        }} catch (e) {{
+          console.warn('OAuth postMessage error:', e);
+        }}
+      }}
+
+      function closeWindow() {{
+        try {{
+          window.close();
+        }} catch(e) {{}}
+      }}
+
+      {'''
+      let count = 3;
+      const timerEl = document.getElementById('timerText');
+      const interval = setInterval(() => {
+        count--;
+        if (timerEl) timerEl.innerText = 'Closing window in ' + count + ' seconds...';
+        if (count <= 0) {
+          clearInterval(interval);
+          closeWindow();
+        }
+      }, 1000);
+      ''' if is_success else ''}
+    </script>
+  </body>
+</html>"""
+
+
 @router.get("/auth/{platform}/callback", response_class=HTMLResponse)
 def platform_callback(
     platform: str,
@@ -752,38 +975,60 @@ def platform_callback(
     db: Session = Depends(get_db)
 ):
     if error or error_message or error_description:
-        err_msg = error_message or error_description or error or "Unknown OAuth error"
-        _origin = _get_frontend_origin()
-        # JSON-encode the error so it is safe to embed in a JS string literal
-        err_json = _json.dumps(str(err_msg))
-        return f"""
-        <html>
-          <body>
-            <script>
-              window.opener.postMessage({{
-                type: 'HARVEST_AUTH_FAILURE',
-                error: {err_json}
-              }}, {_json.dumps(_origin)});
-              window.close();
-            </script>
-          </body>
-        </html>
-        """
+        err_msg = error_message or error_description or error or "OAuth authorization was cancelled or denied."
+        return _render_oauth_callback_html(
+            status="error",
+            platform=platform,
+            title="Authorization Denied",
+            message="The authorization request was cancelled or declined by the provider.",
+            details=str(err_msg)
+        )
 
     if not state:
-        raise HTTPException(status_code=400, detail="Missing state parameter")
+        return _render_oauth_callback_html(
+            status="error",
+            platform=platform,
+            title="Invalid Request",
+            message="Missing state parameter in authorization callback.",
+            details="The state parameter was not returned by the authentication server."
+        )
 
-    user_id = int(state)
+    try:
+        user_id = int(state)
+    except (TypeError, ValueError):
+        return _render_oauth_callback_html(
+            status="error",
+            platform=platform,
+            title="Invalid State",
+            message="Invalid user identifier passed in OAuth state.",
+            details="State parameter could not be parsed as a user ID."
+        )
+
     db_user = db.query(models.User).filter(models.User.id == user_id).first()
     if not db_user:
-        raise HTTPException(status_code=404, detail="User not found")
+        return _render_oauth_callback_html(
+            status="error",
+            platform=platform,
+            title="User Not Found",
+            message="No matching user account found for this authorization session."
+        )
 
     if not code:
-        raise HTTPException(status_code=400, detail="Missing authorization code")
+        return _render_oauth_callback_html(
+            status="error",
+            platform=platform,
+            title="Missing Authorization Code",
+            message="No authorization code was provided by the provider."
+        )
 
     # Standard Live OAuth Token Exchange
     if code == "mock_code":
-        raise HTTPException(status_code=400, detail="Mock authentication code is disabled. Real connection is required.")
+        return _render_oauth_callback_html(
+            status="error",
+            platform=platform,
+            title="Mock Code Disabled",
+            message="Mock authorization codes are disabled in live environments."
+        )
 
     import requests
     from app.core.config import settings
@@ -829,9 +1074,19 @@ def platform_callback(
                 "grant_type": "authorization_code",
                 "redirect_uri": redirect_uri
             }
-            res = requests.post(token_url, data=data, timeout=15)
-            res.raise_for_status()
-            tokens = res.json()
+            try:
+                res = requests.post(token_url, data=data, timeout=15)
+                res.raise_for_status()
+                tokens = res.json()
+            except requests.RequestException as req_err:
+                yt_err = ""
+                if hasattr(req_err, "response") and req_err.response is not None:
+                    try:
+                        yt_err = req_err.response.json().get("error_description") or req_err.response.json().get("error") or ""
+                    except Exception:
+                        pass
+                raise ValueError(f"Google/YouTube token exchange error: {yt_err or str(req_err)}")
+
             access_token = tokens.get("access_token")
             refresh_token = tokens.get("refresh_token")
             
@@ -851,27 +1106,58 @@ def platform_callback(
                 "redirect_uri": redirect_uri,
                 "code": code
             }
-            res = requests.get(token_url, params=params, timeout=15)
-            res.raise_for_status()
-            tokens = res.json()
+            try:
+                res = requests.get(token_url, params=params, timeout=15)
+                res.raise_for_status()
+                tokens = res.json()
+            except requests.RequestException as req_err:
+                meta_err = ""
+                if hasattr(req_err, "response") and req_err.response is not None:
+                    try:
+                        err_payload = req_err.response.json().get("error", {})
+                        meta_err = err_payload.get("message") or err_payload.get("error_user_msg") or ""
+                    except Exception:
+                        pass
+                if not meta_err:
+                    meta_err = str(req_err)
+                if "code has expired" in meta_err.lower() or "36007" in meta_err or "code has been used" in meta_err.lower():
+                    raise ValueError("The Meta authorization code has expired or was already used. Please click Connect in Harvest AI again.")
+                if settings.META_APP_SECRET and settings.META_APP_SECRET in meta_err:
+                    meta_err = meta_err.replace(settings.META_APP_SECRET, "[REDACTED]")
+                raise ValueError(f"Meta token exchange error: {meta_err}")
+
             access_token = tokens.get("access_token")
             
             from app.services.social_publish_service import SocialPublishService
             
             # Query pages with fields access_token,instagram_business_account,name
             pages_url = "https://graph.facebook.com/v20.0/me/accounts"
-            p_res = requests.get(
-                pages_url, 
-                params={
-                    "fields": "access_token,instagram_business_account,name",
-                    "access_token": access_token
-                }, 
-                timeout=15
-            )
-            p_res.raise_for_status()
-            pages_data = p_res.json().get("data", [])
+            try:
+                p_res = requests.get(
+                    pages_url, 
+                    params={
+                        "fields": "access_token,instagram_business_account,name",
+                        "access_token": access_token
+                    }, 
+                    timeout=15
+                )
+                p_res.raise_for_status()
+                pages_data = p_res.json().get("data", [])
+            except requests.RequestException as req_err:
+                p_err = ""
+                if hasattr(req_err, "response") and req_err.response is not None:
+                    try:
+                        p_err = req_err.response.json().get("error", {}).get("message") or ""
+                    except Exception:
+                        pass
+                raise ValueError(f"Failed to fetch Facebook Pages: {p_err or str(req_err)}")
+
             if not pages_data:
-                raise ValueError("No Facebook Pages linked to this Meta account.")
+                raise ValueError(
+                    "No Facebook Pages found under this Meta account. "
+                    "Facebook and Instagram API publishing require at least one Facebook Page. "
+                    "Please create a Facebook Page at https://www.facebook.com/pages/create and try again."
+                )
                 
             facebook_details = None
             instagram_details = None
@@ -931,8 +1217,9 @@ def platform_callback(
             
             if platform == "instagram" and not instagram_details:
                 raise ValueError(
-                    "Could not find any Facebook Page linked to an Instagram Business account. "
-                    "Please ensure your Instagram account is linked to your Facebook Page in Page settings."
+                    "Could not find an Instagram Professional account linked to your Facebook Page(s). "
+                    "Please ensure your Instagram account is switched to Professional (Creator or Business) "
+                    "and linked to your Facebook Page in Page Settings > Linked Accounts > Instagram."
                 )
                 
             # Save connections that we resolved
@@ -942,33 +1229,22 @@ def platform_callback(
                 save_connection("instagram", instagram_details)
 
     except Exception as e:
-        _origin = _get_frontend_origin()
-        error_json = _json.dumps(str(e))
-        return f"""
-        <html>
-          <body>
-            <script>
-              window.opener.postMessage({{
-                type: 'HARVEST_AUTH_FAILURE',
-                error: {error_json}
-              }}, {_json.dumps(_origin)});
-              window.close();
-            </script>
-          </body>
-        </html>
-        """
+        logger.error(f"Error during {platform} OAuth callback: {e}", exc_info=True)
+        err_msg_clean = str(e)
+        if getattr(settings, "META_APP_SECRET", None) and settings.META_APP_SECRET in err_msg_clean:
+            err_msg_clean = err_msg_clean.replace(settings.META_APP_SECRET, "[REDACTED]")
+        return _render_oauth_callback_html(
+            status="error",
+            platform=platform,
+            title=f"Could Not Connect {platform.capitalize()}",
+            message="We were unable to complete the account connection with the provider.",
+            details=err_msg_clean
+        )
 
-    _origin = _get_frontend_origin()
-    return f"""
-    <html>
-      <body>
-        <script>
-          window.opener.postMessage({{
-            type: 'HARVEST_AUTH_SUCCESS',
-            platform: {_json.dumps(platform)}
-          }}, {_json.dumps(_origin)});
-          window.close();
-        </script>
-      </body>
-    </html>
-    """
+    return _render_oauth_callback_html(
+        status="success",
+        platform=platform,
+        title=f"{platform.capitalize()} Connected!",
+        message=f"Your {platform.capitalize()} account was linked successfully to Harvest AI."
+    )
+

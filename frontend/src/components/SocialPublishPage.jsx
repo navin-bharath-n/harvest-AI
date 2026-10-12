@@ -431,6 +431,19 @@ export default function SocialPublishPage() {
     oauthPopupRef.current = popup;
     setMessageError(false);
     setMessage(`Finish connecting your ${platforms.find((item) => item.id === platform)?.name} account in the sign-in window.`);
+
+    // Watch for popup closed by user or auto-closed
+    const checkClosed = setInterval(async () => {
+      if (!popup || popup.closed) {
+        clearInterval(checkClosed);
+        if (oauthPopupRef.current === popup) {
+          oauthPopupRef.current = null;
+          try {
+            await refreshConnections();
+          } catch {}
+        }
+      }
+    }, 800);
   };
 
   // ──────────────────────────────────────────────────────────────────────────
