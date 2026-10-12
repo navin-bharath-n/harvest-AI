@@ -397,7 +397,14 @@ class SocialPublishService:
                         if thumb_res.status_code in [200, 201]:
                             logger.info(f"Successfully set custom thumbnail on YouTube video {video_id}!")
                         else:
-                            logger.warning(f"YouTube thumbnail set returned status {thumb_res.status_code}: {thumb_res.text}")
+                            if thumb_res.status_code == 403 and "doesn't have permissions" in thumb_res.text:
+                                logger.warning(
+                                    f"YouTube thumbnail upload rejected (403): Channel is not phone-verified for custom thumbnails. "
+                                    f"To enable custom thumbnails, verify your phone number in YouTube Studio "
+                                    f"(Settings -> Channel -> Feature Eligibility -> Intermediate features)."
+                                )
+                            else:
+                                logger.warning(f"YouTube thumbnail set returned status {thumb_res.status_code}: {thumb_res.text}")
                 except Exception as th_err:
                     logger.warning(f"Failed to upload thumbnail to YouTube (non-fatal): {th_err}")
 

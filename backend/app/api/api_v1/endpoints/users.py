@@ -364,6 +364,7 @@ def google_auth_login(request: Request):
         "https://www.googleapis.com/auth/userinfo.profile",
         "https://www.googleapis.com/auth/youtube.upload",
         "https://www.googleapis.com/auth/youtube.readonly",
+        "https://www.googleapis.com/auth/youtube.force-ssl",
     ]
 
     redirect_uri = _get_google_auth_redirect_uri(request)
@@ -718,7 +719,7 @@ def platform_login(
             "?response_type=code"
             f"&client_id={settings.GOOGLE_CLIENT_ID}"
             f"&redirect_uri={redirect_uri}"
-            "&scope=https://www.googleapis.com/auth/youtube.upload%20https://www.googleapis.com/auth/youtube.readonly"
+            "&scope=https://www.googleapis.com/auth/youtube.upload%20https://www.googleapis.com/auth/youtube.readonly%20https://www.googleapis.com/auth/youtube.force-ssl"
             f"&state={user_id}"
             "&access_type=offline&prompt=consent"
         )
