@@ -19,6 +19,7 @@ import {
   Users,
   Video,
   Clock,
+  Calendar,
   Check,
   Film,
   Wand2,
@@ -87,6 +88,19 @@ export default function SocialPublishPage() {
   const [messageError, setMessageError] = useState(false);
   const oauthPopupRef = useRef(null);
   const currentUserId = user?.id;
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // Scheduled Publishing State
+  // ──────────────────────────────────────────────────────────────────────────
+  const [publishMode, setPublishMode] = useState('now'); // 'now' | 'schedule'
+  const [scheduleDate, setScheduleDate] = useState(() => {
+    const d = new Date();
+    d.setDate(d.getDate() + 1);
+    d.setHours(5, 0, 0, 0);
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T05:00`;
+  });
+  const [isCancellingSchedule, setIsCancellingSchedule] = useState(false);
 
   // ──────────────────────────────────────────────────────────────────────────
   // Custom Thumbnail State
@@ -280,6 +294,19 @@ export default function SocialPublishPage() {
         setClip(clipResult);
         setTemplates(tmplData || []);
         setTitle((current) => current || clipResult.title || 'Harvest short');
+
+        // Restore existing schedule status
+        const existingSchedule = clipResult.edit_options?.scheduled_publish;
+        if (existingSchedule && existingSchedule.status === 'scheduled') {
+          setPublishMode('schedule');
+          if (existingSchedule.scheduled_at) {
+            try {
+              const dt = new Date(existingSchedule.scheduled_at);
+              const pad = (n) => String(n).padStart(2, '0');
+              setScheduleDate(`${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}T${pad(dt.getHours())}:${pad(dt.getMinutes())}`);
+            } catch {}
+          }
+        }
 
         // Restore any existing custom thumbnail
         const existingThumb = clipResult.edit_options?.thumbnail_path;
@@ -540,6 +567,87 @@ export default function SocialPublishPage() {
   };
 
   // ──────────────────────────────────────────────────────────────────────────
+  // Scheduling Helpers
+  // ──────────────────────────────────────────────────────────────────────────
+  const scheduledPublishInfo = useMemo(() => {
+    return clip?.edit_options?.scheduled_publish || null;
+  }, [clip]);
+
+  const isCurrentlyScheduled = Boolean(
+    scheduledPublishInfo && scheduledPublishInfo.status === 'scheduled'
+  );
+
+  const userTimeZone = useMemo(() => {
+    try {
+      return Intl.DateTimeFormat().resolvedOptions().timeZone || 'Local Time';
+    } catch {
+      return 'Local Time';
+    }
+  }, []);
+
+  const getMinScheduleDateTime = () => {
+    const d = new Date(Date.now() + 2 * 60 * 1000); // 2 minutes from now
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  };
+
+  const setPresetSchedule = (type) => {
+    const d = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    if (type === 'tomorrow-5am') {
+      d.setDate(d.getDate() + 1);
+      d.setHours(5, 0, 0, 0);
+    } else if (type === 'plus-1h') {
+      d.setTime(d.getTime() + 60 * 60 * 1000);
+    } else if (type === 'tomorrow-9am') {
+      d.setDate(d.getDate() + 1);
+      d.setHours(9, 0, 0, 0);
+    } else if (type === 'tomorrow-5pm') {
+      d.setDate(d.getDate() + 1);
+      d.setHours(17, 0, 0, 0);
+    }
+    const val = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    setScheduleDate(val);
+    setPublishMode('schedule');
+  };
+
+  const formatScheduledDate = (isoStr) => {
+    if (!isoStr) return '';
+    try {
+      const dt = new Date(isoStr);
+      return dt.toLocaleString(undefined, {
+        weekday: 'short',
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true,
+      });
+    } catch {
+      return isoStr;
+    }
+  };
+
+  const handleCancelSchedule = async () => {
+    if (!clipId || isCancellingSchedule) return;
+    try {
+      setIsCancellingSchedule(true);
+      setMessageError(false);
+      setMessage('Cancelling scheduled publication…');
+      await api.cancelScheduledPublish(clipId);
+      const updatedClip = await api.getClip(clipId);
+      setClip(updatedClip);
+      setMessage('Scheduled publication has been cancelled.');
+    } catch (err) {
+      setMessageError(true);
+      setMessage(`Failed to cancel schedule: ${err.response?.data?.detail || err.message}`);
+    } finally {
+      setIsCancellingSchedule(false);
+    }
+  };
+
+  // ──────────────────────────────────────────────────────────────────────────
   // Social Publish Handler
   // ──────────────────────────────────────────────────────────────────────────
   const publishToPlatform = async (platform) => {
@@ -556,7 +664,7 @@ export default function SocialPublishPage() {
     }
     setWorkingPlatform(platform);
     setMessageError(false);
-    setMessage(`Uploading to ${platforms.find((item) => item.id === platform)?.name}…`);
+
     try {
       const brandingConfig = (watermarkPath || footerPath) ? {
         watermark_path: watermarkPath,
@@ -571,6 +679,45 @@ export default function SocialPublishPage() {
         footer_position: footerPosition,
       } : null;
 
+      // SCHEDULE MODE
+      if (publishMode === 'schedule') {
+        if (!scheduleDate) {
+          setMessageError(true);
+          setMessage('Please select a date and time for scheduled publishing.');
+          setWorkingPlatform('');
+          return;
+        }
+        const schedTimeMs = new Date(scheduleDate).getTime();
+        if (isNaN(schedTimeMs) || schedTimeMs <= Date.now()) {
+          setMessageError(true);
+          setMessage('Please choose a future date and time for scheduled publishing.');
+          setWorkingPlatform('');
+          return;
+        }
+
+        const scheduledUtcIso = new Date(scheduleDate).toISOString();
+        setMessage(`Scheduling video for ${platforms.find((item) => item.id === platform)?.name}…`);
+
+        await api.publishClip(
+          clipId,
+          [platform],
+          title.trim() || 'Harvest short',
+          description.trim(),
+          privacy,
+          {},
+          thumbnailPath,
+          brandingConfig,
+          scheduledUtcIso
+        );
+
+        const updatedClip = await api.getClip(clipId);
+        setClip(updatedClip);
+        setMessage(`Video scheduled successfully for ${formatScheduledDate(scheduledUtcIso)}! It will automatically publish at that time.`);
+        return;
+      }
+
+      // PUBLISH NOW MODE
+      setMessage(`Uploading to ${platforms.find((item) => item.id === platform)?.name}…`);
       await api.publishClip(
         clipId,
         [platform],
@@ -579,7 +726,8 @@ export default function SocialPublishPage() {
         privacy,
         {},
         thumbnailPath,
-        brandingConfig
+        brandingConfig,
+        null
       );
 
       // Publishing runs in background; poll for result
@@ -590,6 +738,7 @@ export default function SocialPublishPage() {
         if (typeof result === 'string' && result) {
           if (result.startsWith('error:')) throw new Error(result.slice(6).trim());
           setMessage(`Published successfully to ${platforms.find((item) => item.id === platform)?.name}!`);
+          setClip(updatedClip);
           return;
         }
       }
@@ -1483,13 +1632,202 @@ export default function SocialPublishPage() {
 
               {/* Channels & Upload Section (Only visible in Publish stage) */}
               <section style={{ padding: '1.35rem', background: '#fff', border: '1px solid #e6e6e1', borderRadius: 12 }}>
-                <h2 style={{ margin: '0 0 0.35rem', fontSize: '1.18rem' }}>Channels &amp; Upload</h2>
-                <p style={{ margin: '0 0 1rem', color: '#657080', fontSize: '0.9rem' }}>Connect your accounts once. Your video will be uploaded with your title, custom thumbnail, and branding.</p>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.5rem', marginBottom: '0.35rem' }}>
+                  <h2 style={{ margin: 0, fontSize: '1.18rem' }}>Channels &amp; Publish</h2>
+                  {isCurrentlyScheduled && (
+                    <span style={{ fontSize: '0.78rem', background: '#dcfce7', color: '#15803d', padding: '0.25rem 0.65rem', borderRadius: 99, fontWeight: 700, border: '1px solid #86efac', display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}>
+                      <Clock size={13} /> Active Schedule
+                    </span>
+                  )}
+                </div>
+                <p style={{ margin: '0 0 1rem', color: '#657080', fontSize: '0.9rem' }}>
+                  Publish immediately or schedule your short to be released at a future time while you are away.
+                </p>
+
+                {/* SCHEDULE ACTIVE ALERT BANNER */}
+                {isCurrentlyScheduled && (
+                  <div style={{
+                    marginBottom: '1.15rem',
+                    padding: '0.95rem 1.15rem',
+                    background: '#f0fdf4',
+                    border: '1.5px solid #86efac',
+                    borderRadius: 10,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: '1rem',
+                    flexWrap: 'wrap'
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                      <div style={{ width: 38, height: 38, borderRadius: '50%', background: '#dcfce7', display: 'grid', placeItems: 'center', color: '#15803d', flexShrink: 0 }}>
+                        <Clock size={20} />
+                      </div>
+                      <div>
+                        <div style={{ fontWeight: 700, color: '#166534', fontSize: '0.95rem' }}>
+                          Scheduled for Automated Release
+                        </div>
+                        <div style={{ color: '#15803d', fontSize: '0.84rem', marginTop: '0.15rem' }}>
+                          Target Time: <strong>{formatScheduledDate(scheduledPublishInfo?.scheduled_at)}</strong> ({userTimeZone})
+                        </div>
+                        {scheduledPublishInfo?.platforms && (
+                          <div style={{ color: '#4b5563', fontSize: '0.78rem', marginTop: '0.15rem' }}>
+                            Channels: {scheduledPublishInfo.platforms.map((p) => platforms.find((item) => item.id === p)?.name || p).join(', ')}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={isCancellingSchedule}
+                      onClick={handleCancelSchedule}
+                      style={{
+                        padding: '0.5rem 0.9rem',
+                        fontSize: '0.82rem',
+                        fontWeight: 650,
+                        background: '#fff',
+                        border: '1px solid #fca5a5',
+                        color: '#dc2626',
+                        borderRadius: 7,
+                        cursor: isCancellingSchedule ? 'not-allowed' : 'pointer',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '0.35rem'
+                      }}
+                    >
+                      {isCancellingSchedule ? (
+                        <><LoaderCircle size={14} className="harvest-publish-spin" /> Cancelling…</>
+                      ) : (
+                        <><X size={14} /> Cancel Schedule</>
+                      )}
+                    </button>
+                  </div>
+                )}
+
+                {/* PUBLISH TIMING MODE SWITCHER */}
+                <div style={{ marginBottom: '1.25rem', padding: '0.9rem 1.05rem', background: '#f8faf9', border: '1px solid #e2e8e0', borderRadius: 10 }}>
+                  <div style={{ fontSize: '0.82rem', fontWeight: 700, color: '#374151', marginBottom: '0.6rem', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                    Publishing Mode
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem', marginBottom: publishMode === 'schedule' ? '0.85rem' : 0 }}>
+                    <button
+                      type="button"
+                      onClick={() => setPublishMode('now')}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: '0.45rem',
+                        padding: '0.65rem 0.8rem',
+                        borderRadius: 8,
+                        border: publishMode === 'now' ? '2px solid #1f6f4a' : '1px solid #d9dcd8',
+                        background: publishMode === 'now' ? '#fff' : '#f4f5f3',
+                        color: publishMode === 'now' ? '#1f6f4a' : '#586273',
+                        fontWeight: 700,
+                        fontSize: '0.88rem',
+                        cursor: 'pointer',
+                        boxShadow: publishMode === 'now' ? '0 1px 6px rgba(31,111,74,0.12)' : 'none',
+                        transition: 'all 0.15s ease'
+                      }}
+                    >
+                      <UploadCloud size={16} /> Publish Now
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPublishMode('schedule')}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: '0.45rem',
+                        padding: '0.65rem 0.8rem',
+                        borderRadius: 8,
+                        border: publishMode === 'schedule' ? '2px solid #2563eb' : '1px solid #d9dcd8',
+                        background: publishMode === 'schedule' ? '#fff' : '#f4f5f3',
+                        color: publishMode === 'schedule' ? '#2563eb' : '#586273',
+                        fontWeight: 700,
+                        fontSize: '0.88rem',
+                        cursor: 'pointer',
+                        boxShadow: publishMode === 'schedule' ? '0 1px 6px rgba(37,99,235,0.12)' : 'none',
+                        transition: 'all 0.15s ease'
+                      }}
+                    >
+                      <Clock size={16} /> Schedule for Later
+                    </button>
+                  </div>
+
+                  {publishMode === 'schedule' && (
+                    <div style={{ padding: '0.9rem', background: '#fff', border: '1px solid #cbd5e1', borderRadius: 8, marginTop: '0.6rem' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.45rem' }}>
+                        <label style={{ fontSize: '0.82rem', fontWeight: 700, color: '#1e293b' }}>
+                          Select Date &amp; Time:
+                        </label>
+                        <span style={{ fontSize: '0.74rem', color: '#64748b', background: '#f1f5f9', padding: '0.2rem 0.5rem', borderRadius: 4, fontWeight: 600 }}>
+                          🌐 {userTimeZone}
+                        </span>
+                      </div>
+                      <input
+                        type="datetime-local"
+                        min={getMinScheduleDateTime()}
+                        value={scheduleDate}
+                        onChange={(e) => setScheduleDate(e.target.value)}
+                        style={{
+                          width: '100%',
+                          padding: '0.6rem 0.75rem',
+                          borderRadius: 7,
+                          border: '1.5px solid #94a3b8',
+                          fontSize: '0.92rem',
+                          color: '#0f172a',
+                          fontWeight: 650,
+                          background: '#f8fafc',
+                          boxSizing: 'border-box',
+                          marginBottom: '0.65rem'
+                        }}
+                      />
+                      {/* Quick Presets */}
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem', marginBottom: '0.6rem' }}>
+                        <button
+                          type="button"
+                          onClick={() => setPresetSchedule('tomorrow-5am')}
+                          style={{ padding: '0.32rem 0.6rem', fontSize: '0.78rem', fontWeight: 650, background: '#eff6ff', color: '#1d4ed8', border: '1px solid #bfdbfe', borderRadius: 5, cursor: 'pointer' }}
+                        >
+                          🌅 Tomorrow 5:00 AM
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setPresetSchedule('tomorrow-9am')}
+                          style={{ padding: '0.32rem 0.6rem', fontSize: '0.78rem', fontWeight: 650, background: '#f8fafc', color: '#475569', border: '1px solid #cbd5e1', borderRadius: 5, cursor: 'pointer' }}
+                        >
+                          ☀️ Tomorrow 9:00 AM
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setPresetSchedule('tomorrow-5pm')}
+                          style={{ padding: '0.32rem 0.6rem', fontSize: '0.78rem', fontWeight: 650, background: '#f8fafc', color: '#475569', border: '1px solid #cbd5e1', borderRadius: 5, cursor: 'pointer' }}
+                        >
+                          🌆 Tomorrow 5:00 PM
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setPresetSchedule('plus-1h')}
+                          style={{ padding: '0.32rem 0.6rem', fontSize: '0.78rem', fontWeight: 650, background: '#f8fafc', color: '#475569', border: '1px solid #cbd5e1', borderRadius: 5, cursor: 'pointer' }}
+                        >
+                          ⚡ +1 Hour
+                        </button>
+                      </div>
+                      <div style={{ fontSize: '0.78rem', color: '#475569', lineHeight: 1.45, background: '#f8fafc', padding: '0.55rem 0.75rem', borderRadius: 6, border: '1px solid #e2e8e0' }}>
+                        ⏱ <strong>Automated Delivery:</strong> Once scheduled, Harvest AI will release your video automatically at this time without you needing to be online or awake.
+                      </div>
+                    </div>
+                  )}
+                </div>
+
                 <div style={{ display: 'grid', gap: '0.75rem' }}>
                   {platforms.map(({ id, name, Icon, hint }) => {
                     const connection = connectionByPlatform[id];
                     const busy = workingPlatform === id;
                     const canUpload = clip?.status === 'completed' && (!hasAnyCustomization || brandingBurned || hasRenderedOnce) && !workingPlatform;
+                    const isScheduleMode = publishMode === 'schedule';
+
                     return (
                       <article key={id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '1rem', padding: '1rem', border: '1px solid #e6e6e1', borderRadius: 9, background: '#fff' }}>
                         <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.75rem', minWidth: 0 }}>
@@ -1506,12 +1844,27 @@ export default function SocialPublishPage() {
                             onClick={() => publishToPlatform(id)}
                             style={{
                               ...primaryButton,
-                              minWidth: 118,
+                              minWidth: 126,
                               opacity: canUpload ? 1 : 0.5,
-                              cursor: canUpload ? 'pointer' : 'not-allowed'
+                              cursor: canUpload ? 'pointer' : 'not-allowed',
+                              background: isScheduleMode ? '#1e3a8a' : primaryButton.background,
+                              boxShadow: isScheduleMode ? '0 2px 6px rgba(30,58,138,0.2)' : primaryButton.boxShadow
                             }}
                           >
-                            {busy ? <><LoaderCircle size={16} className="harvest-publish-spin" /> Uploading…</> : <><UploadCloud size={16} /> Upload</>}
+                            {busy ? (
+                              <>
+                                <LoaderCircle size={16} className="harvest-publish-spin" />
+                                {isScheduleMode ? 'Scheduling…' : 'Uploading…'}
+                              </>
+                            ) : isScheduleMode ? (
+                              <>
+                                <Clock size={16} /> Schedule
+                              </>
+                            ) : (
+                              <>
+                                <UploadCloud size={16} /> Upload
+                              </>
+                            )}
                           </button>
                         ) : (
                           <button

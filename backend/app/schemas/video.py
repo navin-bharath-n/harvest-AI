@@ -66,6 +66,7 @@ class ClipPublishRequest(BaseModel):
     platform_configs: Optional[dict] = None
     thumbnail_path: Optional[str] = None
     branding_config: Optional[dict] = None
+    scheduled_at: Optional[str] = None
 
 
 class ClipCreate(BaseModel):

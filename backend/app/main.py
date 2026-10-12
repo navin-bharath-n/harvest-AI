@@ -338,11 +338,22 @@ async def lifespan(app: FastAPI):
         _start_celery()
     else:
         logger.info("Auto-start Celery disabled via configuration (relying on external worker).")
+
+    # Start scheduled publish background dispatcher
+    from app.services.scheduler_service import run_scheduler_loop
+    scheduler_task = asyncio.create_task(run_scheduler_loop(poll_interval=20))
+
     logger.info("All services started. API is ready!")
     logger.info("=" * 50)
     yield
     # --- SHUTDOWN ---
     logger.info("Server shutting down. Cleaning up background services...")
+    if scheduler_task and not scheduler_task.done():
+        scheduler_task.cancel()
+        try:
+            await scheduler_task
+        except asyncio.CancelledError:
+            pass
     _stop_bg_processes()
     logger.info("Shutdown complete.")
 

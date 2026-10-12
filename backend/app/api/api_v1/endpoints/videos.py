@@ -1574,7 +1574,48 @@ def publish_clip(
     current_user: models.User = Depends(get_current_user)
 ):
     db_clip = get_user_clip(clip_id, current_user.id, db)
+    from datetime import datetime, timezone
+    from sqlalchemy.orm.attributes import flag_modified
 
+    # If scheduled_at is provided, register for scheduled publishing
+    if request.scheduled_at:
+        try:
+            normalized_iso = request.scheduled_at.replace("Z", "+00:00")
+            sched_dt = datetime.fromisoformat(normalized_iso)
+            if sched_dt.tzinfo is None:
+                sched_dt = sched_dt.replace(tzinfo=timezone.utc)
+            now_utc = datetime.now(timezone.utc)
+
+            if sched_dt > now_utc:
+                edit_options = (db_clip.edit_options or {}).copy()
+                edit_options["scheduled_publish"] = {
+                    "status": "scheduled",
+                    "scheduled_at": sched_dt.isoformat(),
+                    "platforms": request.platforms,
+                    "title": request.title,
+                    "description": request.description,
+                    "privacy": request.privacy,
+                    "platform_configs": request.platform_configs,
+                    "thumbnail_path": request.thumbnail_path,
+                    "branding_config": request.branding_config,
+                    "created_at": now_utc.isoformat(),
+                    "request": request.dict()
+                }
+                db_clip.edit_options = edit_options
+                flag_modified(db_clip, "edit_options")
+                db.commit()
+                db.refresh(db_clip)
+                logger.info(f"Clip {clip_id} scheduled for release at {sched_dt.isoformat()} UTC on platforms {request.platforms}")
+                return {
+                    "message": f"Clip scheduled successfully for {sched_dt.strftime('%b %d, %Y %I:%M %p UTC')}",
+                    "scheduled": True,
+                    "scheduled_at": sched_dt.isoformat(),
+                    "task_id": db_clip.id
+                }
+        except ValueError as ve:
+            raise HTTPException(status_code=400, detail=f"Invalid scheduled_at datetime format: {ve}")
+
+    # Immediate Publishing
     # Clear stale publishing statuses for the requested platforms in the database
     published_urls = db_clip.published_urls or {}
     if not isinstance(published_urls, dict):
@@ -1586,14 +1627,42 @@ def publish_clip(
         published_urls.pop(platform, None)
 
     db_clip.published_urls = published_urls
-    from sqlalchemy.orm.attributes import flag_modified
     flag_modified(db_clip, "published_urls")
+
+    # Clear any pending scheduled_publish entry if user publishes immediately
+    edit_options = (db_clip.edit_options or {}).copy()
+    if "scheduled_publish" in edit_options:
+        edit_options.pop("scheduled_publish", None)
+        db_clip.edit_options = edit_options
+        flag_modified(db_clip, "edit_options")
+
     db.commit()
     db.refresh(db_clip)
 
     from app.tasks.video_tasks import publish_video_task
     dispatch_task(publish_video_task, db_clip.id, request.dict())
-    return {"message": "Publishing task triggered", "task_id": db_clip.id}
+    return {"message": "Publishing task triggered", "task_id": db_clip.id, "scheduled": False}
+
+
+@router.post("/clips/{clip_id}/schedule/cancel")
+def cancel_clip_schedule(
+    clip_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """Cancels a pending scheduled publishing job for a clip."""
+    db_clip = get_user_clip(clip_id, current_user.id, db)
+    edit_options = (db_clip.edit_options or {}).copy()
+    if "scheduled_publish" in edit_options:
+        edit_options.pop("scheduled_publish", None)
+        db_clip.edit_options = edit_options
+        from sqlalchemy.orm.attributes import flag_modified
+        flag_modified(db_clip, "edit_options")
+        db.commit()
+        db.refresh(db_clip)
+        logger.info(f"Cancelled scheduled publish for clip {clip_id}")
+        return {"message": "Scheduled publication cancelled successfully", "cancelled": True}
+    return {"message": "No active schedule found for this clip", "cancelled": False}
 
 
 THUMBNAIL_UPLOAD_DIR = os.path.join(UPLOAD_DIR, "thumbnails")

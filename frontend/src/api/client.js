@@ -440,8 +440,8 @@ export const api = {
     return response.data;
   },
 
-  // Publish clip to social media platforms
-  publishClip: async (clipId, platforms, title, description, privacy = 'public', platformConfigs = {}, thumbnailPath = null, brandingConfig = null) => {
+  // Publish or schedule clip to social media platforms
+  publishClip: async (clipId, platforms, title, description, privacy = 'public', platformConfigs = {}, thumbnailPath = null, brandingConfig = null, scheduledAt = null) => {
     const response = await client.post(`/videos/clips/${clipId}/publish`, {
       platforms,
       title,
@@ -450,7 +450,14 @@ export const api = {
       platform_configs: platformConfigs,
       thumbnail_path: thumbnailPath,
       branding_config: brandingConfig,
+      scheduled_at: scheduledAt,
     });
+    return response.data;
+  },
+
+  // Cancel scheduled publication for a clip
+  cancelScheduledPublish: async (clipId) => {
+    const response = await client.post(`/videos/clips/${clipId}/schedule/cancel`);
     return response.data;
   },
 

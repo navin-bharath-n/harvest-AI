@@ -1719,6 +1719,7 @@ def publish_video_task(clip_id: int, config: dict):
                 "description": description,
                 "privacy": privacy,
                 "thumbnail_path": thumb_path,
+                "scheduled_at": config.get("scheduled_at"),
                 "youtube_access_token": platform_configs.get("youtube_access_token"),
                 "youtube_refresh_token": platform_configs.get("youtube_refresh_token"),
                 "facebook_access_token": platform_configs.get("facebook_access_token"),
@@ -1750,6 +1751,22 @@ def publish_video_task(clip_id: int, config: dict):
                 published_urls[platform] = f"error: {str(pe)}"
 
         from sqlalchemy.orm.attributes import flag_modified
+
+        # If this publication was scheduled, update scheduled_publish status in DB
+        if clip.edit_options and isinstance(clip.edit_options, dict) and "scheduled_publish" in clip.edit_options:
+            from datetime import datetime, timezone
+            sched_dict = dict(clip.edit_options.get("scheduled_publish", {}))
+            has_success = any(
+                isinstance(url, str) and not url.startswith("error:")
+                for url in published_urls.values()
+            )
+            sched_dict["status"] = "completed" if has_success else "failed"
+            sched_dict["completed_at"] = datetime.now(timezone.utc).isoformat()
+            new_edit_options = dict(clip.edit_options)
+            new_edit_options["scheduled_publish"] = sched_dict
+            clip.edit_options = new_edit_options
+            flag_modified(clip, "edit_options")
+
         clip.published_urls = published_urls
         flag_modified(clip, "published_urls")
         db.commit()

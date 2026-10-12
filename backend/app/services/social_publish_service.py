@@ -315,16 +315,30 @@ class SocialPublishService:
                 "Authorization": f"Bearer {access_token}",
                 "Content-Type": "application/json; charset=UTF-8"
             }
+            status_body = {
+                "privacyStatus": privacy.lower(),
+                "selfDeclaredMadeForKids": False
+            }
+            scheduled_at = config.get("scheduled_at")
+            if scheduled_at:
+                try:
+                    from datetime import datetime, timezone
+                    sched_dt = datetime.fromisoformat(scheduled_at.replace("Z", "+00:00"))
+                    if sched_dt > datetime.now(timezone.utc):
+                        # YouTube API requires privacyStatus="private" when publishAt is specified
+                        status_body["privacyStatus"] = "private"
+                        status_body["publishAt"] = sched_dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+                        logger.info(f"Setting YouTube native scheduled publish time: {status_body['publishAt']}")
+                except Exception as sc_err:
+                    logger.warning(f"Could not format scheduled_at for YouTube native publish ({sc_err})")
+
             body = {
                 "snippet": {
                     "title": title[:100],  # YouTube titles max 100 chars
                     "description": description,
                     "categoryId": "22"  # People & Blogs category
                 },
-                "status": {
-                    "privacyStatus": privacy.lower(),
-                    "selfDeclaredMadeForKids": False
-                }
+                "status": status_body
             }
             init_url = "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status"
             response = requests.post(init_url, headers=headers, json=body, timeout=30)
