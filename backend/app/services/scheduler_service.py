@@ -39,10 +39,13 @@ def check_and_dispatch_scheduled_clips():
     db: Session = SessionLocal()
     try:
         now_utc = datetime.now(timezone.utc)
-        # Fetch completed clips
+        # Fetch completed clips that have edit_options configured
         completed_clips = (
             db.query(models.Clip)
-            .filter(models.Clip.status == models.ClipStatus.COMPLETED)
+            .filter(
+                models.Clip.status == models.ClipStatus.COMPLETED,
+                models.Clip.edit_options.isnot(None),
+            )
             .all()
         )
 
@@ -84,12 +87,20 @@ def check_and_dispatch_scheduled_clips():
 
         for clip, sched in due_clips:
             try:
-                # 1. Update status to 'publishing' immediately in DB to prevent re-triggering
-                updated_sched = dict(sched)
+                # Re-verify clip in DB to prevent duplicate worker race conditions
+                db.refresh(clip)
+                current_edit_opts = clip.edit_options or {}
+                current_sched = current_edit_opts.get("scheduled_publish") or {}
+                if current_sched.get("status") != "scheduled":
+                    logger.info(f"PublishScheduler: Clip {clip.id} was already claimed by another worker. Skipping.")
+                    continue
+
+                # 1. Update status to 'publishing' immediately in DB to claim the job
+                updated_sched = dict(current_sched)
                 updated_sched["status"] = "publishing"
                 updated_sched["triggered_at"] = now_utc.isoformat()
 
-                edit_opts = dict(clip.edit_options)
+                edit_opts = dict(current_edit_opts)
                 edit_opts["scheduled_publish"] = updated_sched
                 clip.edit_options = edit_opts
                 flag_modified(clip, "edit_options")
@@ -98,18 +109,22 @@ def check_and_dispatch_scheduled_clips():
 
                 logger.info(f"PublishScheduler: Dispatching publication task for clip {clip.id}...")
 
-                # 2. Dispatch task
+                # 2. Dispatch task with sanitized payload
                 from app.tasks.video_tasks import publish_video_task
                 from app.api.api_v1.endpoints.videos import dispatch_task
 
-                request_payload = sched.get("request") or {
-                    "platforms": sched.get("platforms", []),
-                    "title": sched.get("title"),
-                    "description": sched.get("description"),
-                    "privacy": sched.get("privacy", "public"),
-                    "platform_configs": sched.get("platform_configs", {}),
-                    "thumbnail_path": sched.get("thumbnail_path"),
-                    "branding_config": sched.get("branding_config"),
+                raw_req = sched.get("request") or {}
+                request_payload = {
+                    "platforms": sched.get("platforms") or raw_req.get("platforms", []),
+                    "title": sched.get("title") or raw_req.get("title"),
+                    "description": sched.get("description") or raw_req.get("description"),
+                    "privacy": sched.get("privacy") or raw_req.get("privacy", "public"),
+                    "platform_configs": sched.get("platform_configs") or raw_req.get("platform_configs", {}),
+                    "thumbnail_path": sched.get("thumbnail_path") or raw_req.get("thumbnail_path"),
+                    "branding_config": sched.get("branding_config") or raw_req.get("branding_config"),
+                    # Important: Clear scheduled_at because the scheduled time has arrived.
+                    # This ensures YouTube and Meta upload and publish immediately as live without API 400 errors.
+                    "scheduled_at": None,
                 }
 
                 dispatch_task(publish_video_task, clip.id, request_payload)
@@ -124,7 +139,7 @@ def check_and_dispatch_scheduled_clips():
                     updated_sched = dict(sched)
                     updated_sched["status"] = "failed"
                     updated_sched["error"] = str(task_err)
-                    edit_opts = dict(clip.edit_options)
+                    edit_opts = dict(clip.edit_options or {})
                     edit_opts["scheduled_publish"] = updated_sched
                     clip.edit_options = edit_opts
                     flag_modified(clip, "edit_options")

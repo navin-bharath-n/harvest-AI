@@ -490,7 +490,7 @@ class SocialPublishService:
         video_url = config.get("public_video_url") or settings.PUBLIC_VIDEO_URL
 
         # If video_url is a base URL, construct the full URL to the clip file
-        if video_url and not video_url.lower().endswith(".mp4"):
+        if video_url and not (video_url.lower().endswith(".mp4") or ".mp4?" in video_url.lower()):
             normalized_path = video_path.replace("\\", "/")
             if "uploads/" in normalized_path.lower():
                 try:
@@ -499,6 +499,16 @@ class SocialPublishService:
                     video_url = f"{video_url.rstrip('/')}/{relative_path}"
                 except ValueError:
                     pass
+            elif "clips/" in normalized_path.lower():
+                try:
+                    idx = normalized_path.lower().index("clips/")
+                    relative_path = normalized_path[idx:]
+                    video_url = f"{video_url.rstrip('/')}/{relative_path}"
+                except ValueError:
+                    pass
+            else:
+                fname = os.path.basename(video_path)
+                video_url = f"{video_url.rstrip('/')}/{fname}"
 
         # If no access tokens or page details, raise error
         if not access_token or not instagram_business_id:

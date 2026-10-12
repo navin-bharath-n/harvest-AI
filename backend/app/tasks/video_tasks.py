@@ -1677,9 +1677,10 @@ def publish_video_task(clip_id: int, config: dict):
             for k, v in creds.items():
                 db_configs[k] = v
 
-        # Request credentials can override DB credentials
+        # Request credentials can override DB credentials only if non-empty
         req_configs = config.get("platform_configs") or {}
-        platform_configs = {**db_configs, **req_configs}
+        req_non_empty = {k: v for k, v in req_configs.items() if v}
+        platform_configs = {**db_configs, **req_non_empty}
 
         # Check if branding needs to be applied before publishing
         branding_cfg = config.get("branding_config") or (clip.edit_options or {}).get("branding")
@@ -1709,6 +1710,25 @@ def publish_video_task(clip_id: int, config: dict):
 
         thumb_path = config.get("thumbnail_path") or (clip.edit_options or {}).get("thumbnail_path")
 
+        # Resolve public URL for Meta/Instagram publishing
+        from app.services import object_storage
+        resolved_public_url = None
+        if clip.storage_path and object_storage.is_remote(clip.storage_path):
+            try:
+                provider, bucket, key = object_storage._parse(clip.storage_path)
+                base_url = (platform_configs.get("public_video_url") or settings.PUBLIC_VIDEO_URL or "").strip()
+                if base_url:
+                    resolved_public_url = f"{base_url.rstrip('/')}/{key.lstrip('/')}"
+                else:
+                    resolved_public_url = object_storage.url(clip.storage_path)
+            except Exception as ex:
+                logger.warning(f"Failed to resolve public R2 URL for clip {clip_id}: {ex}")
+        elif clip.storage_path:
+            base_url = (platform_configs.get("public_video_url") or settings.PUBLIC_VIDEO_URL or "").strip()
+            if base_url:
+                norm_key = clip.storage_path.replace("\\", "/").lstrip("/")
+                resolved_public_url = f"{base_url.rstrip('/')}/{norm_key}"
+
         published_urls = clip.published_urls or {}
         if not isinstance(published_urls, dict):
             published_urls = dict(published_urls)
@@ -1726,7 +1746,7 @@ def publish_video_task(clip_id: int, config: dict):
                 "facebook_page_id": platform_configs.get("facebook_page_id"),
                 "instagram_access_token": platform_configs.get("instagram_access_token"),
                 "instagram_business_id": platform_configs.get("instagram_business_id"),
-                "public_video_url": platform_configs.get("public_video_url")
+                "public_video_url": resolved_public_url or platform_configs.get("public_video_url") or settings.PUBLIC_VIDEO_URL
             }
 
             try:

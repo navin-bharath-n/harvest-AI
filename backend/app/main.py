@@ -459,6 +459,12 @@ async def catch_exceptions_middleware(request: Request, call_next):
 
 app.include_router(api_router, prefix=settings.API_V1_STR)
 
+# Serve static uploads directory for public assets / video playback
+from fastapi.staticfiles import StaticFiles
+uploads_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "uploads"))
+os.makedirs(uploads_dir, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=uploads_dir), name="uploads")
+
 @app.get("/")
 def root():
     return {"message": f"Welcome to {settings.PROJECT_NAME} API"}

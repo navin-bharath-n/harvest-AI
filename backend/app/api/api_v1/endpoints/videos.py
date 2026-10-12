@@ -1574,8 +1574,26 @@ def publish_clip(
     current_user: models.User = Depends(get_current_user)
 ):
     db_clip = get_user_clip(clip_id, current_user.id, db)
-    from datetime import datetime, timezone
-    from sqlalchemy.orm.attributes import flag_modified
+    # Validate that requested platforms are actually connected
+    db_connections = db.query(models.SocialConnection).filter(models.SocialConnection.user_id == current_user.id).all()
+    connected_platforms = {c.platform for c in db_connections}
+    from app.core.config import settings
+    if getattr(settings, "YOUTUBE_ACCESS_TOKEN", None):
+        connected_platforms.add("youtube")
+    if getattr(settings, "FACEBOOK_ACCESS_TOKEN", None) and getattr(settings, "FACEBOOK_PAGE_ID", None):
+        connected_platforms.add("facebook")
+    if getattr(settings, "INSTAGRAM_ACCESS_TOKEN", None) and getattr(settings, "INSTAGRAM_BUSINESS_ID", None):
+        connected_platforms.add("instagram")
+
+    req_configs = request.platform_configs or {}
+    for platform in request.platforms:
+        has_req_token = bool(req_configs.get(f"{platform}_access_token"))
+        if platform not in connected_platforms and not has_req_token:
+            platform_name = platform.capitalize()
+            raise HTTPException(
+                status_code=400,
+                detail=f"Please connect your {platform_name} account under Channels before publishing or scheduling."
+            )
 
     # If scheduled_at is provided, register for scheduled publishing
     if request.scheduled_at:
@@ -1588,6 +1606,10 @@ def publish_clip(
 
             if sched_dt > now_utc:
                 edit_options = (db_clip.edit_options or {}).copy()
+                # Security: Sanitize request payload to never store sensitive tokens in edit_options JSON
+                sanitized_req = request.dict()
+                sanitized_req.pop("platform_configs", None)
+
                 edit_options["scheduled_publish"] = {
                     "status": "scheduled",
                     "scheduled_at": sched_dt.isoformat(),
@@ -1595,11 +1617,10 @@ def publish_clip(
                     "title": request.title,
                     "description": request.description,
                     "privacy": request.privacy,
-                    "platform_configs": request.platform_configs,
                     "thumbnail_path": request.thumbnail_path,
                     "branding_config": request.branding_config,
                     "created_at": now_utc.isoformat(),
-                    "request": request.dict()
+                    "request": sanitized_req
                 }
                 db_clip.edit_options = edit_options
                 flag_modified(db_clip, "edit_options")

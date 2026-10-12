@@ -1703,6 +1703,52 @@ export default function SocialPublishPage() {
                   </div>
                 )}
 
+                {/* SCHEDULE FAILED ALERT BANNER */}
+                {scheduledPublishInfo?.status === 'failed' && (
+                  <div style={{
+                    marginBottom: '1.15rem',
+                    padding: '0.95rem 1.15rem',
+                    background: '#fef2f2',
+                    border: '1.5px solid #fecaca',
+                    borderRadius: 10,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: '1rem',
+                    flexWrap: 'wrap'
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                      <div style={{ width: 38, height: 38, borderRadius: '50%', background: '#fee2e2', display: 'grid', placeItems: 'center', color: '#dc2626', flexShrink: 0 }}>
+                        <X size={20} />
+                      </div>
+                      <div>
+                        <div style={{ fontWeight: 700, color: '#991b1b', fontSize: '0.95rem' }}>
+                          Scheduled Publish Encountered an Issue
+                        </div>
+                        <div style={{ color: '#b91c1c', fontSize: '0.84rem', marginTop: '0.15rem' }}>
+                          {scheduledPublishInfo.error || 'The platform API returned an error during automated publishing.'}
+                        </div>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleCancelSchedule}
+                      style={{
+                        padding: '0.45rem 0.8rem',
+                        fontSize: '0.82rem',
+                        fontWeight: 650,
+                        background: '#fff',
+                        border: '1px solid #fca5a5',
+                        color: '#b91c1c',
+                        borderRadius: 6,
+                        cursor: 'pointer'
+                      }}
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+                )}
+
                 {/* PUBLISH TIMING MODE SWITCHER */}
                 <div style={{ marginBottom: '1.25rem', padding: '0.9rem 1.05rem', background: '#f8faf9', border: '1px solid #e2e8e0', borderRadius: 10 }}>
                   <div style={{ fontSize: '0.82rem', fontWeight: 700, color: '#374151', marginBottom: '0.6rem', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
