@@ -332,8 +332,6 @@ export default function SocialPublishPage() {
           if (existingBranding.watermark_scale) setWatermarkScale(Math.round(existingBranding.watermark_scale * 100));
           if (existingBranding.watermark_opacity) setWatermarkOpacity(Math.round(existingBranding.watermark_opacity * 100));
           if (existingBranding.watermark_mode) setWatermarkMode(existingBranding.watermark_mode);
-          if (existingBranding.header_image_path) setHeaderPath(existingBranding.header_image_path);
-          if (existingBranding.header_height) setHeaderHeight(existingBranding.header_height);
           if (existingBranding.footer_image_path) setFooterPath(existingBranding.footer_image_path);
           if (existingBranding.footer_height) setFooterHeight(existingBranding.footer_height);
           if (existingBranding.footer_position) {
