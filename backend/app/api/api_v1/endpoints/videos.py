@@ -816,7 +816,7 @@ def select_moment(
         and (existing.edit_options or {}).get("template_storage_path") == (request.template_storage_path or None)
         and (existing.edit_options or {}).get("watermark_path") == (request.watermark_path or None)
         and (existing.edit_options or {}).get("watermark_position", "header") == (request.watermark_position or "header")
-        and (existing.edit_options or {}).get("watermark_mode", "interval_2s") == (request.watermark_mode or "interval_2s")
+        and (existing.edit_options or {}).get("watermark_mode", "always") == (request.watermark_mode or "always")
         and (existing.edit_options or {}).get("header_image_path") == (request.header_image_path or None)
         and (existing.edit_options or {}).get("footer_image_path") == (request.footer_image_path or None)
         and (existing.edit_options or {}).get("thumbnail_path") == (request.thumbnail_path or None)
@@ -867,7 +867,7 @@ def select_moment(
         "watermark_position": request.watermark_position or "header",
         "watermark_scale": float(request.watermark_scale if request.watermark_scale is not None else 0.20),
         "watermark_opacity": float(request.watermark_opacity if request.watermark_opacity is not None else 0.90),
-        "watermark_mode": request.watermark_mode or "interval_2s",
+        "watermark_mode": request.watermark_mode or "always",
         "header_image_path": request.header_image_path or None,
         "header_height": int(request.header_height if request.header_height is not None else 160),
         "footer_image_path": request.footer_image_path or None,
@@ -878,7 +878,7 @@ def select_moment(
             "watermark_position": request.watermark_position or "header",
             "watermark_scale": float(request.watermark_scale if request.watermark_scale is not None else 0.20),
             "watermark_opacity": float(request.watermark_opacity if request.watermark_opacity is not None else 0.90),
-            "watermark_mode": request.watermark_mode or "interval_2s",
+            "watermark_mode": request.watermark_mode or "always",
             "header_image_path": request.header_image_path or None,
             "header_height": int(request.header_height if request.header_height is not None else 160),
             "footer_image_path": request.footer_image_path or None,

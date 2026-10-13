@@ -103,7 +103,7 @@ class SelectMomentRequest(BaseModel):
     watermark_position: Optional[str] = "header"
     watermark_scale: Optional[float] = 0.20
     watermark_opacity: Optional[float] = 0.90
-    watermark_mode: Optional[str] = "interval_2s"
+    watermark_mode: Optional[str] = "always"
     header_image_path: Optional[str] = None
     header_height: Optional[int] = 160
     footer_image_path: Optional[str] = None

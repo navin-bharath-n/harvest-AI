@@ -131,7 +131,7 @@ export default function StudioPage() {
   const [modalWatermarkPos, setModalWatermarkPos] = useState('top-right');
   const [modalWatermarkScale, setModalWatermarkScale] = useState(16);
   const [modalWatermarkOpacity, setModalWatermarkOpacity] = useState(85);
-  const [modalWatermarkMode, setModalWatermarkMode] = useState('always'); // 'always' | 'interval_2s'
+  const [modalWatermarkMode, setModalWatermarkMode] = useState('always'); // 'always'
   const [isUploadingModalWatermark, setIsUploadingModalWatermark] = useState(false);
 
   const [modalHeaderPath, setModalHeaderPath] = useState(null);

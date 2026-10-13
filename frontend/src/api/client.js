@@ -260,7 +260,7 @@ export const api = {
       watermark_position: options.watermarkPosition || 'header',
       watermark_scale: typeof options.watermarkScale === 'number' ? options.watermarkScale : 0.20,
       watermark_opacity: typeof options.watermarkOpacity === 'number' ? options.watermarkOpacity : 0.90,
-      watermark_mode: options.watermarkMode || 'interval_2s',
+      watermark_mode: options.watermarkMode || 'always',
       header_image_path: options.headerImagePath || null,
       header_height: typeof options.headerHeight === 'number' ? options.headerHeight : 160,
       footer_image_path: options.footerImagePath || null,
