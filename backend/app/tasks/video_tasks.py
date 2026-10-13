@@ -78,7 +78,7 @@ def _resolve_or_extract_video_audio(video: models.Video, video_path: str, db) ->
     command = [
         "ffmpeg", "-y", "-nostdin", "-loglevel", "error",
         "-i", video_path, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "64k",
-        "-threads", "1", audio_path,
+        "-threads", "0", audio_path,
     ]
     try:
         import subprocess
@@ -1225,13 +1225,16 @@ def render_clip_task(clip_id: int):
 
         else:
             # ─────────────────────────────────────────────────────────────────
-            # USER SELECTED ORIGINAL AUDIO:
-            # The clip retains its original audio.
-            # The outro screen / template plays its dedicated outro audio
-            # during the extended outro section so it is never a blank/silent screen!
+            # USER SELECTED ORIGINAL AUDIO OR MUTE:
+            # - If audio_mode == 'mute': video audio is completely stripped/muted (-an).
+            # - If audio_mode == 'original': original audio is preserved.
             # ─────────────────────────────────────────────────────────────────
             try:
-                subprocess.run(["ffmpeg", "-y", "-i", temp_video_source, "-c", "copy", output_path], capture_output=True)
+                if audio_mode == "mute":
+                    logger.info(f"Audio mode is 'mute'; stripping/muting audio with -an for clip {clip_id}")
+                    subprocess.run(["ffmpeg", "-y", "-i", temp_video_source, "-c:v", "copy", "-an", "-movflags", "+faststart", output_path], capture_output=True)
+                else:
+                    subprocess.run(["ffmpeg", "-y", "-i", temp_video_source, "-c", "copy", output_path], capture_output=True)
             except Exception as ce:
                 import shutil
                 shutil.copyfile(temp_video_source, output_path)
@@ -1242,8 +1245,8 @@ def render_clip_task(clip_id: int):
                 try:
                     if template_id or template_storage_path:
                         target_tmpl = template_storage_path or template_id
-                        logger.info(f"Appending Cloudflare R2 template outro '{target_tmpl}' WITH dedicated outro audio to clip {clip_id}")
-                        ok = template_service.append_template_to_video(output_path, target_tmpl, with_audio=True)
+                        logger.info(f"Appending Cloudflare R2 template outro '{target_tmpl}' (with_audio={audio_mode != 'mute'}) to clip {clip_id}")
+                        ok = template_service.append_template_to_video(output_path, target_tmpl, with_audio=(audio_mode != "mute"))
                         if not ok:
                             logger.warning(f"Template append returned False; keeping output clip {clip_id} intact.")
                     elif enable_outro:
@@ -1254,7 +1257,7 @@ def render_clip_task(clip_id: int):
                         long_text = instructions.get("outro_custom_text", edit_options.get("outro_custom_text", ""))
                         dur = float(instructions.get("outro_duration", edit_options.get("outro_duration", 3.0)))
                         outro_music_style = instructions.get("outro_music_style", edit_options.get("outro_music_style", "upbeat"))
-                        logger.info(f"Appending 9:16 creator outro ({dur}s, style={outro_music_style}) WITH dedicated outro audio to clip {clip_id}")
+                        logger.info(f"Appending 9:16 creator outro ({dur}s, style={outro_music_style}, with_audio={audio_mode != 'mute'}) to clip {clip_id}")
                         ok = cta_overlay_service.append_9_16_outro(
                             video_path=output_path,
                             like_text=like_text,
@@ -1263,12 +1266,24 @@ def render_clip_task(clip_id: int):
                             follow_text=follow_text,
                             long_text=long_text,
                             duration=dur,
-                            music_preset=outro_music_style,
+                            music_preset=None if audio_mode == "mute" else outro_music_style,
+                            with_audio=(audio_mode != "mute"),
                         )
                         if not ok:
                             logger.warning(f"CTA outro append returned False; keeping output clip {clip_id} intact.")
                 except Exception as oe:
                     logger.warning(f"Error during outro appending on clip {clip_id}: {oe}; keeping output clip intact.")
+
+            if audio_mode == "mute" and os.path.exists(output_path):
+                # Ensure no audio stream exists on the final output short
+                try:
+                    tmp_mute = output_path + ".mute.mp4"
+                    res = subprocess.run(["ffmpeg", "-y", "-i", output_path, "-c:v", "copy", "-an", "-movflags", "+faststart", tmp_mute], capture_output=True)
+                    if res.returncode == 0 and os.path.exists(tmp_mute):
+                        import shutil
+                        shutil.move(tmp_mute, output_path)
+                except Exception as mute_err:
+                    logger.warning(f"Secondary mute check non-critical warning on {clip_id}: {mute_err}")
 
         # Optional: in-video CTA overlay if no outro was chosen
         if not has_outro:
@@ -1797,3 +1812,239 @@ def publish_video_task(clip_id: int, config: dict):
         logger.error(f"Error during social publishing of clip {clip_id}: {e}", exc_info=True)
     finally:
         db.close()
+
+
+@celery_app.task(ignore_result=True)
+def caption_full_video_task(video_id: int, clip_id: int, edit_options: dict = None):
+    """
+    Analyzes the entire uploaded video, generates animated subtitles for the full duration,
+    and burns them onto the video while strictly preserving the original aspect ratio
+    (e.g. 16:9 widescreen or original source resolution) with subtitles placed in the lower third.
+    """
+    import os
+    import uuid
+    import subprocess
+    from sqlalchemy.orm.attributes import flag_modified
+    from app.services import object_storage
+    from app.services.subtitle_service import subtitle_service
+    from app.services.transcription_service import transcription_service
+
+    logger.info(f"Starting full video caption task for video {video_id}, clip {clip_id}")
+    edit_options = dict(edit_options or {})
+
+    # Phase 1: Mark clip as RENDERING
+    db = SessionLocal()
+    try:
+        video = db.query(models.Video).filter(models.Video.id == video_id).first()
+        clip = db.query(models.Clip).filter(models.Clip.id == clip_id).first()
+        if not video or not clip:
+            logger.error(f"Cannot caption full video: video {video_id} or clip {clip_id} missing")
+            return
+
+        video_path = _resolve_video_path(video.storage_path)
+        if not os.path.exists(video_path):
+            logger.error(f"Video file missing at {video_path}")
+            clip.status = models.ClipStatus.FAILED
+            db.commit()
+            return
+
+        clip.status = models.ClipStatus.RENDERING
+        video.status = models.VideoStatus.PROCESSING
+        db.commit()
+
+        # Check if transcript is cached
+        transcript_words = list(video.transcript or [])
+        transcript_completed = (
+            video.transcription_status == models.TranscriptionStatus.COMPLETED
+            and bool(transcript_words)
+        )
+    except Exception as init_err:
+        logger.error(f"Failed to initialize full video caption task: {init_err}")
+        db.rollback()
+        return
+    finally:
+        db.close()
+
+    # Phase 2: Transcribe if not cached
+    if not transcript_completed:
+        logger.info(f"Full video {video_id} transcript not cached. Transcribing audio...")
+        db = SessionLocal()
+        try:
+            video = db.query(models.Video).filter(models.Video.id == video_id).first()
+            audio_path = _resolve_or_extract_video_audio(video, video_path, db)
+            if not audio_path or not os.path.exists(audio_path):
+                raise RuntimeError("Could not extract audio track for full video captioning.")
+
+            transcription_result = transcription_service.transcribe(audio_path)
+            if isinstance(transcription_result, dict):
+                transcript_words = transcription_result.get("words", [])
+            else:
+                transcript_words = list(transcription_result or [])
+            video.transcript = transcript_words
+            flag_modified(video, "transcript")
+            video.transcription_status = models.TranscriptionStatus.COMPLETED
+            db.commit()
+            logger.info(f"Full video {video_id} transcribed successfully with {len(transcript_words)} words.")
+        except Exception as trans_err:
+            logger.error(f"Failed to transcribe full video {video_id}: {trans_err}")
+            db.rollback()
+            db_err = SessionLocal()
+            try:
+                c = db_err.query(models.Clip).filter(models.Clip.id == clip_id).first()
+                if c:
+                    c.status = models.ClipStatus.FAILED
+                    db_err.commit()
+            finally:
+                db_err.close()
+            return
+        finally:
+            db.close()
+
+    if not transcript_words:
+        logger.warning(f"No spoken words detected in video {video_id}. Will produce clean copy.")
+
+    # Phase 3: Probe video resolution & prepare output paths
+    clips_dir = os.path.join(str(_BACKEND_DIR), "uploads", "clips")
+    os.makedirs(clips_dir, exist_ok=True)
+    output_filename = f"clip_{uuid.uuid4().hex[:8]}.mp4"
+    output_path = os.path.join(clips_dir, output_filename)
+    relative_path = _safe_relpath(output_path, str(_BACKEND_DIR))
+
+    temp_id = uuid.uuid4().hex[:8]
+    ass_path = os.path.join(clips_dir, f"temp_full_{temp_id}.ass")
+
+    width = 1920
+    height = 1080
+    scale_filter = ""
+    try:
+        probe_res = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=width,height",
+                "-of", "csv=s=x:p=0",
+                video_path
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=10
+        )
+        if probe_res.stdout.strip():
+            w_str, h_str = probe_res.stdout.strip().split("x")
+            orig_w = int(w_str)
+            orig_h = int(h_str)
+            if orig_w > 1920 or orig_h > 1080:
+                scale_ratio = min(1920.0 / orig_w, 1080.0 / orig_h)
+                width = int(round(orig_w * scale_ratio / 2) * 2)
+                height = int(round(orig_h * scale_ratio / 2) * 2)
+                scale_filter = f"scale={width}:{height}"
+                logger.info(f"Ultra-speed optimization: scaling {orig_w}x{orig_h} to {width}x{height} for cloud deployment rendering.")
+            else:
+                width = orig_w
+                height = orig_h
+                logger.info(f"Probed source video resolution: {width}x{height}")
+    except Exception as pr_err:
+        logger.warning(f"Could not probe video resolution: {pr_err}. Defaulting to 1920x1080.")
+
+    caption_style = edit_options.get("caption_style", "pop")
+    translate_lang = edit_options.get("translate_language", "none")
+    caption_lang = edit_options.get("caption_language", "original")
+
+    # Optional translation
+    final_words = transcript_words
+    if translate_lang != "none" and caption_lang == "translated":
+        try:
+            from app.services.translation_service import translate_and_distribute_words
+            final_words = translate_and_distribute_words(transcript_words, translate_lang)
+            logger.info(f"Translated full video subtitles to {translate_lang}")
+        except Exception as tr_err:
+            logger.warning(f"Translation failed for full video, using original: {tr_err}")
+
+    # Generate ASS with widescreen lower-third configuration
+    # For widescreen (e.g. 1920x1080), bottom margin should be ~70-80px from bottom edge
+    font_size = edit_options.get("font_size") or max(36, int(height * 0.05))
+    margin_v = max(40, int(height * 0.08))
+
+    style_config = {
+        "caption_style": caption_style,
+        "target_lang": translate_lang,
+        "resolution_x": width,
+        "resolution_y": height,
+        "margin_v": margin_v,
+        "alignment": 2,  # Bottom-Center
+        "font_size": font_size,
+        "max_words": 6,  # 6-8 words per line on widescreen
+    }
+
+    try:
+        subtitle_service.generate_ass(final_words, ass_path, style_config)
+
+        # Burn subtitles into video keeping original aspect ratio
+        subtitle_service.burn_subtitles(video_path, ass_path, output_path, scale_filter=scale_filter)
+        logger.info(f"Successfully burned full video subtitles to {output_path}")
+
+        # Update Clip & Video in DB
+        db = SessionLocal()
+        try:
+            c = db.query(models.Clip).filter(models.Clip.id == clip_id).first()
+            v = db.query(models.Video).filter(models.Video.id == video_id).first()
+            if c:
+                # Probe final duration from local file before upload
+                try:
+                    from app.services.video_service import video_service
+                    meta = video_service.get_metadata(output_path)
+                    dur = float(meta.get("duration", 0.0))
+                    if dur > 0:
+                        c.duration = dur
+                        c.end_time = dur
+                except Exception:
+                    pass
+
+                # Upload to Cloudflare R2 and delete local copy
+                if object_storage.enabled():
+                    final_storage_path = object_storage.upload_file(output_path, f"clips/{output_filename}", "video/mp4")
+                    logger.info(f"Uploaded captioned full video to Cloudflare R2: {final_storage_path}")
+                    try:
+                        if os.path.exists(output_path):
+                            os.remove(output_path)
+                    except OSError:
+                        pass
+                else:
+                    final_storage_path = relative_path
+
+                c.status = models.ClipStatus.COMPLETED
+                c.storage_path = final_storage_path
+                c.edit_options = {
+                    **edit_options,
+                    "resolution": f"{width}x{height}",
+                    "captioned_full_video": True,
+                }
+                flag_modified(c, "edit_options")
+
+            if v:
+                v.status = models.VideoStatus.COMPLETED
+
+            db.commit()
+            logger.info(f"Full video caption task completed successfully for clip {clip_id}!")
+        finally:
+            db.close()
+
+    except Exception as burn_err:
+        logger.error(f"Failed to burn full video subtitles: {burn_err}", exc_info=True)
+        db = SessionLocal()
+        try:
+            c = db.query(models.Clip).filter(models.Clip.id == clip_id).first()
+            if c:
+                c.status = models.ClipStatus.FAILED
+                db.commit()
+        finally:
+            db.close()
+    finally:
+        # Cleanup temp ASS file
+        if os.path.exists(ass_path):
+            try:
+                os.remove(ass_path)
+            except Exception:
+                pass
+

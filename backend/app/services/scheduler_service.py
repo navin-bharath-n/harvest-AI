@@ -3,6 +3,7 @@ import logging
 from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
+from sqlalchemy.exc import OperationalError as SQLAlchemyOperationalError
 from app.core.database import SessionLocal
 from app import models
 
@@ -147,6 +148,10 @@ def check_and_dispatch_scheduled_clips():
                 except Exception:
                     pass
 
+    except SQLAlchemyOperationalError as op_err:
+        # Transient network loss or DNS timeout to Neon cloud; log concise warning without dumping 50-line tracebacks
+        err_msg = str(getattr(op_err, 'orig', op_err))
+        logger.warning(f"PublishScheduler: Database/network connectivity issue (will auto-retry): {err_msg}")
     except Exception as e:
         logger.error(f"PublishScheduler: Error scanning for scheduled clips: {e}", exc_info=True)
     finally:

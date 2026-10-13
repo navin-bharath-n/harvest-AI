@@ -59,6 +59,51 @@ LANGUAGE_NAMES = {
     "gu": "Gujarati",
 }
 
+LANGUAGE_ALIASES = {
+    "tamil": "ta",
+    "tanglish": "ta-tanglish",
+    "hindi": "hi",
+    "telugu": "te",
+    "kannada": "kn",
+    "malayalam": "ml",
+    "bengali": "bn",
+    "marathi": "mr",
+    "gujarati": "gu",
+    "punjabi": "pa",
+    "urdu": "ur",
+    "spanish": "es",
+    "french": "fr",
+    "german": "de",
+    "italian": "it",
+    "portuguese": "pt",
+    "russian": "ru",
+    "arabic": "ar",
+    "japanese": "ja",
+    "korean": "ko",
+    "chinese": "zh-cn",
+    "mandarin": "zh-cn",
+    "english": "en",
+    "dutch": "nl",
+    "swedish": "sv",
+    "norwegian": "no",
+    "danish": "da",
+    "finnish": "fi",
+    "polish": "pl",
+    "turkish": "tr",
+    "greek": "el",
+    "hebrew": "he",
+    "thai": "th",
+    "vietnamese": "vi",
+    "indonesian": "id",
+    "malay": "ms",
+    "filipino": "tl",
+    "tagalog": "tl",
+    "swahili": "sw",
+    "persian": "fa",
+    "nepali": "ne",
+    "sinhala": "si",
+}
+
 @lru_cache(maxsize=1)
 def _google_language_maps():
     """Load deep-translator's bundled language catalogue once (no network lookup)."""
@@ -75,6 +120,8 @@ def _normalize_target_language(language: str) -> str:
     normalized = (language or "none").strip().casefold()
     if normalized in {"none", "original", ""}:
         return normalized or "none"
+    if normalized in LANGUAGE_ALIASES:
+        return LANGUAGE_ALIASES[normalized]
     name_to_code, code_to_name = _google_language_maps()
     if normalized in code_to_name:
         return normalized
@@ -133,23 +180,32 @@ def _get_cloud_client():
 
 def _translate_single_chunk_llm(client, provider, chunk: List[str], target_name: str, tl_clean: str) -> Optional[List[str]]:
     rules = [
-        f"Translate each sentence into {target_name}.",
+        f"Translate each sentence into {target_name} with complete, natural, and grammatically correct meaning.",
         f"Output must be a strictly valid JSON array of strings containing EXACTLY {len(chunk)} items.",
-        "Translate the meaning faithfully, then phrase it as natural, idiomatic speech that sounds good when read aloud.",
+        "Translate for video subtitles: the text must be clear, natural, and instantly understandable to viewers.",
         "Translate the complete thought, not word by word. Use natural everyday phrasing a native speaker would actually say, with a smooth spoken rhythm.",
-        "Do not copy awkward source-language word order, repeat words, add filler, or make the result sound like a literal subtitle translation.",
-        "Keep each phrase concise enough for a short-video caption and comfortable to speak in the original time window.",
+        "Do not output separated, isolated, or broken words. Each item must be a complete, meaningful, readable sentence.",
+        "Do not copy awkward source-language word order, repeat words, add filler, or make the result sound like a literal machine translation.",
+        "Keep each phrase concise enough for a video caption and comfortable to speak in the original time window.",
         "Preserve names, facts, intent, and tone. Do not add information, exaggerate, or omit important meaning.",
         "Maintain the exact order corresponding to each input sentence.",
         "Do not include explanations, notes, or markdown formatting outside the JSON array."
     ]
 
     if tl_clean in ["ta", "tamil"]:
-        rules.append("Write strictly in Tamil characters (script). Do NOT use English alphabet letters.")
+        rules.append("Write strictly in standard Tamil script (தமிழ்). Do NOT use English alphabet letters.")
     elif tl_clean in ["ta-tanglish", "tanglish"]:
         rules.append("Write spoken colloquial Tamil strictly using Latin/English characters (standard Tanglish).")
+    elif tl_clean in ["hi", "hindi"]:
+        rules.append("Write strictly in natural modern Hindi using Devanagari script (हिंदी).")
+    elif tl_clean in ["te", "telugu"]:
+        rules.append("Write strictly in natural spoken Telugu using Telugu script (తెలుగు).")
+    elif tl_clean in ["ml", "malayalam"]:
+        rules.append("Write strictly in natural spoken Malayalam using Malayalam script (മലയാളം).")
+    elif tl_clean in ["kn", "kannada"]:
+        rules.append("Write strictly in natural spoken Kannada using Kannada script (ಕನ್ನಡ).")
 
-    system_msg = "You are a professional video subtitle translator.\n" + "\n".join(f"- {r}" for r in rules)
+    system_msg = "You are an expert video subtitle translator.\n" + "\n".join(f"- {r}" for r in rules)
     user_payload = json.dumps(chunk, ensure_ascii=False)
 
     if provider == "groq":
@@ -169,7 +225,7 @@ def _translate_single_chunk_llm(client, provider, chunk: List[str], target_name:
             ],
             is_openrouter=is_openrouter,
             temperature=0.2,
-            max_tokens=min(350, max(120, len(chunk) * 20))
+            max_tokens=min(2048, max(512, len(chunk) * 80))
         )
         content = response.choices[0].message.content.strip()
         parsed = parse_json_list_robust(content)
@@ -459,50 +515,135 @@ def translate_text_llm(text: str, target_lang: str) -> str:
     normalized_lang = (target_lang or "none").strip().lower()
     return _translate_cached(normalized_text, normalized_lang)
 
+def group_words_into_semantic_sentences(words: List[Dict], max_words: int = 14, max_duration: float = 4.5) -> List[Dict]:
+    """
+    Groups word-level timestamps into complete, meaningful sentences or coherent clauses.
+    Ensures that when text is translated, it preserves full grammatical context, meaning,
+    and natural spoken flow, rather than fragmented isolated words.
+    """
+    from app.services.subtitle_service import subtitle_service
+    cleaned = subtitle_service.clean_transcript_words(words)
+    if not cleaned:
+        return []
+
+    sentences = []
+    current_words = []
+    current_start = 0.0
+
+    CLAUSE_CONNECTORS = {"and", "but", "because", "so", "or", "however", "although", "while", "since", "which", "where"}
+
+    for i, w in enumerate(cleaned):
+        w_text = w.get("text", "").strip()
+        if not w_text:
+            continue
+
+        if not current_words:
+            current_start = float(w.get("start", 0.0))
+
+        # Check for natural silence pause before adding this word
+        if current_words:
+            prev_end = float(current_words[-1].get("end", current_start))
+            curr_start = float(w.get("start", prev_end))
+            pause = curr_start - prev_end
+            # If significant pause (>0.45s) and we already have at least 3 words, end the thought
+            if pause > 0.45 and len(current_words) >= 3:
+                sentences.append({
+                    "start": current_start,
+                    "end": prev_end,
+                    "words": current_words,
+                    "text": " ".join([cw["text"].strip() for cw in current_words]).strip()
+                })
+                current_words = []
+                current_start = curr_start
+
+        current_words.append(w)
+        duration = float(w.get("end", current_start)) - current_start
+        word_count = len(current_words)
+
+        # Check for sentence enders (. ! ? ; : । 。)
+        has_sentence_end = any(w_text.endswith(p) for p in ['.', '!', '?', ';', ':', '।', '。'])
+
+        # Check for comma/dash break if we already have a good clause length (>= 6 words)
+        has_clause_break = any(w_text.endswith(p) for p in [',', '—', '-']) and word_count >= 6
+
+        # Check for connector break if next word starts a new clause and current clause is long
+        is_connector_break = False
+        if word_count >= 8 and i < len(cleaned) - 1:
+            next_word = cleaned[i + 1].get("text", "").strip().lower()
+            if next_word in CLAUSE_CONNECTORS:
+                is_connector_break = True
+
+        # Safety limits
+        reached_limits = word_count >= max_words or duration >= max_duration
+
+        if has_sentence_end or has_clause_break or is_connector_break or reached_limits or i == len(cleaned) - 1:
+            sentences.append({
+                "start": current_start,
+                "end": float(w.get("end", current_start)),
+                "words": current_words,
+                "text": " ".join([cw["text"].strip() for cw in current_words]).strip()
+            })
+            current_words = []
+
+    return sentences
+
 def translate_and_distribute_words(shifted_words: List[Dict], target_lang: str) -> List[Dict]:
     """
-    Groups word-level timestamps into sentence lines, translates ALL lines in a single batch,
-    and returns entries with proper timing. Produces clean, readable vertical video subtitles.
+    Groups word-level timestamps into complete, meaningful sentences/clauses,
+    translates ALL sentences in a single coherent batch, and distributes the
+    translated words with proportional timestamps. Produces clean, grammatically
+    correct, readable video subtitles.
     """
-    if not shifted_words or target_lang.lower() in ["none", "original", ""]:
+    if not shifted_words or (target_lang or "").lower().strip() in ["none", "original", ""]:
         return shifted_words
 
     from app.services.subtitle_service import subtitle_service
 
-    # 1. Group words into short semantic lines
-    # Give translation enough surrounding words to preserve a complete thought
-    # and produce a phrase that reads and sounds naturally in the target language.
-    lines = subtitle_service.group_words_into_lines(shifted_words, max_words=8, max_duration=3.5)
-    if not lines:
+    # 1. Group words into complete, meaningful sentences or coherent clauses
+    sentences = group_words_into_semantic_sentences(shifted_words)
+    if not sentences:
         return shifted_words
 
-    # 2. Extract line texts for batch translation
-    orig_line_texts = []
-    valid_lines = []
-    for line in lines:
-        text = " ".join([w["text"].strip() for w in line["words"]]).strip()
-        if text:
-            orig_line_texts.append(text)
-            valid_lines.append(line)
-
-    if not orig_line_texts:
+    # 2. Extract texts of complete thoughts for batch translation
+    valid_sentences = [s for s in sentences if s["text"]]
+    orig_texts = [s["text"] for s in valid_sentences]
+    if not orig_texts:
         return shifted_words
 
-    # 3. Translate all lines in ONE single batch call (no per-line HTTP hammering)
-    translated_texts = batch_translate_texts(orig_line_texts, target_lang)
+    # 3. Translate all complete thoughts in a single batch call
+    translated_texts = batch_translate_texts(orig_texts, target_lang)
 
-    # 4. Map back to line entries with original timing
-    translated_words = []
-    for idx, line in enumerate(valid_lines):
-        t_text = translated_texts[idx] if idx < len(translated_texts) else orig_line_texts[idx]
+    # 4. Map translated sentences into timed word tokens
+    distributed_words = []
+    for idx, sentence in enumerate(valid_sentences):
+        t_text = translated_texts[idx] if idx < len(translated_texts) else sentence["text"]
         t_text = _normalize_caption_text(t_text)
         if not t_text:
-            t_text = orig_line_texts[idx]
+            t_text = sentence["text"]
 
-        translated_words.append({
-            "start": line["start"],
-            "end": line["end"],
-            "text": t_text
-        })
+        s_start = float(sentence["start"])
+        s_end = float(sentence["end"])
+        s_dur = max(0.2, s_end - s_start)
 
-    return subtitle_service.clean_transcript_words(translated_words)
+        # Split translated sentence into individual words
+        raw_words = t_text.strip().split()
+        if not raw_words:
+            continue
+
+        # Proportionally distribute timestamps by word length
+        weights = [max(1, len(w)) for w in raw_words]
+        total_weight = sum(weights) or 1
+        current_time = s_start
+
+        for w, weight in zip(raw_words, weights):
+            w_dur = (weight / total_weight) * s_dur
+            w_start = round(current_time, 2)
+            w_end = round(current_time + w_dur, 2)
+            current_time += w_dur
+            distributed_words.append({
+                "start": w_start,
+                "end": max(w_start + 0.05, w_end),
+                "text": w
+            })
+
+    return subtitle_service.clean_transcript_words(distributed_words)

@@ -32,7 +32,7 @@ class SubtitleService:
         return True
 
     def clean_transcript_words(self, words: List[Dict]) -> List[Dict]:
-        """Drop malformed timestamps and near-identical overlapping STT duplicates."""
+        """Drop malformed timestamps, unpack multi-word phrases, and eliminate duplicates."""
         parsed = []
         for item in words or []:
             if not isinstance(item, dict):
@@ -46,8 +46,27 @@ class SubtitleService:
                 continue
             if not re.sub(r"[^\w]+", "", text.casefold(), flags=re.UNICODE):
                 continue
-            entry = {**item, "start": start, "end": end, "text": text}
-            parsed.append(entry)
+
+            sub_words = text.split(" ")
+            if len(sub_words) > 1:
+                weights = [max(1, len(sw)) for sw in sub_words]
+                total_w = sum(weights) or 1
+                total_dur = end - start
+                curr_t = start
+                for sw, w in zip(sub_words, weights):
+                    sw_dur = (w / total_w) * total_dur
+                    sw_start = round(curr_t, 2)
+                    sw_end = round(curr_t + sw_dur, 2)
+                    curr_t += sw_dur
+                    if sw.strip():
+                        parsed.append({
+                            **item,
+                            "start": sw_start,
+                            "end": max(sw_start + 0.05, sw_end),
+                            "text": sw.strip()
+                        })
+            else:
+                parsed.append({**item, "start": start, "end": end, "text": text})
 
         cleaned = []
         for entry in sorted(parsed, key=lambda item: (item["start"], item["end"])):
@@ -265,7 +284,7 @@ Style: Default,{font_name},{font_size},{primary_color},{highlight_color},{outlin
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
-        max_words = 4 if caption_preset in ["pop", "neon", "boxed"] else 5
+        max_words = style_config.get("max_words", 4 if caption_preset in ["pop", "neon", "boxed"] else 5)
         lines = self.group_words_into_lines(words, max_words=max_words, max_duration=2.4)
 
         with open(output_path, "w", encoding="utf-8") as f:
@@ -413,10 +432,10 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
         logger.info(f"Successfully generated animated ASS subtitle ({caption_preset}) at {output_path}")
 
-    def burn_subtitles(self, video_path: str, subtitle_path: str, output_path: str):
+    def burn_subtitles(self, video_path: str, subtitle_path: str, output_path: str, scale_filter: str = ""):
         """
-        Burn ASS or SRT subtitles into video using FFmpeg.
-        Uses escaped path for cross-platform and Windows compatibility.
+        Hardcodes ASS subtitles into the video file using GPU hardware acceleration (NVENC)
+        when available, or ultra-fast multi-threaded CPU libx264 encoding with 30fps capping.
         """
         if not os.path.exists(video_path):
             raise FileNotFoundError(f"Video file not found: {video_path}")
@@ -425,25 +444,71 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
         escaped_sub_path = os.path.abspath(subtitle_path).replace('\\', '/').replace(':', r'\:')
 
+        # Auto-detect hardware GPU encoding (NVIDIA NVENC) or multi-threaded CPU ultrafast fallback
+        video_args = self._get_fast_video_encoding_args()
+
+        vf_parts = []
+        if scale_filter:
+            vf_parts.append(scale_filter)
+        vf_parts.append(f"subtitles=filename='{escaped_sub_path}'")
+        vf_str = ",".join(vf_parts)
+
         cmd = [
             "ffmpeg",
             "-y",
             "-i", video_path,
-            "-vf", f"subtitles=filename='{escaped_sub_path}'",
+            "-vf", vf_str,
+            "-fpsmax", "30",
+            *video_args,
             "-c:a", "copy",
             "-movflags", "+faststart",
             output_path
         ]
 
-        logger.info(f"Burning subtitles from path: {subtitle_path}")
+        logger.info(f"Burning subtitles from path: {subtitle_path} using fast encoding args: {video_args} (filter: {vf_str})")
         try:
             result = subprocess.run(cmd, capture_output=True)
             if result.returncode != 0:
-                raise subprocess.CalledProcessError(result.returncode, cmd, result.stderr)
+                # If NVENC failed on cloud host, retry with CPU ultrafast preset
+                if "-c:v" in cmd and "h264_nvenc" in cmd:
+                    logger.warning("NVENC encoding encountered issue, retrying with CPU ultrafast...")
+                    cpu_cmd = [
+                        "ffmpeg", "-y", "-i", video_path,
+                        "-vf", vf_str,
+                        "-fpsmax", "30",
+                        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "22", "-tune", "fastdecode", "-threads", "0", "-pix_fmt", "yuv420p",
+                        "-c:a", "copy", "-movflags", "+faststart",
+                        output_path
+                    ]
+                    result = subprocess.run(cpu_cmd, capture_output=True)
+                if result.returncode != 0:
+                    raise subprocess.CalledProcessError(result.returncode, cmd, result.stderr)
             logger.info(f"Successfully burned subtitles to {output_path}")
         except subprocess.CalledProcessError as e:
             stderr = e.stderr.decode("utf-8", errors="ignore") if e.stderr else ""
             logger.error(f"FFmpeg subtitle burning error: {stderr}")
             raise RuntimeError(f"Failed to burn subtitles: {stderr}")
+
+    @classmethod
+    def _get_fast_video_encoding_args(cls):
+        """
+        Detects if NVIDIA NVENC GPU acceleration is available for ultra-fast encoding,
+        otherwise falls back to multi-threaded CPU libx264 with ultrafast preset.
+        """
+        if getattr(cls, "_has_nvenc", None) is None:
+            try:
+                test_res = subprocess.run(
+                    ["ffmpeg", "-f", "lavfi", "-i", "color=c=black:s=64x64:d=0.1", "-c:v", "h264_nvenc", "-f", "null", "-"],
+                    capture_output=True,
+                    timeout=3
+                )
+                cls._has_nvenc = (test_res.returncode == 0)
+            except Exception:
+                cls._has_nvenc = False
+
+        if cls._has_nvenc:
+            return ["-c:v", "h264_nvenc", "-preset", "p1", "-cq", "23", "-pix_fmt", "yuv420p"]
+        else:
+            return ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "22", "-tune", "fastdecode", "-threads", "0", "-pix_fmt", "yuv420p"]
 
 subtitle_service = SubtitleService()

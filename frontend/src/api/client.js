@@ -194,6 +194,11 @@ export const api = {
     return response.data;
   },
 
+  captionFullVideo: async (videoId, options = {}) => {
+    const response = await client.post(`/videos/${videoId}/caption-full-video`, options);
+    return response.data;
+  },
+
   // Upload custom audio file (MP3, WAV, M4A, etc.) for mixing or replacing
   uploadAudio: async (file) => {
     const formData = new FormData();

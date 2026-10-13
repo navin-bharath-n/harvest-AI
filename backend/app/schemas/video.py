@@ -82,7 +82,7 @@ class SelectMomentRequest(BaseModel):
     caption_language: Literal["original", "translated", "none"] = "original"
     dub_voice: bool = False
     speaker_gender: Literal["female", "male"] = "female"
-    audio_mode: Literal["original", "mix", "replace"] = "original"
+    audio_mode: Literal["original", "mix", "replace", "mute"] = "original"
     custom_audio_path: Optional[str] = None
     music_preset: Optional[str] = "none"
     music_volume: Optional[float] = 0.18
@@ -113,6 +113,12 @@ class SelectMomentRequest(BaseModel):
 class HighlightAnalysisRequest(BaseModel):
     length: float = Field(default=30.0, ge=10.0, le=60.0, description="Target maximum duration for suggested moments")
 
+class CaptionFullVideoRequest(BaseModel):
+    caption_style: Literal["pop", "karaoke", "minimalist", "boxed", "neon", "standard", "none"] = "pop"
+    translate_language: str = "none"
+    caption_language: Literal["original", "translated"] = "original"
+    font_size: Optional[int] = None
+
 class CaptionStyleUpdate(BaseModel):
     caption_style: Literal["pop", "karaoke", "minimalist", "boxed", "neon", "standard", "none"]
 
@@ -129,6 +135,9 @@ class Clip(BaseModel):
     edit_options: Optional[dict] = None
     published_urls: Optional[dict] = None
     file_exists: Optional[bool] = True
+    
+    workflow_type: Optional[str] = None
+    aspect_ratio: Optional[str] = None
     
     class Config:
         from_attributes = True

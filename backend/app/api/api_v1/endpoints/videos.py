@@ -7,9 +7,11 @@ import shutil
 import os
 import uuid
 import logging
+import re
 from app.core.database import get_db
 from app.api.deps import get_current_user
 from app import models, schemas
+from app.schemas.video import CaptionFullVideoRequest
 from app.tasks.video_tasks import process_video_task
 
 import pathlib as _pathlib
@@ -612,6 +614,64 @@ def extract_highlights(
         raise
     return db_video
 
+@router.post("/{video_id}/caption-full-video", response_model=schemas.Clip)
+def caption_full_video(
+    video_id: int,
+    request: CaptionFullVideoRequest,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    db_video = get_user_video(video_id, current_user.id, db)
+
+    video_path = _resolve_path(db_video.storage_path)
+    duration = float(db_video.duration or 0.0)
+    if duration <= 0.0 and os.path.exists(video_path):
+        from app.services.video_service import video_service
+        try:
+            meta = video_service.get_metadata(video_path)
+            duration = float(meta.get("duration", 0.0))
+            db_video.duration = duration
+        except Exception:
+            duration = 60.0
+
+    raw_title = db_video.original_filename or f"Video #{db_video.id}"
+    clean_title = re.sub(r'\.(mp4|mov|mkv|webm|avi|m4v)$', '', raw_title, flags=re.IGNORECASE).strip()
+    title = f"{clean_title} (Full Captions)"
+
+    edit_opts = {
+        "is_full_video": True,
+        "caption_style": request.caption_style,
+        "translate_language": request.translate_language,
+        "caption_language": request.caption_language,
+        "framing_mode": "original",
+        "font_size": request.font_size,
+    }
+
+    db_clip = models.Clip(
+        video_id=db_video.id,
+        title=title,
+        start_time=0.0,
+        end_time=duration,
+        duration=duration,
+        status=models.ClipStatus.PENDING,
+        edit_options=edit_opts,
+    )
+    db.add(db_clip)
+    db_video.status = models.VideoStatus.PROCESSING
+    db.commit()
+    db.refresh(db_clip)
+
+    from app.tasks.video_tasks import caption_full_video_task
+    try:
+        dispatch_required_queue(caption_full_video_task, db_video.id, db_clip.id, edit_opts)
+    except HTTPException:
+        db_clip.status = models.ClipStatus.FAILED
+        db_video.status = models.VideoStatus.FAILED
+        db.commit()
+        raise
+
+    return db_clip
+
 @router.get("/", response_model=List[schemas.Video])
 def read_videos(
     skip: int = 0,
@@ -1116,6 +1176,15 @@ def get_clips(
             c.file_exists = os.path.isfile(resolved)
         else:
             c.file_exists = False
+
+        # Annotate workflow_type and aspect_ratio so frontend renders widescreen vs vertical player correctly
+        opts = c.edit_options or {}
+        if opts.get("is_full_video") or opts.get("captioned_full_video") or (c.title and "(Full Captions)" in c.title):
+            c.workflow_type = "full_caption"
+            c.aspect_ratio = "16:9"
+        else:
+            c.workflow_type = "shorts"
+            c.aspect_ratio = opts.get("aspect_ratio", "9:16")
     return clips
 
 @router.post("/{video_id}/master-generate", response_model=schemas.Video)
@@ -1300,10 +1369,18 @@ def get_video_status(
         else:
             stage = "rendering"
             stage_label = "Rendering animated variations..."
-    elif db_video.status and db_video.status.value == "completed":
+    has_completed_clip = any(
+        c.status and c.status.value == "completed"
+        for c in db_video.clips
+    )
+
+    if db_video.status and db_video.status.value == "completed":
         if len(completed_variations) >= TOTAL_VARIATIONS:
             stage = "done"
             stage_label = "All 5 variations ready."
+        elif has_completed_clip:
+            stage = "done"
+            stage_label = "Captions generated successfully."
         elif len(completed_variations) > 0:
             stage = "rendering"
             stage_label = f"Rendering variations ({len(completed_variations)}/{TOTAL_VARIATIONS} ready)..."
@@ -1313,7 +1390,7 @@ def get_video_status(
 
     is_finished = (
         db_video.status == models.VideoStatus.COMPLETED
-        and len(completed_variations) >= TOTAL_VARIATIONS
+        and (len(completed_variations) >= TOTAL_VARIATIONS or has_completed_clip)
     )
     if db_video.status == models.VideoStatus.FAILED:
         stage = "failed"
