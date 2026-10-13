@@ -153,8 +153,8 @@ class WatermarkService:
             scaled_label = f"wm_scale_{input_idx}"
             filter_chains.append(f"[{input_idx}:v]scale={wm_w}:-2,format=rgba,colorchannelmixer=aa={opacity_val}[{scaled_label}]")
 
-            # Enable interval if mode is interval_2s (visible for 2s, hidden for 2s, repeating every 2s)
-            enable_expr = ":enable='lt(mod(t,4),2)'" if (watermark_mode == "interval_2s") else ""
+            # Continuous overlay without 2s interval lap
+            enable_expr = ""
 
             pos = (watermark_position or "header").lower().strip()
             pad_x = max(16, int(video_w * 0.03))

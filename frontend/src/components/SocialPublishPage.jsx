@@ -130,7 +130,7 @@ export default function SocialPublishPage() {
 
   const [watermarkScale, setWatermarkScale] = useState(20); // 8% to 100% of video width
   const [watermarkOpacity, setWatermarkOpacity] = useState(90); // 40% to 100%
-  const [watermarkMode, setWatermarkMode] = useState('interval_2s'); // 'interval_2s' | 'always'
+  const [watermarkMode, setWatermarkMode] = useState('always'); // 'always'
   const watermarkInputRef = useRef(null);
 
   // Footer Banner
@@ -331,7 +331,7 @@ export default function SocialPublishPage() {
           if (existingBranding.watermark_position) setWatermarkPosition(existingBranding.watermark_position);
           if (existingBranding.watermark_scale) setWatermarkScale(Math.round(existingBranding.watermark_scale * 100));
           if (existingBranding.watermark_opacity) setWatermarkOpacity(Math.round(existingBranding.watermark_opacity * 100));
-          if (existingBranding.watermark_mode) setWatermarkMode(existingBranding.watermark_mode);
+          if (existingBranding.watermark_mode) setWatermarkMode(existingBranding.watermark_mode === 'interval_2s' ? 'always' : existingBranding.watermark_mode);
           if (existingBranding.footer_image_path) setFooterPath(existingBranding.footer_image_path);
           if (existingBranding.footer_height) setFooterHeight(existingBranding.footer_height);
           if (existingBranding.footer_position) {
@@ -936,15 +936,7 @@ export default function SocialPublishPage() {
         @keyframes harvest-publish-spin { to { transform: rotate(360deg); } }
         .harvest-publish-spin { animation: harvest-publish-spin 0.8s linear infinite; }
         
-        /* 2-Second interval pulsing: 2 seconds visible, 2 seconds hidden */
-        @keyframes harvest-watermark-blink {
-          0%, 48% { opacity: 1; }
-          50%, 98% { opacity: 0; }
-          100% { opacity: 1; }
-        }
-        .harvest-watermark-pulse {
-          animation: harvest-watermark-blink 4s infinite ease-in-out;
-        }
+
 
         @media (max-width: 860px) {
           .harvest-publish-layout { grid-template-columns: minmax(0, 1fr) !important; }
@@ -1296,35 +1288,7 @@ export default function SocialPublishPage() {
                       </div>
                     </div>
 
-                    {/* Watermark Display Interval Mode (Live time demo) */}
-                    <div style={{ background: '#fcfcfb', border: '1px solid #e6e6e1', borderRadius: 9, padding: '0.9rem' }}>
-                      <div style={{ fontWeight: 650, fontSize: '0.88rem', marginBottom: '0.4rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                        <Clock size={16} color="#1f6f4a" /> Watermark Timing Mode (Live Demo)
-                      </div>
-                      <div style={{ display: 'flex', gap: '0.75rem', marginTop: '0.5rem' }}>
-                        <label style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', fontSize: '0.85rem', cursor: 'pointer', fontWeight: watermarkMode === 'interval_2s' ? 700 : 500 }}>
-                          <input
-                            type="radio"
-                            name="watermarkMode"
-                            checked={watermarkMode === 'interval_2s'}
-                            onChange={() => setWatermarkMode('interval_2s')}
-                          />
-                          Every 2 Seconds (Pulsing / 2s on-off)
-                        </label>
-                        <label style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', fontSize: '0.85rem', cursor: 'pointer', fontWeight: watermarkMode === 'always' ? 700 : 500 }}>
-                          <input
-                            type="radio"
-                            name="watermarkMode"
-                            checked={watermarkMode === 'always'}
-                            onChange={() => setWatermarkMode('always')}
-                          />
-                          Always Visible
-                        </label>
-                      </div>
-                      <div style={{ fontSize: '0.76rem', color: '#657080', marginTop: '0.45rem' }}>
-                        Watch the player on the right to see the live timing demo in action.
-                      </div>
-                    </div>
+
 
                     {/* Sliders: Logo Size & Opacity */}
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
@@ -2424,7 +2388,7 @@ export default function SocialPublishPage() {
                           <div
                             onMouseDown={handleWatermarkMouseDown}
                             onTouchStart={handleWatermarkTouchStart}
-                            className={watermarkMode === 'interval_2s' && !isDraggingWatermark ? 'harvest-watermark-pulse' : ''}
+
                             style={{
                               position: 'absolute',
                               zIndex: 30,
