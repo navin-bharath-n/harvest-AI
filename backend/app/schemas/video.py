@@ -34,6 +34,10 @@ class MasterGenerateRequest(BaseModel):
     speaker_gender: Optional[str] = "female"
     framing_mode: Optional[str] = "fit_blur"
     caption_style: Optional[str] = "pop"
+    primary_color: Optional[str] = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
+    highlight_color: Optional[str] = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
+    source_language: Optional[str] = None
+    retranscribe: Optional[bool] = False
 
 class ClipBrandingRequest(BaseModel):
     watermark_path: Optional[str] = None
@@ -55,6 +59,8 @@ class ClipBrandingRequest(BaseModel):
     outro_subscribe_text: Optional[str] = "Subscribe"
     outro_follow_text: Optional[str] = ""
     outro_custom_text: Optional[str] = ""
+    outro_qr_link: Optional[str] = ""
+    outro_quote_text: Optional[str] = ""
     outro_duration: Optional[float] = 3.0
     outro_music_style: Optional[str] = "upbeat"
 
@@ -78,6 +84,8 @@ class ClipCreate(BaseModel):
 class SelectMomentRequest(BaseModel):
     moment_id: int = Field(ge=0, le=4)
     caption_style: Literal["pop", "karaoke", "minimalist", "boxed", "neon", "standard", "none"] = "pop"
+    primary_color: Optional[str] = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
+    highlight_color: Optional[str] = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
     translate_language: str = Field(default="none", min_length=2, max_length=64)
     caption_language: Literal["original", "translated", "none"] = "original"
     dub_voice: bool = False
@@ -118,6 +126,10 @@ class CaptionFullVideoRequest(BaseModel):
     translate_language: str = "none"
     caption_language: Literal["original", "translated"] = "original"
     font_size: Optional[int] = None
+    primary_color: Optional[str] = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
+    highlight_color: Optional[str] = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
+    source_language: Optional[str] = None
+    retranscribe: Optional[bool] = False
 
 class CaptionStyleUpdate(BaseModel):
     caption_style: Literal["pop", "karaoke", "minimalist", "boxed", "neon", "standard", "none"]

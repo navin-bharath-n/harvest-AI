@@ -187,7 +187,9 @@ def _translate_single_chunk_llm(client, provider, chunk: List[str], target_name:
         "Do not output separated, isolated, or broken words. Each item must be a complete, meaningful, readable sentence.",
         "Do not copy awkward source-language word order, repeat words, add filler, or make the result sound like a literal machine translation.",
         "Keep each phrase concise enough for a video caption and comfortable to speak in the original time window.",
-        "Preserve names, facts, intent, and tone. Do not add information, exaggerate, or omit important meaning.",
+        "Accurately translate English loanwords commonly used in regional and Indian speech (e.g., 'second', 'seconds', 'minute', 'step', 'subscribe', 'channel', 'video').",
+        "Contextually distinguish words like 'second': translate as unit of time ('wait a second' / 'நொடி') or ordinal rank/step ('second step' / 'இரண்டாவது') based on natural context, never bizarre literalisms.",
+        "Preserve numbers (1, 2, 3, 100), dates, years (2026), percentages, and currency values accurately.",
         "Maintain the exact order corresponding to each input sentence.",
         "Do not include explanations, notes, or markdown formatting outside the JSON array."
     ]
@@ -630,15 +632,21 @@ def translate_and_distribute_words(shifted_words: List[Dict], target_lang: str) 
         if not raw_words:
             continue
 
-        # Proportionally distribute timestamps by word length
+        # Proportionally distribute timestamps by character weight across the FULL sentence duration.
+        # We use the actual sentence duration so translated captions never run out early.
+        # group_words_into_lines will handle splitting into display-friendly chunks later.
         weights = [max(1, len(w)) for w in raw_words]
         total_weight = sum(weights) or 1
         current_time = s_start
 
-        for w, weight in zip(raw_words, weights):
+        for i, (w, weight) in enumerate(zip(raw_words, weights)):
             w_dur = (weight / total_weight) * s_dur
             w_start = round(current_time, 2)
-            w_end = round(current_time + w_dur, 2)
+            if i == len(raw_words) - 1:
+                # Last word: extend exactly to sentence end so no gap
+                w_end = s_end
+            else:
+                w_end = round(current_time + w_dur, 2)
             current_time += w_dur
             distributed_words.append({
                 "start": w_start,
@@ -646,4 +654,10 @@ def translate_and_distribute_words(shifted_words: List[Dict], target_lang: str) 
                 "text": w
             })
 
-    return subtitle_service.clean_transcript_words(distributed_words)
+    result_words = subtitle_service.clean_transcript_words(distributed_words)
+    logger.info(
+        f"[Checkpoint F - Translated Transcript] (Checkpoint D) TargetLang={target_lang} "
+        f"Sentences={len(valid_sentences)} InputWords={len(shifted_words)} "
+        f"OutputWords={len(result_words)}"
+    )
+    return result_words

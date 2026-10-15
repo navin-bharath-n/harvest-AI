@@ -27,8 +27,12 @@ import {
   Play,
   Pause,
   Volume2,
-  Move
+  Move,
+  QrCode,
+  Quote,
+  Link2
 } from 'lucide-react';
+import { QRCodeSVG } from 'qrcode.react';
 import { api } from '../api/client';
 import { useAuth } from '../context/AuthContext';
 import harvestLogo from '../Untitled Design.png';
@@ -127,8 +131,11 @@ export default function SocialPublishPage() {
   const [watermarkPos, setWatermarkPos] = useState({ x: 84, y: 8 }); // % coordinates from top-left
   const [isDraggingWatermark, setIsDraggingWatermark] = useState(false);
   const videoContainerRef = useRef(null);
+  const watermarkOverlayRef = useRef(null);
+  const footerOverlayRef = useRef(null);
 
   const [watermarkScale, setWatermarkScale] = useState(20); // 8% to 100% of video width
+  const [watermarkAspectRatio, setWatermarkAspectRatio] = useState(1);
   const [watermarkOpacity, setWatermarkOpacity] = useState(90); // 40% to 100%
   const [watermarkMode, setWatermarkMode] = useState('always'); // 'always'
   const watermarkInputRef = useRef(null);
@@ -141,6 +148,11 @@ export default function SocialPublishPage() {
   const [footerPosition, setFooterPosition] = useState('bottom');
   const [isDraggingFooter, setIsDraggingFooter] = useState(false);
   const footerInputRef = useRef(null);
+
+  const getSafeFooterY = (y, height = footerHeight) => {
+    const halfHeightPct = (Number(height) / 1920) * 50;
+    return Math.max(halfHeightPct, Math.min(100 - halfHeightPct, Number(y) || 0));
+  };
 
   const [isBurningBranding, setIsBurningBranding] = useState(false);
   const burningBranding = isBurningBranding;
@@ -173,9 +185,12 @@ export default function SocialPublishPage() {
       let xPct = ((clientX - rect.left) / rect.width) * 100;
       let yPct = ((clientY - rect.top) / rect.height) * 100;
 
-      // Constrain inside frame with safe margin
-      xPct = Math.max(5, Math.min(95, Math.round(xPct * 10) / 10));
-      yPct = Math.max(5, Math.min(95, Math.round(yPct * 10) / 10));
+      // Coordinates represent the overlay center. Keep the complete logo inside the 9:16 frame.
+      const logoRect = watermarkOverlayRef.current?.getBoundingClientRect();
+      const halfWidthPct = logoRect ? (logoRect.width / rect.width) * 50 : 0;
+      const halfHeightPct = logoRect ? (logoRect.height / rect.height) * 50 : 0;
+      xPct = Math.max(halfWidthPct, Math.min(100 - halfWidthPct, Math.round(xPct * 10) / 10));
+      yPct = Math.max(halfHeightPct, Math.min(100 - halfHeightPct, Math.round(yPct * 10) / 10));
 
       setWatermarkPos({ x: xPct, y: yPct });
       setWatermarkPosition(`custom:${xPct}:${yPct}`);
@@ -220,7 +235,8 @@ export default function SocialPublishPage() {
       if (!rect.height) return;
 
       let yPct = ((clientY - rect.top) / rect.height) * 100;
-      const halfH = ((footerHeight / 1920) * 100) / 2;
+      const bannerRect = footerOverlayRef.current?.getBoundingClientRect();
+      const halfH = bannerRect ? (bannerRect.height / rect.height) * 50 : ((footerHeight / 1920) * 100) / 2;
       yPct = Math.max(halfH, Math.min(100 - halfH, Math.round(yPct * 10) / 10));
 
       setFooterPos({ y: yPct });
@@ -265,7 +281,10 @@ export default function SocialPublishPage() {
   const [showFollowAction, setShowFollowAction] = useState(true);
   const [outroFollowText, setOutroFollowText] = useState('Follow');
   const [outroLongText, setOutroLongText] = useState('');
+  const [outroQrLink, setOutroQrLink] = useState('');
+  const [outroQuoteText, setOutroQuoteText] = useState('');
   const [outroMusicStyle, setOutroMusicStyle] = useState('upbeat');
+  const [asidePreviewTab, setAsidePreviewTab] = useState('video'); // 'video' | 'outro'
 
   const refreshConnections = useCallback(async () => {
     if (!currentUserId) return [];
@@ -328,7 +347,17 @@ export default function SocialPublishPage() {
         const existingBranding = clipResult.edit_options?.branding;
         if (existingBranding) {
           if (existingBranding.watermark_path) setWatermarkPath(existingBranding.watermark_path);
-          if (existingBranding.watermark_position) setWatermarkPosition(existingBranding.watermark_position);
+          if (existingBranding.watermark_position) {
+            setWatermarkPosition(existingBranding.watermark_position);
+            if (existingBranding.watermark_position.startsWith('custom:') || existingBranding.watermark_position.startsWith('coords:')) {
+              const parts = existingBranding.watermark_position.split(':');
+              const parsedX = parseFloat(parts[1]);
+              const parsedY = parseFloat(parts[2]);
+              if (Number.isFinite(parsedX) && Number.isFinite(parsedY)) {
+                setWatermarkPos({ x: Math.max(0, Math.min(100, parsedX)), y: Math.max(0, Math.min(100, parsedY)) });
+              }
+            }
+          }
           if (existingBranding.watermark_scale) setWatermarkScale(Math.round(existingBranding.watermark_scale * 100));
           if (existingBranding.watermark_opacity) setWatermarkOpacity(Math.round(existingBranding.watermark_opacity * 100));
           if (existingBranding.watermark_mode) setWatermarkMode(existingBranding.watermark_mode === 'interval_2s' ? 'always' : existingBranding.watermark_mode);
@@ -336,7 +365,7 @@ export default function SocialPublishPage() {
           if (existingBranding.footer_height) setFooterHeight(existingBranding.footer_height);
           if (existingBranding.footer_position) {
             setFooterPosition(existingBranding.footer_position);
-            if (existingBranding.footer_position.startsWith('custom:')) {
+            if (existingBranding.footer_position.startsWith('custom:') || existingBranding.footer_position.startsWith('coords:')) {
               const parts = existingBranding.footer_position.split(':');
               const parsedY = parseFloat(parts[parts.length - 1]);
               if (!isNaN(parsedY)) setFooterPos({ y: parsedY });
@@ -362,6 +391,8 @@ export default function SocialPublishPage() {
           if (eo.outro_subscribe_text) setOutroSubscribeText(eo.outro_subscribe_text);
           if (eo.outro_follow_text) setOutroFollowText(eo.outro_follow_text);
           if (eo.outro_custom_text) setOutroLongText(eo.outro_custom_text);
+          if (eo.outro_qr_link) setOutroQrLink(eo.outro_qr_link);
+          if (eo.outro_quote_text) setOutroQuoteText(eo.outro_quote_text);
           if (eo.outro_duration) setOutroDuration(Number(eo.outro_duration));
           if (eo.outro_music_style) setOutroMusicStyle(eo.outro_music_style);
         }
@@ -605,6 +636,8 @@ export default function SocialPublishPage() {
         outro_subscribe_text: isCustomMode && showSubscribeAction ? outroSubscribeText : '',
         outro_follow_text: isCustomMode && showFollowAction ? outroFollowText : '',
         outro_custom_text: isCustomMode ? outroLongText : '',
+        outro_qr_link: isCustomMode ? outroQrLink.trim() : '',
+        outro_quote_text: isCustomMode ? outroQuoteText.trim() : '',
         outro_duration: isCustomMode ? outroDuration : (selectedTemplate?.duration || 3.0),
         outro_music_style: outroMusicStyle || 'upbeat',
       };
@@ -921,6 +954,9 @@ export default function SocialPublishPage() {
         return { left: `${watermarkPos.x || 84}%`, top: `${watermarkPos.y || 8}%`, transform: 'translate(-50%, -50%)' };
     }
   };
+
+  // Match the renderer's fit-inside sizing while keeping portrait logos inside the 9:16 frame.
+  const watermarkPreviewWidth = Math.min(Number(watermarkScale) || 20, 96, 96 * watermarkAspectRatio * (16 / 9));
 
   const hasAnyBranding = Boolean(watermarkPreviewUrl || watermarkPath || footerPreviewUrl || footerPath);
   const selectedTemplate = templates.find((t) => t.id === selectedTemplateId);
@@ -1555,11 +1591,11 @@ export default function SocialPublishPage() {
                     </div>
 
                     <label style={{ fontSize: '0.85rem', fontWeight: 600, color: '#586273' }}>
-                      Footer Banner Height: <strong style={{ color: '#16181d' }}>{footerHeight}px</strong>
+                      Footer Banner Size: <strong style={{ color: '#16181d' }}>{footerHeight}px high</strong>
                       <input
                         type="range"
                         min="60"
-                        max="260"
+                        max="768"
                         step="10"
                         value={footerHeight}
                         onChange={(e) => setFooterHeight(Number(e.target.value))}
@@ -1571,13 +1607,12 @@ export default function SocialPublishPage() {
                     <div style={{ background: '#fcfcfb', border: '1px solid #e6e6e1', borderRadius: 9, padding: '0.85rem' }}>
                       <div style={{ fontWeight: 650, fontSize: '0.85rem', marginBottom: '0.4rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                         <span style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                          <Move size={15} color="#1f6f4a" /> Banner Position ({Math.round(footerPos.y)}% from top)
+                          <Move size={15} color="#1f6f4a" /> Banner Position ({Math.round(getSafeFooterY(footerPos.y))}% from top)
                         </span>
                         <span style={{ fontSize: '0.74rem', color: '#1f6f4a', fontWeight: 600 }}>Interactive Draggable</span>
                       </div>
                       <div style={{ display: 'flex', gap: '0.4rem', marginTop: '0.35rem' }}>
                         {[
-                          { id: 'bottom', label: 'Bottom (Default)', y: 94 },
                           { id: 'lower-third', label: 'Lower Third', y: 78 },
                           { id: 'center', label: 'Center', y: 50 },
                           { id: 'top', label: 'Top', y: 8 },
@@ -1586,17 +1621,18 @@ export default function SocialPublishPage() {
                             key={preset.id}
                             type="button"
                             onClick={() => {
-                              setFooterPos({ y: preset.y });
-                              setFooterPosition(`custom:${preset.y}`);
+                              const safeY = getSafeFooterY(preset.y);
+                              setFooterPos({ y: safeY });
+                              setFooterPosition(`custom:${safeY}`);
                             }}
                             style={{
                               flex: 1,
                               padding: '0.4rem 0.5rem',
                               borderRadius: 6,
-                              border: `1px solid ${Math.abs(footerPos.y - preset.y) < 3 ? '#1f6f4a' : '#d9dcd8'}`,
-                              background: Math.abs(footerPos.y - preset.y) < 3 ? '#eef6f0' : '#fff',
-                              color: Math.abs(footerPos.y - preset.y) < 3 ? '#1f6f4a' : '#343943',
-                              fontWeight: Math.abs(footerPos.y - preset.y) < 3 ? 700 : 500,
+                              border: `1px solid ${Math.abs(getSafeFooterY(footerPos.y) - getSafeFooterY(preset.y)) < 3 ? '#1f6f4a' : '#d9dcd8'}`,
+                              background: Math.abs(getSafeFooterY(footerPos.y) - getSafeFooterY(preset.y)) < 3 ? '#eef6f0' : '#fff',
+                              color: Math.abs(getSafeFooterY(footerPos.y) - getSafeFooterY(preset.y)) < 3 ? '#1f6f4a' : '#343943',
+                              fontWeight: Math.abs(getSafeFooterY(footerPos.y) - getSafeFooterY(preset.y)) < 3 ? 700 : 500,
                               fontSize: '0.78rem',
                               cursor: 'pointer',
                             }}
@@ -1872,16 +1908,197 @@ export default function SocialPublishPage() {
                       </label>
                     </div>
 
-                    <label style={{ fontSize: '0.82rem', fontWeight: 600, color: '#586273' }}>
-                      Custom Outro Text / Channel Link (Optional):
+                    {/* Custom Outro Headline */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+                      <label style={{ fontSize: '0.82rem', fontWeight: 600, color: '#16181d' }}>
+                        Custom Outro Text / Headline (Optional):
+                      </label>
                       <input
                         type="text"
                         placeholder="e.g. Follow @harvestai for more tips!"
                         value={outroLongText}
                         onChange={(e) => setOutroLongText(e.target.value)}
-                        style={{ display: 'block', width: '100%', boxSizing: 'border-box', marginTop: '0.35rem', padding: '0.55rem 0.7rem', border: '1px solid #d9dcd8', borderRadius: 6, fontSize: '0.84rem' }}
+                        style={{ display: 'block', width: '100%', boxSizing: 'border-box', padding: '0.55rem 0.7rem', border: '1px solid #d9dcd8', borderRadius: 6, fontSize: '0.84rem' }}
                       />
-                    </label>
+                    </div>
+
+                    {/* Promotional QR Code Link */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <label style={{ fontSize: '0.82rem', fontWeight: 600, color: '#16181d', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                          <QrCode size={15} color="#1f6f4a" />
+                          Promotional Link / QR Code URL (Optional):
+                        </label>
+                        {outroQrLink.trim() && (
+                          <span style={{ fontSize: '0.7rem', color: '#1f6f4a', background: '#eef6f0', padding: '0.15rem 0.45rem', borderRadius: 99, fontWeight: 700, display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                            <Check size={11} /> Scannable QR Active
+                          </span>
+                        )}
+                      </div>
+                      <div style={{ position: 'relative' }}>
+                        <input
+                          type="text"
+                          placeholder="e.g. https://yourstore.com/promo or https://youtube.com/@channel"
+                          value={outroQrLink}
+                          onChange={(e) => setOutroQrLink(e.target.value)}
+                          style={{
+                            display: 'block',
+                            width: '100%',
+                            boxSizing: 'border-box',
+                            padding: '0.55rem 0.7rem 0.55rem 2.2rem',
+                            border: outroQrLink.trim() ? '1.5px solid #1f6f4a' : '1px solid #d9dcd8',
+                            borderRadius: 6,
+                            fontSize: '0.84rem',
+                            background: outroQrLink.trim() ? '#fbfdfb' : '#fff'
+                          }}
+                        />
+                        <Link2 size={14} color="#64748b" style={{ position: 'absolute', left: '0.7rem', top: '50%', transform: 'translateY(-50%)' }} />
+                      </div>
+                      <span style={{ fontSize: '0.74rem', color: '#64748b' }}>
+                        Generates a scannable QR code on the outro. Viewers can scan it with their phones to visit your link directly!
+                      </span>
+                    </div>
+
+                    {/* Promotional Quotes or Custom Texts Box */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+                      <label style={{ fontSize: '0.82rem', fontWeight: 600, color: '#16181d', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                        <Quote size={15} color="#8b5cf6" />
+                        Promotional Quotes / Custom Texts Box (Optional):
+                      </label>
+                      <textarea
+                        rows={2}
+                        placeholder="e.g. “Start building smarter today. Use code HARVEST20 for 20% off!” or any inspiring quote"
+                        value={outroQuoteText}
+                        onChange={(e) => setOutroQuoteText(e.target.value)}
+                        style={{
+                          display: 'block',
+                          width: '100%',
+                          boxSizing: 'border-box',
+                          padding: '0.55rem 0.7rem',
+                          border: outroQuoteText.trim() ? '1.5px solid #8b5cf6' : '1px solid #d9dcd8',
+                          borderRadius: 6,
+                          fontSize: '0.84rem',
+                          fontFamily: 'inherit',
+                          resize: 'vertical',
+                          background: outroQuoteText.trim() ? '#faf5ff' : '#fff'
+                        }}
+                      />
+                      <span style={{ fontSize: '0.74rem', color: '#64748b' }}>
+                        Renders an elegant quote card on the outro with your quote or promotional message.
+                      </span>
+                    </div>
+
+                    {/* Live Visual Preview of Outro Card */}
+                    <div style={{ marginTop: '0.4rem', borderTop: '1px solid #e6e6e1', paddingTop: '0.85rem' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.65rem' }}>
+                        <div style={{ fontSize: '0.82rem', fontWeight: 700, color: '#16181d', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                          <Sparkles size={14} color="#1f6f4a" />
+                          Live Outro Preview Card (Appended to Short)
+                        </div>
+                        <span style={{ fontSize: '0.7rem', color: '#64748b', background: '#f1f5f9', padding: '0.15rem 0.45rem', borderRadius: 99 }}>
+                          {outroDuration}s • {outroMusicStyle}
+                        </span>
+                      </div>
+
+                      <div
+                        style={{
+                          background: 'linear-gradient(180deg, #0b0f19 0%, #111827 50%, #064e3b 100%)',
+                          borderRadius: 12,
+                          padding: '1.25rem 1rem',
+                          color: '#fff',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          alignItems: 'center',
+                          gap: '0.75rem',
+                          boxShadow: '0 8px 24px rgba(0,0,0,0.25)',
+                          border: '1px solid rgba(255,255,255,0.1)',
+                        }}
+                      >
+                        {/* Header */}
+                        <div style={{ textAlign: 'center' }}>
+                          <div style={{ fontSize: '0.92rem', fontWeight: 800, letterSpacing: '0.05em', color: '#38bdf8' }}>
+                            THANKS FOR WATCHING
+                          </div>
+                          <div style={{ fontSize: '0.72rem', color: '#94a3b8', marginTop: 2 }}>
+                            {outroQrLink.trim() ? 'Scan the QR code & stay connected' : 'Support this channel & stay connected'}
+                          </div>
+                        </div>
+
+                        {/* Action Buttons */}
+                        {(showLikeAction || showCommentAction || showSubscribeAction || showFollowAction) && (
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '0.4rem', width: '100%', maxWidth: 360 }}>
+                            {showLikeAction && (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', background: 'rgba(18, 30, 49, 0.95)', border: '1px solid #3b82f6', borderRadius: 8, padding: '0.35rem 0.6rem', fontSize: '0.75rem', fontWeight: 650, color: '#fff' }}>
+                                <span style={{ width: 18, height: 18, borderRadius: 5, background: '#3b82f6', display: 'grid', placeItems: 'center', fontSize: '0.65rem' }}>👍</span>
+                                <span>{outroLikeText || 'Like'}</span>
+                              </div>
+                            )}
+                            {showCommentAction && (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', background: 'rgba(14, 38, 30, 0.95)', border: '1px solid #10b981', borderRadius: 8, padding: '0.35rem 0.6rem', fontSize: '0.75rem', fontWeight: 650, color: '#fff' }}>
+                                <span style={{ width: 18, height: 18, borderRadius: 5, background: '#10b981', display: 'grid', placeItems: 'center', fontSize: '0.65rem' }}>💬</span>
+                                <span>{outroCommentText || 'Comment'}</span>
+                              </div>
+                            )}
+                            {showSubscribeAction && (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', background: 'rgba(42, 18, 22, 0.95)', border: '1px solid #ef4444', borderRadius: 8, padding: '0.35rem 0.6rem', fontSize: '0.75rem', fontWeight: 650, color: '#fff' }}>
+                                <span style={{ width: 18, height: 18, borderRadius: 5, background: '#ef4444', display: 'grid', placeItems: 'center', fontSize: '0.65rem' }}>🔔</span>
+                                <span>{outroSubscribeText || 'Subscribe'}</span>
+                              </div>
+                            )}
+                            {showFollowAction && (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', background: 'rgba(40, 18, 34, 0.95)', border: '1px solid #ec4899', borderRadius: 8, padding: '0.35rem 0.6rem', fontSize: '0.75rem', fontWeight: 650, color: '#fff' }}>
+                                <span style={{ width: 18, height: 18, borderRadius: 5, background: '#ec4899', display: 'grid', placeItems: 'center', fontSize: '0.65rem' }}>❤️</span>
+                                <span>{outroFollowText || 'Follow'}</span>
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Outro Headline text banner */}
+                        {outroLongText.trim() && (
+                          <div style={{ fontSize: '0.8rem', fontWeight: 700, color: '#fff', textAlign: 'center', padding: '0.35rem 0.8rem', background: 'rgba(255,255,255,0.08)', borderRadius: 6, border: '1px solid rgba(255,255,255,0.15)', width: '100%', maxWidth: 360, boxSizing: 'border-box' }}>
+                            👉 {outroLongText.trim()}
+                          </div>
+                        )}
+
+                        {/* Quote Card */}
+                        {outroQuoteText.trim() && (
+                          <div style={{ width: '100%', maxWidth: 360, background: 'rgba(18, 24, 38, 0.95)', border: '1px solid #a855f7', borderRadius: 10, padding: '0.65rem 0.85rem', boxSizing: 'border-box', textAlign: 'center' }}>
+                            <div style={{ fontSize: '0.65rem', fontWeight: 750, color: '#c084fc', letterSpacing: '0.04em', marginBottom: '0.25rem' }}>
+                              ✨ INSPIRING QUOTE / PROMO
+                            </div>
+                            <div style={{ fontSize: '0.78rem', color: '#f1f5f9', fontStyle: 'italic', lineHeight: 1.35 }}>
+                              “{outroQuoteText.trim()}”
+                            </div>
+                          </div>
+                        )}
+
+                        {/* QR Code Container */}
+                        {outroQrLink.trim() ? (
+                          <div style={{ background: '#ffffff', borderRadius: 14, padding: '0.75rem 0.9rem', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.4rem', boxShadow: '0 4px 16px rgba(0,0,0,0.3)', border: '2px solid #38bdf8' }}>
+                            <div style={{ background: '#0f172a', color: '#38bdf8', padding: '0.2rem 0.6rem', borderRadius: 6, fontSize: '0.66rem', fontWeight: 800, letterSpacing: '0.04em' }}>
+                              📱 SCAN TO VISIT / SHOP
+                            </div>
+                            <div style={{ padding: '0.35rem', background: '#fff', borderRadius: 8 }}>
+                              <QRCodeSVG
+                                value={outroQrLink.trim()}
+                                size={116}
+                                level="M"
+                                includeMargin={false}
+                              />
+                            </div>
+                            <div style={{ fontSize: '0.68rem', fontWeight: 700, color: '#334155', maxWidth: 190, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {outroQrLink.trim().replace(/^https?:\/\//, '').replace(/\/$/, '')}
+                            </div>
+                          </div>
+                        ) : (
+                          <div style={{ padding: '0.65rem 1rem', borderRadius: 8, border: '1px dashed rgba(255,255,255,0.25)', background: 'rgba(255,255,255,0.03)', textAlign: 'center', fontSize: '0.74rem', color: '#94a3b8', display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
+                            <QrCode size={16} color="#38bdf8" />
+                            <span>Enter a Promotional Link above to generate a scannable QR Code card</span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
                   </div>
                 )}
 
@@ -2569,13 +2786,64 @@ export default function SocialPublishPage() {
                 )}
               </div>
 
+              {/* Live Preview Mode Switcher (Video Clip vs Outro Screen) */}
+              {outroMode !== 'none' && (
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.35rem', marginBottom: '0.75rem', background: '#f1f5f9', padding: '0.22rem', borderRadius: 8 }}>
+                  <button
+                    type="button"
+                    onClick={() => setAsidePreviewTab('video')}
+                    style={{
+                      padding: '0.36rem 0.5rem',
+                      borderRadius: 6,
+                      border: 'none',
+                      background: asidePreviewTab === 'video' ? '#fff' : 'transparent',
+                      color: asidePreviewTab === 'video' ? '#16181d' : '#64748b',
+                      fontWeight: asidePreviewTab === 'video' ? 700 : 500,
+                      fontSize: '0.78rem',
+                      cursor: 'pointer',
+                      boxShadow: asidePreviewTab === 'video' ? '0 1px 3px rgba(0,0,0,0.08)' : 'none',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '0.3rem',
+                    }}
+                  >
+                    <Film size={13} />
+                    <span>Video Clip</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAsidePreviewTab('outro')}
+                    style={{
+                      padding: '0.36rem 0.5rem',
+                      borderRadius: 6,
+                      border: 'none',
+                      background: asidePreviewTab === 'outro' ? '#fff' : 'transparent',
+                      color: asidePreviewTab === 'outro' ? '#1f6f4a' : '#64748b',
+                      fontWeight: asidePreviewTab === 'outro' ? 700 : 500,
+                      fontSize: '0.78rem',
+                      cursor: 'pointer',
+                      boxShadow: asidePreviewTab === 'outro' ? '0 1px 3px rgba(0,0,0,0.08)' : 'none',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '0.3rem',
+                    }}
+                  >
+                    <QrCode size={13} />
+                    <span>Outro Screen</span>
+                  </button>
+                </div>
+              )}
+
               {/* Video Player Container with Live Overlay Layers */}
               <div
                 ref={videoContainerRef}
                 className="harvest-publish-video-box"
                 style={{
                   position: 'relative',
-                  width: '100%',
+                  width: 'min(100%, 36vh)',
+                  height: 'auto',
                   maxHeight: '64vh',
                   aspectRatio: '9 / 16',
                   background: '#0e1014',
@@ -2586,7 +2854,110 @@ export default function SocialPublishPage() {
                   userSelect: (isDraggingWatermark || isDraggingFooter) ? 'none' : 'auto',
                 }}
               >
-                {videoUrl ? (
+                {asidePreviewTab === 'outro' && outroMode === 'custom' ? (
+                  <div
+                    style={{
+                      width: '100%',
+                      height: '100%',
+                      background: 'linear-gradient(180deg, #0b0f19 0%, #111827 50%, #064e3b 100%)',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      padding: '1.25rem 0.85rem',
+                      boxSizing: 'border-box',
+                      color: '#fff',
+                      gap: '0.65rem',
+                      position: 'relative',
+                      overflowY: 'auto',
+                    }}
+                  >
+                    {/* Header */}
+                    <div style={{ textAlign: 'center' }}>
+                      <div style={{ fontSize: '0.88rem', fontWeight: 800, letterSpacing: '0.05em', color: '#38bdf8' }}>
+                        THANKS FOR WATCHING
+                      </div>
+                      <div style={{ fontSize: '0.68rem', color: '#94a3b8', marginTop: 2 }}>
+                        {outroQrLink.trim() ? 'Scan the QR code & stay connected' : 'Support this channel & stay connected'}
+                      </div>
+                    </div>
+
+                    {/* Action buttons */}
+                    {(showLikeAction || showCommentAction || showSubscribeAction || showFollowAction) && (
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '0.35rem', width: '100%', maxWidth: 240 }}>
+                        {showLikeAction && (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', background: 'rgba(18, 30, 49, 0.95)', border: '1px solid #3b82f6', borderRadius: 6, padding: '0.3rem 0.45rem', fontSize: '0.72rem', fontWeight: 650 }}>
+                            <span style={{ fontSize: '0.65rem' }}>👍</span> <span>{outroLikeText || 'Like'}</span>
+                          </div>
+                        )}
+                        {showCommentAction && (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', background: 'rgba(14, 38, 30, 0.95)', border: '1px solid #10b981', borderRadius: 6, padding: '0.3rem 0.45rem', fontSize: '0.72rem', fontWeight: 650 }}>
+                            <span style={{ fontSize: '0.65rem' }}>💬</span> <span>{outroCommentText || 'Comment'}</span>
+                          </div>
+                        )}
+                        {showSubscribeAction && (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', background: 'rgba(42, 18, 22, 0.95)', border: '1px solid #ef4444', borderRadius: 6, padding: '0.3rem 0.45rem', fontSize: '0.72rem', fontWeight: 650 }}>
+                            <span style={{ fontSize: '0.65rem' }}>🔔</span> <span>{outroSubscribeText || 'Subscribe'}</span>
+                          </div>
+                        )}
+                        {showFollowAction && (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', background: 'rgba(40, 18, 34, 0.95)', border: '1px solid #ec4899', borderRadius: 6, padding: '0.3rem 0.45rem', fontSize: '0.72rem', fontWeight: 650 }}>
+                            <span style={{ fontSize: '0.65rem' }}>❤️</span> <span>{outroFollowText || 'Follow'}</span>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Headline banner */}
+                    {outroLongText.trim() && (
+                      <div style={{ fontSize: '0.75rem', fontWeight: 700, color: '#fff', textAlign: 'center', padding: '0.28rem 0.6rem', background: 'rgba(255,255,255,0.08)', borderRadius: 6, border: '1px solid rgba(255,255,255,0.15)', maxWidth: 240, width: '100%', boxSizing: 'border-box' }}>
+                        👉 {outroLongText.trim()}
+                      </div>
+                    )}
+
+                    {/* Quote Card */}
+                    {outroQuoteText.trim() && (
+                      <div style={{ width: '100%', maxWidth: 240, background: 'rgba(18, 24, 38, 0.95)', border: '1px solid #a855f7', borderRadius: 8, padding: '0.45rem 0.65rem', boxSizing: 'border-box', textAlign: 'center' }}>
+                        <div style={{ fontSize: '0.6rem', fontWeight: 750, color: '#c084fc', marginBottom: '0.15rem' }}>
+                          ✨ INSPIRING QUOTE / PROMO
+                        </div>
+                        <div style={{ fontSize: '0.7rem', color: '#f1f5f9', fontStyle: 'italic', lineHeight: 1.3 }}>
+                          “{outroQuoteText.trim()}”
+                        </div>
+                      </div>
+                    )}
+
+                    {/* QR Code */}
+                    {outroQrLink.trim() ? (
+                      <div style={{ background: '#fff', borderRadius: 12, padding: '0.55rem 0.7rem', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.3rem', border: '2px solid #38bdf8' }}>
+                        <div style={{ background: '#0f172a', color: '#38bdf8', padding: '0.15rem 0.45rem', borderRadius: 5, fontSize: '0.6rem', fontWeight: 800 }}>
+                          📱 SCAN TO VISIT / SHOP
+                        </div>
+                        <QRCodeSVG value={outroQrLink.trim()} size={92} level="M" />
+                        <div style={{ fontSize: '0.6rem', fontWeight: 700, color: '#334155', maxWidth: 130, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {outroQrLink.trim().replace(/^https?:\/\//, '').replace(/\/$/, '')}
+                        </div>
+                      </div>
+                    ) : (
+                      <div style={{ padding: '0.5rem 0.75rem', borderRadius: 8, border: '1px dashed rgba(255,255,255,0.25)', background: 'rgba(255,255,255,0.03)', textAlign: 'center', fontSize: '0.68rem', color: '#94a3b8', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                        <QrCode size={13} color="#38bdf8" />
+                        <span>Enter link to generate QR code</span>
+                      </div>
+                    )}
+                  </div>
+                ) : asidePreviewTab === 'outro' && outroMode === 'template' && selectedTemplate ? (
+                  <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: '#000', color: '#fff' }}>
+                    {selectedTemplate.preview_video_url ? (
+                      <video src={selectedTemplate.preview_video_url} autoPlay loop playsInline style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+                    ) : (
+                      <div style={{ textAlign: 'center', padding: '1rem' }}>
+                        <Film size={28} color="#10b981" />
+                        <div style={{ marginTop: '0.5rem', fontWeight: 700, fontSize: '0.9rem' }}>{selectedTemplate.name}</div>
+                        <div style={{ fontSize: '0.74rem', color: '#94a3b8' }}>Template Outro Screen ({selectedTemplate.duration || 3}s)</div>
+                      </div>
+                    )}
+                  </div>
+                ) : videoUrl ? (
                   <>
                     <video
                       src={videoUrl}
@@ -2601,17 +2972,16 @@ export default function SocialPublishPage() {
                         {/* Footer Banner (DRAGGABLE & MOVABLE ANYWHERE VERTICALLY ON THE VIDEO) */}
                         {footerPreviewUrl && (
                           <div
+                            ref={footerOverlayRef}
                             onMouseDown={handleFooterMouseDown}
                             onTouchStart={handleFooterTouchStart}
                             style={{
                               position: 'absolute',
-                              top: `${footerPos.y}%`,
+                              top: `${getSafeFooterY(footerPos.y)}%`,
                               transform: 'translateY(-50%)',
                               left: 0,
                               right: 0,
                               height: `${(footerHeight / 1920) * 100}%`,
-                              minHeight: '6%',
-                              maxHeight: '28%',
                               zIndex: 25,
                               pointerEvents: 'auto',
                               cursor: isDraggingFooter ? 'grabbing' : 'grab',
@@ -2634,7 +3004,7 @@ export default function SocialPublishPage() {
                                 style={{
                                   width: '100%',
                                   height: '100%',
-                                  objectFit: 'cover',
+                                  objectFit: 'contain',
                                   display: 'block',
                                   pointerEvents: 'none',
                                   filter: 'drop-shadow(0 2px 8px rgba(0,0,0,0.6))',
@@ -2660,7 +3030,7 @@ export default function SocialPublishPage() {
                                 backdropFilter: 'blur(4px)',
                                 zIndex: 35,
                               }}>
-                                <Move size={10} /> {isDraggingFooter ? `${Math.round(footerPos.y)}% from top` : 'Drag to reposition banner'}
+                                <Move size={10} /> {isDraggingFooter ? `${Math.round(getSafeFooterY(footerPos.y))}% from top` : 'Drag to reposition banner'}
                               </div>
                             </div>
                           </div>
@@ -2669,6 +3039,7 @@ export default function SocialPublishPage() {
                         {/* Watermark Logo (DRAGGABLE & MOVABLE ANYWHERE ON THE VIDEO) */}
                         {watermarkPreviewUrl && (
                           <div
+                            ref={watermarkOverlayRef}
                             onMouseDown={handleWatermarkMouseDown}
                             onTouchStart={handleWatermarkTouchStart}
 
@@ -2676,8 +3047,7 @@ export default function SocialPublishPage() {
                               position: 'absolute',
                               zIndex: 30,
                               opacity: watermarkOpacity / 100,
-                              width: `${watermarkScale}%`,
-                              maxWidth: '96%',
+                              width: `${watermarkPreviewWidth}%`,
                               pointerEvents: 'auto',
                               cursor: isDraggingWatermark ? 'grabbing' : 'grab',
                               userSelect: 'none',
@@ -2696,9 +3066,17 @@ export default function SocialPublishPage() {
                                 src={watermarkPreviewUrl}
                                 alt="Watermark"
                                 draggable={false}
+                                onLoad={(event) => {
+                                  const { naturalWidth, naturalHeight } = event.currentTarget;
+                                  if (naturalWidth > 0 && naturalHeight > 0) {
+                                    const ratio = naturalWidth / naturalHeight;
+                                    setWatermarkAspectRatio((current) => Math.abs(current - ratio) > 0.001 ? ratio : current);
+                                  }
+                                }}
                                 style={{
                                   width: '100%',
                                   height: 'auto',
+                                  objectFit: 'contain',
                                   display: 'block',
                                   filter: 'drop-shadow(0 2px 8px rgba(0,0,0,0.6))',
                                   pointerEvents: 'none',

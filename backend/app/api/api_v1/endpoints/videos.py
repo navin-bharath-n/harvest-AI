@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
@@ -226,6 +226,7 @@ async def upload_video(
     unique_filename = f"{uuid.uuid4()}{file_ext}"
     file_path = os.path.join(UPLOAD_DIR, unique_filename)
     from app.services import object_storage
+    storage_path = None
     if object_storage.enabled():
         try:
             file.file.seek(0, os.SEEK_END)
@@ -236,16 +237,21 @@ async def upload_video(
             storage_path = object_storage.upload_fileobj(
                 file.file, f"originals/{unique_filename}", file.content_type
             )
+            file_path = object_storage.local_path(storage_path)
         except HTTPException:
             raise
         except Exception as e:
-            logger.error(f"Failed to upload video to remote storage: {e}")
-            raise HTTPException(status_code=502, detail="Failed to store video in object storage")
-        file_path = object_storage.local_path(storage_path)
+            logger.warning(f"Remote storage upload failed ({e}). Gracefully falling back to local storage.")
+            storage_path = None
+            file_path = os.path.join(UPLOAD_DIR, unique_filename)
+            try:
+                file.file.seek(0)
+            except Exception:
+                pass
     else:
         storage_path = None
     resolved_path = os.path.abspath(file_path)
-    if not object_storage.enabled() and not resolved_path.startswith(os.path.abspath(UPLOAD_DIR)):
+    if not storage_path and not resolved_path.startswith(os.path.abspath(UPLOAD_DIR)):
         raise HTTPException(status_code=400, detail="Invalid file destination")
 
     # Stream to local disk in development; B2 upload streams through its SDK.
@@ -313,6 +319,12 @@ async def upload_video(
         db.add(db_video)
         db.commit()
     db.refresh(db_video)
+
+    from app.tasks.video_tasks import transcribe_video_task
+    try:
+        dispatch_task(transcribe_video_task, db_video.id)
+    except Exception as e:
+        logger.warning(f"Could not auto-dispatch transcription on upload: {e}")
 
     return db_video
 
@@ -636,15 +648,19 @@ def caption_full_video(
 
     raw_title = db_video.original_filename or f"Video #{db_video.id}"
     clean_title = re.sub(r'\.(mp4|mov|mkv|webm|avi|m4v)$', '', raw_title, flags=re.IGNORECASE).strip()
-    title = f"{clean_title} (Full Captions)"
+    title = f"{clean_title} (Full Video - No Captions)" if request.caption_style == "none" else f"{clean_title} (Full Captions)"
 
     edit_opts = {
         "is_full_video": True,
         "caption_style": request.caption_style,
+        "primary_color": request.primary_color,
+        "highlight_color": request.highlight_color,
         "translate_language": request.translate_language,
         "caption_language": request.caption_language,
         "framing_mode": "original",
         "font_size": request.font_size,
+        "source_language": request.source_language,
+        "retranscribe": request.retranscribe,
     }
 
     db_clip = models.Clip(
@@ -666,7 +682,10 @@ def caption_full_video(
         dispatch_required_queue(caption_full_video_task, db_video.id, db_clip.id, edit_opts)
     except HTTPException:
         db_clip.status = models.ClipStatus.FAILED
-        db_video.status = models.VideoStatus.FAILED
+        opts = dict(db_clip.edit_options or {})
+        opts["error"] = "Failed to dispatch caption task"
+        db_clip.edit_options = opts
+        flag_modified(db_clip, "edit_options")
         db.commit()
         raise
 
@@ -730,6 +749,39 @@ def get_video_media(
         raise HTTPException(status_code=404, detail="Video media not found")
     return FileResponse(path, filename=os.path.basename(video.original_filename))
 
+@router.get("/clip-media/{clip_id}/media-url")
+def get_clip_media_url(
+    clip_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    clip = get_user_clip(clip_id, current_user.id, db)
+    if not clip.storage_path:
+        raise HTTPException(status_code=404, detail="Clip media not found")
+    from app.services import object_storage
+    if not object_storage.is_remote(clip.storage_path):
+        return {"direct": False}
+    return {"direct": True, "url": object_storage.url(clip.storage_path)}
+
+
+@router.get("/clip-media/{clip_id}/download-url")
+def get_clip_media_download_url(
+    clip_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    clip = get_user_clip(clip_id, current_user.id, db)
+    if not clip.storage_path:
+        raise HTTPException(status_code=404, detail="Clip media not found")
+    from app.services import object_storage
+    filename = (clip.title or f"clip_{clip_id}").strip()
+    if not filename.lower().endswith(".mp4"):
+        filename += ".mp4"
+    if not object_storage.is_remote(clip.storage_path):
+        return {"direct": False, "filename": filename}
+    return {"direct": True, "url": object_storage.url(clip.storage_path, filename=filename), "filename": filename}
+
+
 @router.get("/clip-media/{clip_id}")
 def get_clip_media(
     clip_id: int,
@@ -741,30 +793,61 @@ def get_clip_media(
         raise HTTPException(status_code=404, detail="Clip media not found")
     from app.services import object_storage
     if object_storage.is_remote(clip.storage_path):
-        try:
-            remote_object = object_storage.open_read(clip.storage_path)
-        except Exception as exc:
-            logger.exception("Unable to open stored clip %s", clip_id)
-            raise HTTPException(status_code=502, detail="Stored clip could not be loaded") from exc
-        headers = {}
-        if remote_object.get("ContentLength") is not None:
-            headers["Content-Length"] = str(remote_object["ContentLength"])
-        def stream_remote_clip():
-            body = remote_object["Body"]
-            try:
-                yield from body.iter_chunks(chunk_size=1024 * 1024)
-            finally:
-                body.close()
-
-        return StreamingResponse(
-            stream_remote_clip(),
-            media_type=remote_object.get("ContentType") or "video/mp4",
-            headers=headers,
-        )
+        return RedirectResponse(object_storage.url(clip.storage_path))
     path = _resolve_path(clip.storage_path)
     if not os.path.isfile(path):
         raise HTTPException(status_code=404, detail="Clip media not found")
     return FileResponse(path, filename=os.path.basename(path), media_type="video/mp4")
+
+
+@router.get("/clip-media/{clip_id}/download")
+def download_clip_media(
+    clip_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    clip = get_user_clip(clip_id, current_user.id, db)
+    if not clip.storage_path:
+        raise HTTPException(status_code=404, detail="Clip media not found")
+    from app.services import object_storage
+    filename = (clip.title or f"clip_{clip_id}").strip()
+    if not filename.lower().endswith(".mp4"):
+        filename += ".mp4"
+    if object_storage.is_remote(clip.storage_path):
+        return RedirectResponse(object_storage.url(clip.storage_path, filename=filename))
+    path = _resolve_path(clip.storage_path)
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="Clip media not found")
+    return FileResponse(path, filename=filename, media_type="video/mp4")
+
+
+@router.get("/clip-media/{clip_id}/subtitles")
+def get_clip_subtitles(
+    clip_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """Serves the generated SRT subtitle file for a clip."""
+    clip = get_user_clip(clip_id, current_user.id, db)
+    srt_path = (clip.edit_options or {}).get("srt_path")
+    if not srt_path:
+        raise HTTPException(status_code=404, detail="Subtitles not found for this clip")
+
+    clean_title = (clip.title or f"clip_{clip_id}").strip()
+    if clean_title.lower().endswith(".mp4"):
+        clean_title = clean_title[:-4]
+    filename = f"{clean_title}.srt"
+
+    from app.services import object_storage
+    if object_storage.is_remote(srt_path):
+        return RedirectResponse(object_storage.url(srt_path, filename=filename))
+
+    path = _resolve_path(srt_path)
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="Subtitle file not found on disk")
+
+    return FileResponse(path, filename=filename, media_type="text/plain; charset=utf-8")
+
 
 @router.get("/{video_id}/moments/{moment_id}/audio")
 def get_moment_audio(
@@ -901,6 +984,8 @@ def select_moment(
         "selected_moment": dict(moment),
         "transcript_snapshot": transcript_snapshot,
         "caption_style": request.caption_style,
+        "primary_color": request.primary_color,
+        "highlight_color": request.highlight_color,
         "caption_language": request.caption_language,
         "translate_language": request.translate_language,
         "dub_voice": request.dub_voice,
@@ -1029,6 +1114,8 @@ def read_single_video(
 @router.post("/{video_id}/transcribe", response_model=schemas.Video)
 def transcribe_video(
     video_id: int,
+    language: Optional[str] = Query(None, description="Optional spoken language (e.g. 'ta' for Tamil, 'en' for English)"),
+    force_refresh: bool = Query(False, description="Force re-transcription even if a transcript exists"),
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
@@ -1037,7 +1124,7 @@ def transcribe_video(
     if db_video.status != models.VideoStatus.COMPLETED:
         raise HTTPException(status_code=400, detail="Video must be fully processed before transcription")
 
-    if db_video.transcription_status == models.TranscriptionStatus.PROCESSING:
+    if not force_refresh and db_video.transcription_status == models.TranscriptionStatus.PROCESSING:
         raise HTTPException(status_code=400, detail="Transcription is already in progress")
 
     # Set status to pending and trigger task
@@ -1046,9 +1133,97 @@ def transcribe_video(
     db.refresh(db_video)
 
     from app.tasks.video_tasks import transcribe_video_task
-    dispatch_task(transcribe_video_task, db_video.id)
+    dispatch_task(transcribe_video_task, db_video.id, language)
 
     return db_video
+
+@router.post("/{video_id}/ensure-transcript", response_model=schemas.Video)
+def ensure_video_transcript(
+    video_id: int,
+    language: Optional[str] = Query(None, description="Optional spoken language (e.g. 'ta' for Tamil)"),
+    force_refresh: bool = Query(False, description="Force re-transcription instead of returning cache"),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Ultra-fast transcription endpoint (VEED style):
+    If transcript is already cached in DB and force_refresh is False, returns it immediately (< 0.01s).
+    If not, extracts audio (~1s) and transcribes with Groq Whisper (~2s).
+    Stores ONLY the JSON transcript in PostgreSQL, creating 0 video files.
+    """
+    db_video = get_user_video(video_id, current_user.id, db)
+    from app.services.transcription_service import normalize_whisper_language
+    norm_lang = normalize_whisper_language(language)
+
+    cached_meta = dict(db_video.content_analysis or {}).get("transcription_meta", {})
+    cached_lang = cached_meta.get("language")
+
+    # 1. Return immediately if transcript is already cached and matches requested language
+    should_reuse_cache = (
+        not force_refresh
+        and db_video.transcription_status == models.TranscriptionStatus.COMPLETED
+        and db_video.transcript
+        and len(db_video.transcript) > 0
+        and (norm_lang is None or cached_lang == norm_lang or cached_lang is None)
+    )
+    if should_reuse_cache:
+        logger.info(
+            f"[Checkpoint E - DB Transcript Roundtrip] (Checkpoint C) VideoID={video_id} Reusing cached transcript "
+            f"({len(db_video.transcript)} words, Lang={cached_lang or 'auto'})"
+        )
+        return db_video
+
+    from app.tasks.video_tasks import _resolve_video_path, _resolve_or_extract_video_audio
+    from app.services.transcription_service import transcription_service
+    from sqlalchemy.orm.attributes import flag_modified
+
+    video_path = _resolve_video_path(db_video.storage_path)
+    if not os.path.exists(video_path):
+        raise HTTPException(status_code=404, detail="Video file not found")
+
+    try:
+        # Extract audio track (~1s)
+        audio_path = _resolve_or_extract_video_audio(db_video, video_path, db)
+        if not audio_path or not os.path.exists(audio_path):
+            raise RuntimeError("Could not extract audio track for video transcription.")
+
+        # Transcribe with Groq Cloud Whisper (~2s)
+        transcription_result = transcription_service.transcribe(audio_path, language=norm_lang)
+        if isinstance(transcription_result, dict):
+            words = transcription_result.get("words", [])
+        else:
+            words = list(transcription_result or [])
+
+        db_video.transcript = words
+        flag_modified(db_video, "transcript")
+        db_video.transcription_status = models.TranscriptionStatus.COMPLETED
+
+        # Track transcription metadata in content_analysis safely
+        meta_dict = dict(db_video.content_analysis or {})
+        meta_dict["transcription_meta"] = {
+            "language": norm_lang or "auto",
+            "provider": "groq",
+            "model": "whisper-large-v3",
+            "word_count": len(words),
+            "version": 2
+        }
+        db_video.content_analysis = meta_dict
+        flag_modified(db_video, "content_analysis")
+
+        db.commit()
+        db.refresh(db_video)
+        sample_first = words[0]["text"] if words else ""
+        sample_last = words[-1]["text"] if words else ""
+        logger.info(
+            f"[Checkpoint E - DB Transcript Roundtrip] (Checkpoint C) VideoID={video_id} Words={len(words)} "
+            f"Language={norm_lang or 'auto'} Status=COMPLETED First='{sample_first[:15]}' Last='{sample_last[:15]}'"
+        )
+        return db_video
+    except Exception as e:
+        logger.error(f"Failed to ensure transcript for video {video_id}: {e}", exc_info=True)
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to transcribe audio: {e}")
+
 
 @router.post("/{video_id}/analyze", response_model=schemas.Video)
 def analyze_video(
@@ -1238,6 +1413,10 @@ def generate_master_shorts(
         request.audio_theme,
         request.framing_mode or "fit_blur",
         request.caption_style or "pop",
+        request.source_language,
+        request.retranscribe or False,
+        request.primary_color,
+        request.highlight_color,
         queue='aishorts-queue'
     )
 
@@ -1374,21 +1553,27 @@ def get_video_status(
         for c in db_video.clips
     )
 
-    if db_video.status and db_video.status.value == "completed":
+    if has_completed_clip:
+        stage = "done"
+        stage_label = "Captions generated successfully."
+        is_finished = True
+    elif db_video.status and db_video.status.value == "completed":
         if len(completed_variations) >= TOTAL_VARIATIONS:
             stage = "done"
             stage_label = "All 5 variations ready."
-        elif has_completed_clip:
-            stage = "done"
-            stage_label = "Captions generated successfully."
+            is_finished = True
         elif len(completed_variations) > 0:
             stage = "rendering"
             stage_label = f"Rendering variations ({len(completed_variations)}/{TOTAL_VARIATIONS} ready)..."
+            is_finished = False
         else:
             stage = "idle"
             stage_label = "Ready to generate"
+            is_finished = False
+    else:
+        is_finished = False
 
-    is_finished = (
+    is_finished = is_finished or (
         db_video.status == models.VideoStatus.COMPLETED
         and (len(completed_variations) >= TOTAL_VARIATIONS or has_completed_clip)
     )
@@ -1400,7 +1585,7 @@ def get_video_status(
         "original_filename": db_video.original_filename or f"Video {video_id}",
         "stage": stage,
         "stage_label": stage_label,
-        "video_status": db_video.status.value if db_video.status else "pending",
+        "video_status": "completed" if is_finished else (db_video.status.value if db_video.status else "pending"),
         "transcription_status": transcription_stat,
         "analysis_status": analysis_stat,
         "highlight_status": highlight_stat,
@@ -1581,7 +1766,12 @@ def delete_video(
     db_video = get_user_video(video_id, current_user.id, db)
 
     from app.services import object_storage
-    object_storage.delete(db_video.storage_path)
+    if db_video.storage_path:
+        try:
+            object_storage.delete(db_video.storage_path)
+        except Exception as e:
+            logger.warning(f"Could not remove video file {db_video.storage_path}: {e}")
+
     _remove_safe(db_video.audio_path)
     if db_video.storage_path:
         base_name = os.path.splitext(os.path.basename(db_video.storage_path))[0]
@@ -1592,6 +1782,11 @@ def delete_video(
         except Exception:
             pass
     for clip in db_video.clips:
+        if clip.storage_path:
+            try:
+                object_storage.delete(clip.storage_path)
+            except Exception as e:
+                logger.warning(f"Could not remove clip file {clip.storage_path}: {e}")
         _remove_safe(clip.storage_path)
 
     db.delete(db_video)
@@ -1649,6 +1844,55 @@ def translate_transcript(
     except Exception as e:
         logger.error(f"Error in translate_transcript: {e}", exc_info=True)
         return request.words
+    finally:
+        with _TRANSLATION_PROGRESS_LOCK:
+            event.set()
+            _TRANSLATION_PROGRESS_EVENTS.pop(cache_key, None)
+
+@router.post("/{video_id}/translated-transcript")
+def get_translated_video_transcript(
+    video_id: int,
+    target_lang: str = "English",
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Returns translated transcript words for live caption preview with distributed timestamps.
+    Results are cached in memory for instant reuse.
+    """
+    db_video = get_user_video(video_id, current_user.id, db)
+    if not db_video.transcript:
+        return {"words": []}
+
+    target = (target_lang or "").strip()
+    if target.lower() in ["", "none", "original"]:
+        return {"words": db_video.transcript}
+
+    cache_key = f"vid_{video_id}_{target.lower()}"
+    with _TRANSLATION_PROGRESS_LOCK:
+        if cache_key in _TRANSCRIPT_TRANSLATION_CACHE:
+            return {"words": _TRANSCRIPT_TRANSLATION_CACHE[cache_key]}
+        if cache_key in _TRANSLATION_PROGRESS_EVENTS:
+            event = _TRANSLATION_PROGRESS_EVENTS[cache_key]
+            wait_for_existing = True
+        else:
+            event = threading.Event()
+            _TRANSLATION_PROGRESS_EVENTS[cache_key] = event
+            wait_for_existing = False
+
+    if wait_for_existing:
+        event.wait(timeout=30)
+        return {"words": _TRANSCRIPT_TRANSLATION_CACHE.get(cache_key, db_video.transcript)}
+
+    from app.services.translation_service import translate_and_distribute_words
+    try:
+        translated = translate_and_distribute_words(db_video.transcript, target)
+        if translated:
+            _TRANSCRIPT_TRANSLATION_CACHE[cache_key] = translated
+        return {"words": translated or db_video.transcript}
+    except Exception as e:
+        logger.error(f"Error translating transcript for video {video_id}: {e}", exc_info=True)
+        return {"words": db_video.transcript}
     finally:
         with _TRANSLATION_PROGRESS_LOCK:
             event.set()
@@ -1977,6 +2221,8 @@ def apply_clip_branding(
                 subscribe_text=request.outro_subscribe_text or "Subscribe",
                 follow_text=request.outro_follow_text or "",
                 long_text=request.outro_custom_text or "",
+                qr_link=request.outro_qr_link or "",
+                quote_text=request.outro_quote_text or "",
                 duration=float(request.outro_duration or 3.0),
                 music_preset=request.outro_music_style or "upbeat",
             )

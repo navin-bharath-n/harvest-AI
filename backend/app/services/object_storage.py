@@ -5,10 +5,13 @@ remote storage is not configured, the application uses local uploads.
 """
 import os
 import tempfile
+import logging
 from functools import lru_cache
 from pathlib import Path
 
 from app.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 def _configured(values) -> bool:
@@ -155,7 +158,7 @@ def local_path(storage_path: str) -> str:
     return str(target)
 
 
-def url(storage_path: str) -> str:
+def url(storage_path: str, filename: str = None) -> str:
     """Create a time-limited URL for browser playback or external fetchers."""
     parsed = _parse(storage_path)
     if not parsed:
@@ -163,8 +166,11 @@ def url(storage_path: str) -> str:
     provider, bucket, key = parsed
     ttl = (settings.STORAGE_PRESIGNED_URL_TTL if provider == "r2"
            else settings.B2_PRESIGNED_URL_TTL)
+    params = {"Bucket": bucket, "Key": key}
+    if filename:
+        params["ResponseContentDisposition"] = f'attachment; filename="{filename}"'
     return _client_for(provider).generate_presigned_url(
-        "get_object", Params={"Bucket": bucket, "Key": key},
+        "get_object", Params=params,
         ExpiresIn=ttl,
     )
 
@@ -179,12 +185,20 @@ def open_read(storage_path: str):
 
 
 def delete(storage_path: str) -> None:
+    if not storage_path:
+        return
     parsed = _parse(storage_path)
     if parsed:
         provider, bucket, key = parsed
-        _client_for(provider).delete_object(Bucket=bucket, Key=key)
-    elif storage_path and os.path.isfile(storage_path):
-        os.remove(storage_path)
+        try:
+            _client_for(provider).delete_object(Bucket=bucket, Key=key)
+        except Exception as e:
+            logger.warning(f"Could not delete remote object from {provider}://{bucket}/{key}: {e}")
+    elif os.path.isfile(storage_path):
+        try:
+            os.remove(storage_path)
+        except Exception as e:
+            logger.warning(f"Could not delete local file {storage_path}: {e}")
 
 
 @lru_cache(maxsize=2)

@@ -27,19 +27,66 @@ export default function StudioPage() {
   const navigate = useNavigate();
   const location = useLocation();
 
-  // Projects State
-  const [projects, setProjects] = useState([]);
-  const [activeProjectId, setActiveProjectId] = useState(null);
+  // Projects State (with localStorage cache for instant 0ms restoration)
+  const [projects, setProjects] = useState(() => {
+    try {
+      const cached = localStorage.getItem('harvest_cached_projects');
+      return cached ? JSON.parse(cached) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [activeProjectId, setActiveProjectId] = useState(() => {
+    try {
+      const cached = localStorage.getItem('harvest_active_project_id');
+      return cached ? Number(cached) : null;
+    } catch {
+      return null;
+    }
+  });
+  const [isInitialLoadingProjects, setIsInitialLoadingProjects] = useState(() => {
+    try {
+      return !localStorage.getItem('harvest_cached_projects');
+    } catch {
+      return true;
+    }
+  });
   const [showNewProjectModal, setShowNewProjectModal] = useState(false);
   const [newProjectName, setNewProjectName] = useState('');
   const [newProjectDesc, setNewProjectDesc] = useState('');
   const [projectModalError, setProjectModalError] = useState('');
   const [isCreatingProject, setIsCreatingProject] = useState(false);
 
-  // Videos & Active Pipeline State
-  const [videos, setVideos] = useState([]);
+  // Videos & Active Pipeline State (with localStorage cache for instant 0ms restoration)
+  const [videos, setVideos] = useState(() => {
+    try {
+      const cachedProjId = localStorage.getItem('harvest_active_project_id');
+      if (cachedProjId) {
+        const cachedVids = localStorage.getItem(`harvest_cached_videos_${cachedProjId}`);
+        return cachedVids ? JSON.parse(cachedVids) : [];
+      }
+      return [];
+    } catch {
+      return [];
+    }
+  });
   const [videoSearchQuery, setVideoSearchQuery] = useState('');
-  const [selectedVideo, setSelectedVideo] = useState(null);
+  const [selectedVideo, setSelectedVideo] = useState(() => {
+    try {
+      const cachedProjId = localStorage.getItem('harvest_active_project_id');
+      const cachedVidId = localStorage.getItem('harvest_active_video_id');
+      if (cachedProjId && cachedVidId) {
+        const cachedVids = localStorage.getItem(`harvest_cached_videos_${cachedProjId}`);
+        if (cachedVids) {
+          const list = JSON.parse(cachedVids);
+          return list.find((v) => v.id === Number(cachedVidId)) || null;
+        }
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  });
   const [mobileTab, setMobileTab] = useState('editor'); // 'editor' | 'footage'
 
   // On mobile view: auto-switch to 'editor' tab when a video is selected
@@ -71,9 +118,16 @@ export default function StudioPage() {
   const [clipMediaClipId, setClipMediaClipId] = useState(null);
   const [sourceVideoUrl, setSourceVideoUrl] = useState('');
   const [captionStyle, setCaptionStyle] = useState('pop');
+  const [useCustomCaptionColors, setUseCustomCaptionColors] = useState(false);
+  const [captionTextColor, setCaptionTextColor] = useState('#FFFFFF');
+  const [captionHighlightColor, setCaptionHighlightColor] = useState('#FFD700');
+  const [sourceLanguage, setSourceLanguage] = useState('auto');
+  const [forceRetranscribe, setForceRetranscribe] = useState(false);
   const [outputLanguage, setOutputLanguage] = useState('original');
   const [dubVoice, setDubVoice] = useState(false);
   const [speakerGender, setSpeakerGender] = useState('female');
+
+  const sourceVideoRef = useRef(null);
   // Custom Audio & Background Music State
   const [audioMode, setAudioMode] = useState('original'); // 'original' | 'mix' | 'replace' | 'mute'
   const [audioSourceType, setAudioSourceType] = useState('preset'); // 'preset' | 'upload'
@@ -85,7 +139,6 @@ export default function StudioPage() {
   const [isUploadingAudio, setIsUploadingAudio] = useState(false);
   const [audioUploadError, setAudioUploadError] = useState('');
   const audioFileInputRef = useRef(null);
-  const generatedOutputRef = useRef(null);
 
   // Preset Audio Preview State & Pop-up Modal
   const [showPresetModal, setShowPresetModal] = useState(false);
@@ -222,6 +275,10 @@ export default function StudioPage() {
     if (selectedClip?.edit_options?.caption_style) {
       setCaptionStyle(selectedClip.edit_options.caption_style);
     }
+    const editOptions = selectedClip?.edit_options || {};
+    setUseCustomCaptionColors(Boolean(editOptions.primary_color || editOptions.highlight_color));
+    setCaptionTextColor(editOptions.primary_color || '#FFFFFF');
+    setCaptionHighlightColor(editOptions.highlight_color || '#FFD700');
   }, [selectedClip?.id]);
 
   useEffect(() => {
@@ -257,10 +314,11 @@ export default function StudioPage() {
     let active = true;
     setClipMediaUrl('');
     setClipMediaClipId(null);
+    setClipPlaybackError(false);
     if (!selectedClip?.id || selectedClip.status !== 'completed' || !selectedClip.storage_path) return undefined;
     api.getClipMedia(selectedClip.id).then((url) => {
       if (!active) {
-        URL.revokeObjectURL(url);
+        if (url && typeof url === 'string' && url.startsWith('blob:')) URL.revokeObjectURL(url);
         return;
       }
       currentUrl = url;
@@ -271,7 +329,7 @@ export default function StudioPage() {
     });
     return () => {
       active = false;
-      if (currentUrl) URL.revokeObjectURL(currentUrl);
+      if (currentUrl && typeof currentUrl === 'string' && currentUrl.startsWith('blob:')) URL.revokeObjectURL(currentUrl);
     };
   }, [selectedClip?.id, selectedClip?.status, selectedClip?.storage_path]);
 
@@ -371,14 +429,39 @@ export default function StudioPage() {
   const loadProjects = useCallback(async () => {
     try {
       const data = await api.getProjects();
-      setProjects(data || []);
-      if (data && data.length > 0 && !activeProjectId) {
-        setActiveProjectId(data[0].id);
-      }
+      const projList = data || [];
+      setProjects(projList);
+      try {
+        localStorage.setItem('harvest_cached_projects', JSON.stringify(projList));
+      } catch {}
+
+      setActiveProjectId((prev) => {
+        if (prev && projList.some((p) => p.id === prev)) {
+          return prev;
+        }
+        const cached = (() => {
+          try {
+            const raw = localStorage.getItem('harvest_active_project_id');
+            return raw ? Number(raw) : null;
+          } catch { return null; }
+        })();
+        if (cached && projList.some((p) => p.id === cached)) {
+          return cached;
+        }
+        if (projList.length > 0) {
+          const firstId = projList[0].id;
+          try { localStorage.setItem('harvest_active_project_id', String(firstId)); } catch {}
+          return firstId;
+        }
+        try { localStorage.removeItem('harvest_active_project_id'); } catch {}
+        return null;
+      });
     } catch (err) {
       console.error('Failed to load projects:', err);
+    } finally {
+      setIsInitialLoadingProjects(false);
     }
-  }, [activeProjectId]);
+  }, []);
 
   useEffect(() => {
     loadProjects();
@@ -396,24 +479,26 @@ export default function StudioPage() {
     }
     try {
       const allVideos = await api.getVideos(activeProjectId);
-      setVideos(allVideos || []);
-      // Opening or switching projects should land on the upload screen.
-      // Select a video automatically only when the user just uploaded it.
-      const preferred = preferredVideoId == null ? null : allVideos?.find((v) => v.id === preferredVideoId);
-      setSelectedVideo((previous) => preferred || (previous && allVideos?.find((v) => v.id === previous.id)) || null);
-      setClips([]);
-      setClipsVideoId(null);
-      setSelectedClip(null);
+      const vids = allVideos || [];
+      setVideos(vids);
+      try {
+        localStorage.setItem(`harvest_cached_videos_${activeProjectId}`, JSON.stringify(vids));
+      } catch {}
+
+      // Keep current selection or restore cached selection
+      const cachedVidId = (() => {
+        try { return localStorage.getItem('harvest_active_video_id'); } catch { return null; }
+      })();
+      const targetId = preferredVideoId != null ? preferredVideoId : (cachedVidId ? Number(cachedVidId) : null);
+      const preferred = targetId == null ? null : vids?.find((v) => v.id === targetId);
+
+      setSelectedVideo((previous) => preferred || (previous && vids?.find((v) => v.id === previous.id)) || (vids.length > 0 ? vids[0] : null));
     } catch (err) {
       console.error('Failed to load videos:', err);
     }
   }, [activeProjectId]);
 
   useEffect(() => {
-    setSelectedVideo(null);
-    setClips([]);
-    setClipsVideoId(null);
-    setSelectedClip(null);
     loadVideos();
   }, [loadVideos]);
 
@@ -474,12 +559,6 @@ export default function StudioPage() {
   }, [loadClips]);
 
   useEffect(() => {
-    if (visibleSelectedClip?.status === 'completed' && visibleSelectedClip?.edit_options?.workflow === 'selected_moment_v1') {
-      generatedOutputRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }
-  }, [visibleSelectedClip?.id, visibleSelectedClip?.status]);
-
-  useEffect(() => {
     if (!selectedVideo?.id || !selectedClip || !['pending', 'rendering'].includes(selectedClip.status)) return undefined;
     let active = true;
     const refresh = async () => {
@@ -510,6 +589,23 @@ export default function StudioPage() {
     return () => { active = false; clearInterval(timer); };
   }, [selectedVideo?.id, selectedClip?.id, selectedClip?.status]);
 
+  const workflowModeRef = useRef(workflowMode);
+  useEffect(() => {
+    workflowModeRef.current = workflowMode;
+  }, [workflowMode]);
+
+  const loadVideosRef = useRef(loadVideos);
+  useEffect(() => {
+    loadVideosRef.current = loadVideos;
+  }, [loadVideos]);
+
+  const loadClipsRef = useRef(loadClips);
+  useEffect(() => {
+    loadClipsRef.current = loadClips;
+  }, [loadClips]);
+
+  const isCheckingStatusRef = useRef(false);
+
   // Clean up polling & timers on unmount
   useEffect(() => {
     return () => {
@@ -534,26 +630,39 @@ export default function StudioPage() {
     }, 1000);
 
     const checkStatus = async () => {
+      if (isCheckingStatusRef.current) return;
+      isCheckingStatusRef.current = true;
       try {
         const statusData = await api.getVideoStatus(videoId);
         setPipelineStatus(statusData);
 
-        // Fetch any ready clips
-        await loadClips();
-
         const isFailed = statusData?.stage === 'failed' || statusData?.video_status === 'failed';
         const momentsReady = statusData?.video_status === 'completed' &&
           statusData?.highlight_status === 'completed' && (statusData?.moments_ready || 0) >= 5;
-        const isDone = !isFailed && (momentsReady || (
-          statusData?.video_status === 'completed' && (statusData?.is_done || statusData?.is_complete)
-        ));
+        const isDone = !isFailed && (
+          statusData?.stage === 'done' ||
+          statusData?.is_done === true ||
+          statusData?.is_complete === true ||
+          momentsReady ||
+          (statusData?.video_status === 'completed' && (
+            statusData?.is_done ||
+            statusData?.is_complete ||
+            statusData?.variations_ready >= 5 ||
+            (statusData?.stage_label && statusData.stage_label.toLowerCase().includes('success'))
+          ))
+        );
 
         if (isDone) {
-          clearInterval(pollIntervalRef.current);
-          clearInterval(timerIntervalRef.current);
+          if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+          if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
+          pollIntervalRef.current = null;
+          timerIntervalRef.current = null;
+
           setIsAnalyzing(false);
           setActionLoading(false);
-          if (workflowMode === 'full_caption') {
+
+          const curMode = workflowModeRef.current;
+          if (curMode === 'full_caption' || (statusData?.stage_label && statusData.stage_label.toLowerCase().includes('caption'))) {
             setMomentWorkflowStep('clips');
             setActionMessage('Full video captioned successfully!');
           } else if (momentsReady) {
@@ -564,33 +673,45 @@ export default function StudioPage() {
             setMomentWorkflowStep('clips');
             setActionMessage('Generation completed successfully!');
           }
-          await loadVideos();
-          await loadClips();
+
+          if (loadVideosRef.current) await loadVideosRef.current();
+          if (loadClipsRef.current) await loadClipsRef.current();
           setTimeout(() => setActionMessage(''), 5000);
-        } else if (isFailed) {
-          clearInterval(pollIntervalRef.current);
-          clearInterval(timerIntervalRef.current);
+          return;
+        }
+
+        if (isFailed) {
+          if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+          if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
+          pollIntervalRef.current = null;
+          timerIntervalRef.current = null;
           setIsAnalyzing(false);
           setActionLoading(false);
           setActionMessage(statusData?.stage_label || 'Generation failed. Please try again.');
-          await loadVideos();
+          if (loadVideosRef.current) await loadVideosRef.current();
+          return;
         }
+
+        // Fetch any ready clips while in progress
+        if (loadClipsRef.current) await loadClipsRef.current();
       } catch (err) {
         console.error('Status check error:', err);
+      } finally {
+        isCheckingStatusRef.current = false;
       }
     };
 
     // Run first check immediately, then every 1500ms
     pollIntervalRef.current = setInterval(checkStatus, 1500);
     checkStatus();
-  }, [loadClips, loadVideos, workflowMode]);
+  }, []);
 
   // If user selects a video that is currently processing in the background, attach polling automatically
   useEffect(() => {
     if (selectedVideo && (selectedVideo.status === 'processing' || selectedVideo.status === 'pending')) {
       startStatusPolling(selectedVideo.id);
     }
-  }, [selectedVideo, startStatusPolling]);
+  }, [selectedVideo?.id, selectedVideo?.status, startStatusPolling]);
 
   // Upload source media first; the user chooses the target length before analysis.
   const handleFileUpload = async (e) => {
@@ -703,11 +824,15 @@ export default function StudioPage() {
     try {
       await api.masterGenerate(vidId, {
         caption_style: captionStyle,
+        primary_color: useCustomCaptionColors ? captionTextColor : null,
+        highlight_color: useCustomCaptionColors ? captionHighlightColor : null,
         translate_language: outputLanguage === 'original' ? 'none' : outputLanguage,
         caption_language: outputLanguage === 'original' ? 'original' : 'translated',
         dub_voice: dubVoice,
         length: 60,
         platform: 'youtube',
+        source_language: sourceLanguage === 'auto' ? null : sourceLanguage,
+        retranscribe: forceRetranscribe,
       });
       // Start real-time analysis polling
       startStatusPolling(vidId);
@@ -745,13 +870,18 @@ export default function StudioPage() {
     setActionLoading(true);
     setIsAnalyzing(true);
     setElapsedSeconds(0);
-    setPipelineStatus({ stage: 'queued', stage_label: 'Transcribing & adding animated captions to full video…' });
-    setActionMessage('Analyzing full video and applying animated captions…');
+    const captionsEnabled = captionStyle !== 'none';
+    setPipelineStatus({ stage: 'queued', stage_label: captionsEnabled ? 'Transcribing & adding animated captions to full video…' : 'Preparing the full video without captions…' });
+    setActionMessage(captionsEnabled ? 'Analyzing full video and applying animated captions…' : 'Preparing the full video without captions…');
     try {
       await api.captionFullVideo(selectedVideo.id, {
         caption_style: captionStyle,
+        primary_color: useCustomCaptionColors ? captionTextColor : null,
+        highlight_color: useCustomCaptionColors ? captionHighlightColor : null,
         translate_language: outputLanguage === 'original' ? 'none' : outputLanguage,
         caption_language: outputLanguage === 'original' ? 'original' : 'translated',
+        source_language: sourceLanguage === 'auto' ? null : sourceLanguage,
+        retranscribe: forceRetranscribe,
       });
       startStatusPolling(selectedVideo.id);
       await loadClips();
@@ -865,6 +995,8 @@ export default function StudioPage() {
       const clip = await api.selectMoment(selectedVideo.id, selectedMomentId, captionStyle, {
         translateLanguage: outputLanguage === 'original' ? 'none' : outputLanguage,
         captionLanguage: outputLanguage === 'original' ? 'original' : 'translated',
+        primaryColor: useCustomCaptionColors ? captionTextColor : null,
+        highlightColor: useCustomCaptionColors ? captionHighlightColor : null,
         dubVoice,
         speakerGender,
         audioMode,
@@ -1154,7 +1286,14 @@ export default function StudioPage() {
           <div className="studio-project-tools" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             <select
               value={activeProjectId || ''}
-              onChange={(e) => setActiveProjectId(e.target.value ? Number(e.target.value) : null)}
+              onChange={(e) => {
+                const val = e.target.value ? Number(e.target.value) : null;
+                setActiveProjectId(val);
+                try {
+                  if (val) localStorage.setItem('harvest_active_project_id', String(val));
+                  else localStorage.removeItem('harvest_active_project_id');
+                } catch {}
+              }}
               style={{
                 backgroundColor: '#ffffff',
                 color: '#16181d',
@@ -1167,7 +1306,8 @@ export default function StudioPage() {
                 cursor: 'pointer',
               }}
             >
-              {projects.length === 0 && <option value="">No projects yet</option>}
+              {isInitialLoadingProjects && projects.length === 0 && <option value="">Loading projects…</option>}
+              {!isInitialLoadingProjects && projects.length === 0 && <option value="">No projects yet</option>}
               {projects.map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.title || p.name || `Project #${p.id}`}
@@ -1358,13 +1498,13 @@ export default function StudioPage() {
                   style={{ display: 'none' }}
                 />
                 <button
-                  disabled={isUploading || isImportingUrl || !activeProjectId}
+                  disabled={isUploading || isImportingUrl || (!activeProjectId && !isInitialLoadingProjects)}
                   onClick={() => activeProjectId ? fileInputRef.current?.click() : setShowNewProjectModal(true)}
                   style={{
                     width: '100%',
                     padding: '0.7rem',
                     borderRadius: '6px',
-                    backgroundColor: isUploading || !activeProjectId ? '#7a808a' : '#1f6f4a',
+                    backgroundColor: isUploading || (!activeProjectId && !isInitialLoadingProjects) ? '#7a808a' : '#1f6f4a',
                     color: '#ffffff',
                     border: 'none',
                     display: 'flex',
@@ -1373,12 +1513,12 @@ export default function StudioPage() {
                     gap: '0.5rem',
                     fontSize: '0.875rem',
                     fontWeight: 600,
-                    cursor: isUploading || !activeProjectId ? 'not-allowed' : 'pointer',
+                    cursor: isUploading || (!activeProjectId && !isInitialLoadingProjects) ? 'not-allowed' : 'pointer',
                     transition: 'background-color 0.15s ease',
                   }}
                 >
                   <UploadCloud size={16} />
-                  {isUploading ? `Uploading ${uploadProgress}%…` : activeProjectId ? 'Choose Video File' : 'Create Project First'}
+                  {isUploading ? `Uploading ${uploadProgress}%…` : isInitialLoadingProjects ? 'Loading…' : activeProjectId ? 'Choose Video File' : 'Create Project First'}
                 </button>
                 {uploadError && (
                   <div style={{ marginTop: '0.5rem', fontSize: '0.78rem', color: '#b91c1c' }}>
@@ -1569,7 +1709,12 @@ export default function StudioPage() {
 
           {/* Videos List */}
           <div className="studio-sidebar-scroll" style={{ flex: 1, overflowY: 'auto', minHeight: 0, padding: '0.65rem 0.75rem' }}>
-            {videos.length === 0 ? (
+            {isInitialLoadingProjects && videos.length === 0 ? (
+              <div style={{ padding: '2.5rem 1rem', textAlign: 'center', color: '#94a3b8', fontSize: '0.825rem', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.5rem' }}>
+                <Loader size={18} className="render-loading-spinner" />
+                <span>Loading footage…</span>
+              </div>
+            ) : videos.length === 0 ? (
               <div style={{ padding: '2.5rem 1rem', textAlign: 'center', color: '#5b616b', fontSize: '0.875rem' }}>
                 {activeProjectId ? <>No videos in this project yet.<br />Upload one to get started.</> : <>Create a project before uploading videos.</>}
               </div>
@@ -1617,6 +1762,10 @@ export default function StudioPage() {
                         setMomentWorkflowStep('moments');
                       }
                       setSelectedVideo(vid);
+                      try {
+                        if (vid?.id) localStorage.setItem('harvest_active_video_id', String(vid.id));
+                        else localStorage.removeItem('harvest_active_video_id');
+                      } catch {}
                       if (window.innerWidth <= 768) {
                         setMobileTab('editor');
                       }
@@ -2010,7 +2159,9 @@ export default function StudioPage() {
                     <p style={{ margin: '0 0 0.85rem', color: '#64748b', fontSize: '0.825rem', lineHeight: 1.45 }}>
                       {workflowMode === 'shorts'
                         ? 'Choose clip length & caption style, then find viral moments.'
-                        : 'Transcribe full audio and burn lower-third animated captions onto the entire video without cropping (16:9 widescreen preserved).'}
+                        : captionStyle === 'none'
+                          ? 'Create a clean full-length video without burned-in captions, preserving the original resolution.'
+                          : 'Transcribe full audio and burn lower-third animated captions onto the entire video without cropping (16:9 widescreen preserved).'}
                     </p>
 
                     {actionMessage && (
@@ -2023,9 +2174,26 @@ export default function StudioPage() {
                     <div className="studio-output-grid" style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.3fr) minmax(280px, 1fr)', gap: '1.15rem', alignItems: 'start' }}>
                       {/* Video Player & Download Hint */}
                       <div>
-                        <div style={{ background: '#090a0f', borderRadius: '10px', overflow: 'hidden', aspectRatio: '16/9', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid #1e293b' }}>
+                        <div style={{
+                          position: 'relative',
+                          background: '#090a0f',
+                          borderRadius: '10px',
+                          overflow: 'hidden',
+                          aspectRatio: '16/9',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          border: '1px solid #1e293b'
+                        }}>
                           {sourceVideoUrl ? (
-                            <video key={selectedVideo.id} src={sourceVideoUrl} controls playsInline style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+                            <video
+                              ref={sourceVideoRef}
+                              key={selectedVideo.id}
+                              src={sourceVideoUrl}
+                              controls
+                              playsInline
+                              style={{ width: '100%', height: '100%', objectFit: 'contain' }}
+                            />
                           ) : (
                             <div style={{ color: '#94a3b8', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
                               <Loader size={16} className="render-loading-spinner" /> Loading source video…
@@ -2087,7 +2255,7 @@ export default function StudioPage() {
                           }}>
                             <Sparkles size={16} style={{ flexShrink: 0, marginTop: '2px' }} />
                             <div>
-                              <strong>Full Video Captioning:</strong> Analyzes the complete video audio and adds animated subtitles in the lower third while preserving original widescreen resolution.
+                              <strong>{captionStyle === 'none' ? 'Full Video Without Captions:' : 'Full Video Captioning:'}</strong> {captionStyle === 'none' ? 'Creates a clean video without burned-in subtitles while preserving the original widescreen resolution.' : 'Analyzes the complete video audio and adds animated subtitles in the lower third while preserving original widescreen resolution.'}
                             </div>
                           </div>
                         )}
@@ -2126,10 +2294,10 @@ export default function StudioPage() {
                           </div>
                         )}
 
-                        {/* 2. Quick Caption Style (1-Tap Pills) */}
+                        {/* 2. Caption appearance: preset style plus optional color overrides */}
                         <div>
                           <div style={{ color: '#334155', fontSize: '0.825rem', fontWeight: 650, marginBottom: '0.35rem' }}>
-                            Caption Style
+                            Caption Appearance
                           </div>
                           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(85px, 1fr))', gap: '0.35rem' }}>
                             {[
@@ -2138,6 +2306,7 @@ export default function StudioPage() {
                               { id: 'minimalist', label: 'Minimal' },
                               { id: 'boxed', label: 'Boxed' },
                               { id: 'neon', label: 'Neon' },
+                              { id: 'none', label: 'No Captions' },
                             ].map((style) => (
                               <button
                                 key={style.id}
@@ -2161,12 +2330,84 @@ export default function StudioPage() {
                               </button>
                             ))}
                           </div>
+                          {captionStyle === 'none' && (
+                            <div style={{ color: '#64748b', fontSize: '0.72rem', marginTop: '0.4rem' }}>
+                              The video will be rendered without burned-in captions.
+                            </div>
+                          )}
+                        </div>
+
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.45rem', padding: '0.6rem', border: '1px solid #e2e8f0', borderRadius: '8px', background: '#f8fafc' }}>
+                          <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#334155', fontSize: '0.8rem', fontWeight: 650 }}>
+                            <input
+                              type="checkbox"
+                              checked={useCustomCaptionColors}
+                              disabled={actionLoading}
+                              onChange={(event) => setUseCustomCaptionColors(event.target.checked)}
+                              style={{ width: '14px', height: '14px', accentColor: '#1f6f4a' }}
+                            />
+                            Use custom caption colors
+                          </label>
+                          {useCustomCaptionColors ? (
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.6rem' }}>
+                              <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.4rem', color: '#475569', fontSize: '0.75rem' }}>
+                                Text
+                                <input type="color" value={captionTextColor} disabled={actionLoading} onChange={(event) => setCaptionTextColor(event.target.value)} aria-label="Caption text color" />
+                              </label>
+                              <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.4rem', color: '#475569', fontSize: '0.75rem' }}>
+                                Highlight
+                                <input type="color" value={captionHighlightColor} disabled={actionLoading} onChange={(event) => setCaptionHighlightColor(event.target.value)} aria-label="Caption highlight color" />
+                              </label>
+                            </div>
+                          ) : (
+                            <span style={{ color: '#64748b', fontSize: '0.72rem' }}>Default: white text, black outline; the style sets the highlight color.</span>
+                          )}
                         </div>
 
                         {/* 3. Language & Translation */}
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.45rem' }}>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.55rem' }}>
                           <label style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', color: '#334155', fontSize: '0.825rem', fontWeight: 650 }}>
-                            Language
+                            Spoken Language (Transcription)
+                            <select
+                              value={sourceLanguage}
+                              onChange={(event) => setSourceLanguage(event.target.value)}
+                              disabled={actionLoading}
+                              style={{ padding: '0.55rem 0.7rem', border: '1px solid #e2e8f0', borderRadius: '8px', background: '#f8fafc', color: '#16181d', fontSize: '0.825rem', fontWeight: 550 }}
+                            >
+                              <option value="auto">✨ Auto-Detect (Default)</option>
+                              <option value="ta">Tamil (தமிழ்)</option>
+                              <option value="en">English</option>
+                              <option value="hi">Hindi (हिन्दी)</option>
+                              <option value="te">Telugu (తెలుగు)</option>
+                              <option value="ml">Malayalam (മലയാളം)</option>
+                              <option value="kn">Kannada (ಕನ್ನಡ)</option>
+                              <option value="mr">Marathi (मराठी)</option>
+                              <option value="bn">Bengali (বাংলা)</option>
+                              <option value="gu">Gujarati (ગુજરાતી)</option>
+                              <option value="pa">Punjabi (ਪੰਜਾਬੀ)</option>
+                              <option value="es">Spanish (Español)</option>
+                              <option value="fr">French (Français)</option>
+                              <option value="de">German (Deutsch)</option>
+                              <option value="zh">Chinese (中文)</option>
+                              <option value="ja">Japanese (日本語)</option>
+                              <option value="ko">Korean (한국어)</option>
+                              <option value="ar">Arabic (العربية)</option>
+                            </select>
+                          </label>
+
+                          <label style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', cursor: 'pointer', fontSize: '0.78rem', color: '#475569' }}>
+                            <input
+                              type="checkbox"
+                              checked={forceRetranscribe}
+                              disabled={actionLoading}
+                              onChange={(e) => setForceRetranscribe(e.target.checked)}
+                              style={{ width: '14px', height: '14px', accentColor: '#1f6f4a' }}
+                            />
+                            <span>Force fresh re-transcription (replace old transcript)</span>
+                          </label>
+
+                          <label style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', color: '#334155', fontSize: '0.825rem', fontWeight: 650 }}>
+                            Caption / Dubbing Output Language
                             <select
                               value={outputLanguage === 'original' ? 'original' : 'translated'}
                               onChange={(event) => setOutputLanguage(event.target.value === 'original' ? 'original' : (outputLanguage === 'original' ? 'English' : outputLanguage))}
@@ -2276,7 +2517,7 @@ export default function StudioPage() {
                             }}
                           >
                             {actionLoading ? <Loader size={17} className="render-loading-spinner" /> : <Film size={17} />}
-                            <span>Generate Full Video Captions</span>
+                            <span>{captionStyle === 'none' ? 'Create Full Video Without Captions' : 'Add Captions to Full Video'}</span>
                           </button>
                         )}
                       </div>
@@ -3428,81 +3669,130 @@ export default function StudioPage() {
                     }}
                   >
                     {/* Top Bar with Stage & Timer */}
-                    <div className="studio-pipeline-header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '1rem', borderBottom: '1px solid #e6e6e1', paddingBottom: '1.25rem' }}>
-                      <div className="studio-pipeline-brand" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                        <div
-                          className="studio-pipeline-icon-box"
-                          style={{
-                            width: 38,
-                            height: 38,
-                            borderRadius: '8px',
-                            backgroundColor: '#ecfdf5',
-                            border: '1px solid #a7f3d0',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            color: '#1f6f4a',
-                            flexShrink: 0,
-                          }}
-                        >
-                          <Loader size={20} style={{ animation: 'spin 1.2s linear infinite' }} />
-                        </div>
-                        <div style={{ minWidth: 0 }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                            <span style={{ fontSize: '0.75rem', fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', color: '#1f6f4a' }}>
-                              AI Pipeline Active
-                            </span>
-                            <span style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: '#1f6f4a', animation: 'pulse 1.5s infinite', flexShrink: 0 }} />
-                          </div>
-                          <h3
-                            className="studio-pipeline-title"
-                            style={{
-                              fontSize: '1.2rem',
-                              fontFamily: '"Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif',
-                              fontWeight: 700,
-                              margin: '0.2rem 0 0',
-                              color: '#16181d',
-                            }}
-                          >
-                            {pipelineStatus?.stage_label || 'Analyzing video and generating 9:16 vertical shorts…'}
-                          </h3>
-                          {selectedVideo && (
-                            <div className="studio-pipeline-video-chip">
-                              <Film size={11} />
-                              <span>{selectedVideo.original_filename?.replace(/\.[^/.]+$/, '') || `Video #${selectedVideo.id}`}</span>
-                            </div>
-                          )}
-                        </div>
-                      </div>
+                    {(() => {
+                      const isFinishedStage = pipelineStatus?.stage === 'done' ||
+                        pipelineStatus?.is_done === true ||
+                        pipelineStatus?.is_complete === true ||
+                        (pipelineStatus?.stage_label && pipelineStatus.stage_label.toLowerCase().includes('success')) ||
+                        getProgressPercentage() >= 100;
 
-                      <div className="studio-pipeline-actions" style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                        <div className="studio-pipeline-timer" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.875rem', color: '#5b616b' }}>
-                          <Clock size={16} />
-                          <span style={{ fontVariantNumeric: 'tabular-nums', fontWeight: 600, color: '#16181d' }}>
-                            {formatTimer(elapsedSeconds)}
-                          </span>
+                      return (
+                        <div className="studio-pipeline-header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '1rem', borderBottom: '1px solid #e6e6e1', paddingBottom: '1.25rem' }}>
+                          <div className="studio-pipeline-brand" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                            <div
+                              className="studio-pipeline-icon-box"
+                              style={{
+                                width: 38,
+                                height: 38,
+                                borderRadius: '8px',
+                                backgroundColor: isFinishedStage ? '#ecfdf5' : '#ecfdf5',
+                                border: '1px solid #a7f3d0',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                color: '#1f6f4a',
+                                flexShrink: 0,
+                              }}
+                            >
+                              {isFinishedStage ? (
+                                <CheckCircle2 size={20} color="#1f6f4a" />
+                              ) : (
+                                <Loader size={20} style={{ animation: 'spin 1.2s linear infinite' }} />
+                              )}
+                            </div>
+                            <div style={{ minWidth: 0 }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                <span style={{ fontSize: '0.75rem', fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', color: '#1f6f4a' }}>
+                                  {isFinishedStage ? 'Pipeline Completed' : 'AI Pipeline Active'}
+                                </span>
+                                {!isFinishedStage && (
+                                  <span style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: '#1f6f4a', animation: 'pulse 1.5s infinite', flexShrink: 0 }} />
+                                )}
+                              </div>
+                              <h3
+                                className="studio-pipeline-title"
+                                style={{
+                                  fontSize: '1.2rem',
+                                  fontFamily: '"Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif',
+                                  fontWeight: 700,
+                                  margin: '0.2rem 0 0',
+                                  color: '#16181d',
+                                }}
+                              >
+                                {pipelineStatus?.stage_label || (isFinishedStage ? 'Generation completed successfully.' : 'Analyzing video and generating 9:16 vertical shorts…')}
+                              </h3>
+                              {selectedVideo && (
+                                <div className="studio-pipeline-video-chip">
+                                  <Film size={11} />
+                                  <span>{selectedVideo.original_filename?.replace(/\.[^/.]+$/, '') || `Video #${selectedVideo.id}`}</span>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="studio-pipeline-actions" style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                            <div className="studio-pipeline-timer" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.875rem', color: '#5b616b' }}>
+                              <Clock size={16} />
+                              <span style={{ fontVariantNumeric: 'tabular-nums', fontWeight: 600, color: '#16181d' }}>
+                                {formatTimer(elapsedSeconds)}
+                              </span>
+                            </div>
+                            {isFinishedStage ? (
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+                                  if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
+                                  pollIntervalRef.current = null;
+                                  timerIntervalRef.current = null;
+                                  setIsAnalyzing(false);
+                                  setActionLoading(false);
+                                  setMomentWorkflowStep('clips');
+                                  if (loadVideosRef.current) await loadVideosRef.current();
+                                  if (loadClipsRef.current) await loadClipsRef.current();
+                                }}
+                                style={{
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '0.4rem',
+                                  padding: '0.5rem 0.95rem',
+                                  borderRadius: '6px',
+                                  backgroundColor: '#1f6f4a',
+                                  color: '#ffffff',
+                                  border: 'none',
+                                  fontSize: '0.825rem',
+                                  fontWeight: 650,
+                                  cursor: 'pointer',
+                                  boxShadow: '0 1px 3px rgba(31, 111, 74, 0.25)',
+                                }}
+                              >
+                                <CheckCircle2 size={15} /> View Completed Video
+                              </button>
+                            ) : (
+                              <button
+                                onClick={handleCancelGeneration}
+                                className="studio-pipeline-cancel-btn"
+                                style={{
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '0.35rem',
+                                  padding: '0.45rem 0.8rem',
+                                  borderRadius: '6px',
+                                  backgroundColor: '#ffffff',
+                                  border: '1px solid #e6e6e1',
+                                  color: '#5b616b',
+                                  fontSize: '0.8rem',
+                                  fontWeight: 500,
+                                  cursor: 'pointer',
+                                }}
+                              >
+                                <XCircle size={14} /> Cancel
+                              </button>
+                            )}
+                          </div>
                         </div>
-                        <button
-                          onClick={handleCancelGeneration}
-                          className="studio-pipeline-cancel-btn"
-                          style={{
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            gap: '0.35rem',
-                            padding: '0.45rem 0.8rem',
-                            borderRadius: '6px',
-                            backgroundColor: '#ffffff',
-                            border: '1px solid #e6e6e1',
-                            color: '#5b616b',
-                            fontSize: '0.8rem',
-                            fontWeight: 500,
-                            cursor: 'pointer',
-                          }}
-                        >
-                          <XCircle size={14} /> Cancel
-                        </button>
-                      </div>
-                    </div>
+                      );
+                    })()}
 
                     {/* Progress Bar */}
                     <div className="studio-pipeline-progress">
@@ -3731,7 +4021,6 @@ export default function StudioPage() {
                 {(hasAnalyzedMoments || visibleClips.length > 0) && !isAnalyzing && momentWorkflowStep !== 'customize' && visibleClips.length > 0 && (
                   <div
                     className="studio-output-grid"
-                    ref={generatedOutputRef}
                     style={{
                       display: 'grid',
                       gridTemplateColumns: isFullVideoClip(visibleSelectedClip)
@@ -3763,7 +4052,7 @@ export default function StudioPage() {
                             color: '#16181d',
                           }}
                         >
-                          {visibleClips.some(isFullVideoClip) ? `Captioned Videos (${visibleClips.length})` : `Generated Clips (${visibleClips.length})`}
+                          {visibleClips.some(isFullVideoClip) ? `Full Videos (${visibleClips.length})` : `Generated Clips (${visibleClips.length})`}
                         </h3>
                         <button
                           onClick={loadClips}
@@ -3932,14 +4221,20 @@ export default function StudioPage() {
                               boxShadow: '0 4px 16px rgba(0, 0, 0, 0.12)',
                             }}
                           >
-                            <video
-                              key={visibleSelectedClip.storage_path}
-                              src={clipMediaClipId === visibleSelectedClip.id && clipMediaUrl ? clipMediaUrl : null}
-                              controls
-                              playsInline
-                              onError={() => setClipPlaybackError(true)}
-                              style={{ width: '100%', height: '100%', objectFit: 'contain' }}
-                            />
+                            {clipMediaClipId === visibleSelectedClip.id && clipMediaUrl ? (
+                              <video
+                                key={visibleSelectedClip.storage_path}
+                                src={clipMediaUrl}
+                                controls
+                                playsInline
+                                onError={() => setClipPlaybackError(true)}
+                                style={{ width: '100%', height: '100%', objectFit: 'contain' }}
+                              />
+                            ) : (
+                              <div style={{ color: '#94a3b8', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
+                                <Loader size={16} className="render-loading-spinner" /> Loading video preview…
+                              </div>
+                            )}
                           </div>
 
                           {clipPlaybackError && (
@@ -3961,7 +4256,9 @@ export default function StudioPage() {
                           {/* Download */}
                           <a
                             href={clipMediaUrl || undefined}
-                            download
+                            download={(visibleSelectedClip.title || `clip-${visibleSelectedClip.id}`).replace(/\.[^/.]+$/, '') + '.mp4'}
+                            target="_blank"
+                            rel="noopener noreferrer"
                             className="studio-preview-download-btn"
                             style={{
                               display: 'inline-flex',
@@ -4035,6 +4332,42 @@ export default function StudioPage() {
                 )}
               </div>
             )
+          ) : isInitialLoadingProjects ? (
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                flex: 1,
+                color: '#5b616b',
+                padding: '3rem 2rem',
+                textAlign: 'center',
+              }}
+            >
+              <div
+                style={{
+                  width: 56,
+                  height: 56,
+                  borderRadius: '12px',
+                  backgroundColor: '#f0fdf4',
+                  border: '1px solid #bbf7d0',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  color: '#1f6f4a',
+                  marginBottom: '1rem',
+                }}
+              >
+                <Loader size={26} className="render-loading-spinner" />
+              </div>
+              <h3 style={{ fontSize: '1.25rem', fontWeight: 700, color: '#16181d', margin: '0 0 0.35rem' }}>
+                Loading your studio…
+              </h3>
+              <p style={{ maxWidth: '400px', fontSize: '0.85rem', margin: 0, color: '#64748b', lineHeight: 1.5 }}>
+                Syncing your projects and footage from the cloud…
+              </p>
+            </div>
           ) : !activeProjectId ? (
             <div
               style={{

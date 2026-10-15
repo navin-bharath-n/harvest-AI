@@ -77,7 +77,7 @@ def _resolve_or_extract_video_audio(video: models.Video, video_path: str, db) ->
     audio_path = os.path.join(audio_dir, f"video_{video.id}_source.mp3")
     command = [
         "ffmpeg", "-y", "-nostdin", "-loglevel", "error",
-        "-i", video_path, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "64k",
+        "-i", video_path, "-vn", "-af", "highpass=f=80,lowpass=f=7500,volume=1.2", "-ac", "1", "-ar", "16000", "-b:a", "64k",
         "-threads", "0", audio_path,
     ]
     try:
@@ -156,8 +156,8 @@ def process_video_task(video_id: int):
         db.close()
 
 @celery_app.task(ignore_result=True)
-def transcribe_video_task(video_id: int):
-    logger.info(f"Starting to transcribe video {video_id}")
+def transcribe_video_task(video_id: int, language: str = None):
+    logger.info(f"Starting to transcribe video {video_id} [Language={language}]")
 
     db = SessionLocal()
     try:
@@ -166,8 +166,16 @@ def transcribe_video_task(video_id: int):
             logger.error(f"Video {video_id} not found")
             return
 
+        video_path = _resolve_video_path(video.storage_path)
         if not video.audio_path:
-            logger.error(f"Video {video_id} has no audio path")
+            audio_path = _resolve_or_extract_video_audio(video, video_path, db)
+        else:
+            audio_path = _resolve_video_path(video.audio_path)
+            if not os.path.exists(audio_path):
+                audio_path = _resolve_or_extract_video_audio(video, video_path, db)
+
+        if not audio_path or not os.path.exists(audio_path):
+            logger.error(f"Video {video_id} has no valid audio path and audio extraction failed")
             video.transcription_status = models.TranscriptionStatus.FAILED
             db.commit()
             return
@@ -175,15 +183,34 @@ def transcribe_video_task(video_id: int):
         video.transcription_status = models.TranscriptionStatus.PROCESSING
         db.commit()
 
-        logger.info(f"Transcribing audio for video {video_id}...")
-        from app.services.transcription_service import transcription_service
-        transcript = transcription_service.transcribe(video.audio_path)
+        logger.info(f"Transcribing audio for video {video_id} at {audio_path} [Lang={language}]...")
+        from app.services.transcription_service import transcription_service, normalize_whisper_language
+        norm_lang = normalize_whisper_language(language)
+        transcript = transcription_service.transcribe(audio_path, language=norm_lang)
 
         # Update database with results
         video.transcript = transcript
+        flag_modified(video, "transcript")
         video.transcription_status = models.TranscriptionStatus.COMPLETED
+
+        meta_dict = dict(video.content_analysis or {})
+        meta_dict["transcription_meta"] = {
+            "language": norm_lang or "auto",
+            "provider": transcription_service.last_provider or "unknown",
+            "model": transcription_service.last_model or "unknown",
+            "word_count": len(transcript),
+            "chunked": True if (video.duration and video.duration > 180) else False,
+            "version": 3
+        }
+        video.content_analysis = meta_dict
+        flag_modified(video, "content_analysis")
+
         db.commit()
-        logger.info(f"Successfully transcribed video {video_id}")
+        sample_w = transcript[0]["text"] if transcript else ""
+        logger.info(
+            f"[Checkpoint C - DB Transcript Roundtrip] VideoID={video_id} "
+            f"Words={len(transcript)} Lang={norm_lang or 'auto'} Status=COMPLETED First='{sample_w[:15]}'"
+        )
     except Exception as e:
         logger.error(f"Error transcribing video {video_id}: {e}")
         db.rollback()
@@ -538,21 +565,32 @@ def extract_top5_highlights_task(video_id: int, target_length: float = 30.0):
         requested_duration = max(1.0, float(target_length))
         minimum_speech_duration = max(0.0, requested_duration - 15.0)
 
-        def fit_requested_duration(start: float, end: float) -> tuple[float, float]:
-            """Keep the suggested moment's center while honoring the chosen duration."""
-            available = vid_dur if vid_dur > 0 else max(end, start + requested_duration)
-            duration = min(requested_duration, available)
-            center = (start + end) / 2.0
-            fitted_start = max(0.0, min(center - duration / 2.0, available - duration))
-            return fitted_start, fitted_start + duration
-
-        formatted_clips = []
-
         transcript_segments = [
             item for item in transcript
             if isinstance(item, dict) and isinstance(item.get("start"), (int, float))
             and isinstance(item.get("end"), (int, float)) and item["end"] > item["start"]
         ]
+        first_speech_time = float(transcript_segments[0]["start"]) if transcript_segments else 0.0
+
+        def fit_requested_duration(start: float, end: float) -> tuple[float, float]:
+            """
+            Keep the suggested moment's center while honoring the chosen duration.
+            CRITICAL: If the highlight starts at or after the first spoken word,
+            never drag the start time backwards into the initial silent branding logo/intro!
+            """
+            available = vid_dur if vid_dur > 0 else max(end, start + requested_duration)
+            duration = min(requested_duration, available)
+            center = (start + end) / 2.0
+
+            # Guard against dragging the clip back into the initial branding logo/silence
+            min_allowed_start = first_speech_time if (transcript_segments and start >= first_speech_time) else 0.0
+
+            ideal_start = center - duration / 2.0
+            fitted_start = max(min_allowed_start, min(ideal_start, available - duration))
+            fitted_end = min(available, fitted_start + duration)
+            return fitted_start, fitted_end
+
+        formatted_clips = []
 
         def finish_on_complete_speech(start: float, end: float) -> tuple[float, float]:
             """Trim to a detected sentence end when it stays in the selected 15s band."""
@@ -598,9 +636,11 @@ def extract_top5_highlights_task(video_id: int, target_length: float = 30.0):
         if len(raw_clips) < 5:
             duration_for_windows = vid_dur or (float(transcript_segments[-1]["end"]) if transcript_segments else 0)
             window = min(requested_duration, duration_for_windows) if duration_for_windows > 0 else requested_duration
-            step = max(1.0, (duration_for_windows - window) / 4) if duration_for_windows > window else 0
+            start_offset = first_speech_time if transcript_segments else 0.0
+            usable_duration = max(window, duration_for_windows - start_offset)
+            step = max(1.0, (usable_duration - window) / 4) if usable_duration > window else 0
             for index in range(5):
-                st = index * step
+                st = start_offset + index * step
                 en = min(duration_for_windows, st + window) if duration_for_windows else st + window
                 if transcript_segments and not any(s["end"] > st and s["start"] < en for s in transcript_segments):
                     continue
@@ -910,8 +950,8 @@ def render_clip_task(clip_id: int):
                         "text": w["text"]
                     })
                     shifted_words.append({
-                        "start": start_val - start_time,
-                        "end": end_val - start_time,
+                        "start": max(0.0, round(start_val - start_time, 2)),
+                        "end": max(0.05, round(end_val - start_time, 2)),
                         "text": w["text"]
                     })
         else:
@@ -923,14 +963,16 @@ def render_clip_task(clip_id: int):
                 and float(w.get("end", start_time)) > start_time
             ]
             for w in part_words:
+                w_st = float(w.get("start", start_time))
+                w_en = float(w.get("end", start_time))
                 absolute_words.append({
-                    "start": w["start"],
-                    "end": w["end"],
+                    "start": w_st,
+                    "end": w_en,
                     "text": w["text"]
                 })
                 shifted_words.append({
-                    "start": w["start"] - start_time,
-                    "end": w["end"] - start_time,
+                    "start": max(0.0, round(w_st - start_time, 2)),
+                    "end": max(0.05, round(w_en - start_time, 2)),
                     "text": w["text"]
                 })
 
@@ -1013,6 +1055,7 @@ def render_clip_task(clip_id: int):
             from app.services.subtitle_service import subtitle_service
             style_config = {
                 "caption_style": caption_preset,
+                "target_lang": translate_lang if translate_lang != "none" else instructions.get("language", "none"),
                 "font_name": instructions.get("font_name"),
                 "font_size": instructions.get("font_size"),
                 "primary_color": instructions.get("primary_color"),
@@ -1066,8 +1109,11 @@ def render_clip_task(clip_id: int):
                 escaped_sub = os.path.abspath(ass_path).replace('\\', '/').replace(':', r'\:')
                 ffmpeg_cmd.extend(["-vf", f"subtitles=filename='{escaped_sub}'"])
 
+            from app.services.subtitle_service import subtitle_service
+            fast_v_args = subtitle_service._get_fast_video_encoding_args()
+
             ffmpeg_cmd.extend([
-                "-c:v", "libx264", "-preset", "fast", "-crf", "18", # Higher quality encoding
+                *fast_v_args,
                 "-c:a", "aac", "-b:a", "128k",
                 "-movflags", "+faststart",
                 temp_video_source
@@ -1075,18 +1121,31 @@ def render_clip_task(clip_id: int):
 
             result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
             if result.returncode != 0:
+                logger.warning(f"Fast encoding failed ({result.stderr[:200]}). Retrying with CPU libx264...")
+                retry_cmd = [
+                    "ffmpeg", "-y", "-ss", str(start_time), "-t", str(duration),
+                    "-i", video_path,
+                ]
                 if has_subtitles:
-                    logger.warning("FFmpeg trim with subtitles failed. Retrying without subtitles...")
-                    retry_cmd = [
-                        "ffmpeg", "-y", "-ss", str(start_time), "-t", str(duration),
-                        "-i", video_path, "-c:v", "libx264", "-preset", "fast", "-crf", "18",
-                        "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", temp_video_source
-                    ]
-                    retry_res = subprocess.run(retry_cmd, capture_output=True, text=True)
-                    if retry_res.returncode != 0:
+                    retry_cmd.extend(["-vf", f"subtitles=filename='{escaped_sub}'"])
+                retry_cmd.extend([
+                    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "22",
+                    "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", temp_video_source
+                ])
+                retry_res = subprocess.run(retry_cmd, capture_output=True, text=True)
+                if retry_res.returncode != 0:
+                    if has_subtitles:
+                        logger.warning("Retry with subtitles failed. Retrying without subtitles...")
+                        nosub_cmd = [
+                            "ffmpeg", "-y", "-ss", str(start_time), "-t", str(duration),
+                            "-i", video_path, "-c:v", "libx264", "-preset", "ultrafast", "-crf", "22",
+                            "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", temp_video_source
+                        ]
+                        nosub_res = subprocess.run(nosub_cmd, capture_output=True, text=True)
+                        if nosub_res.returncode != 0:
+                            raise RuntimeError(f"FFmpeg trim failed: {nosub_res.stderr[-500:]}")
+                    else:
                         raise RuntimeError(f"FFmpeg trim failed: {retry_res.stderr[-500:]}")
-                else:
-                    raise RuntimeError(f"FFmpeg trim failed: {result.stderr[-500:]}")
 
         # 6.5. Replace video audio with dubbed audio if available
         if dubbed_audio_path and os.path.exists(dubbed_audio_path):
@@ -1184,6 +1243,8 @@ def render_clip_task(clip_id: int):
                         subscribe_text = instructions.get("outro_subscribe_text", edit_options.get("outro_subscribe_text", "Subscribe"))
                         follow_text = instructions.get("outro_follow_text", edit_options.get("outro_follow_text", ""))
                         long_text = instructions.get("outro_custom_text", edit_options.get("outro_custom_text", ""))
+                        qr_link = instructions.get("outro_qr_link", edit_options.get("outro_qr_link", ""))
+                        quote_text = instructions.get("outro_quote_text", edit_options.get("outro_quote_text", ""))
                         dur = float(instructions.get("outro_duration", edit_options.get("outro_duration", 3.0)))
                         logger.info(f"Extending video with 9:16 creator outro ({dur}s) for clip {clip_id} (bg music will cover extended length)")
                         ok = cta_overlay_service.append_9_16_outro(
@@ -1193,6 +1254,8 @@ def render_clip_task(clip_id: int):
                             subscribe_text=subscribe_text,
                             follow_text=follow_text,
                             long_text=long_text,
+                            qr_link=qr_link,
+                            quote_text=quote_text,
                             duration=dur,
                             with_audio=False,
                         )
@@ -1255,6 +1318,8 @@ def render_clip_task(clip_id: int):
                         subscribe_text = instructions.get("outro_subscribe_text", edit_options.get("outro_subscribe_text", "Subscribe"))
                         follow_text = instructions.get("outro_follow_text", edit_options.get("outro_follow_text", ""))
                         long_text = instructions.get("outro_custom_text", edit_options.get("outro_custom_text", ""))
+                        qr_link = instructions.get("outro_qr_link", edit_options.get("outro_qr_link", ""))
+                        quote_text = instructions.get("outro_quote_text", edit_options.get("outro_quote_text", ""))
                         dur = float(instructions.get("outro_duration", edit_options.get("outro_duration", 3.0)))
                         outro_music_style = instructions.get("outro_music_style", edit_options.get("outro_music_style", "upbeat"))
                         logger.info(f"Appending 9:16 creator outro ({dur}s, style={outro_music_style}, with_audio={audio_mode != 'mute'}) to clip {clip_id}")
@@ -1265,6 +1330,8 @@ def render_clip_task(clip_id: int):
                             subscribe_text=subscribe_text,
                             follow_text=follow_text,
                             long_text=long_text,
+                            qr_link=qr_link,
+                            quote_text=quote_text,
                             duration=dur,
                             music_preset=None if audio_mode == "mute" else outro_music_style,
                             with_audio=(audio_mode != "mute"),
@@ -1461,7 +1528,11 @@ def generate_master_shorts_task(
     speaker_gender: str = "female",
     audio_theme: str = "auto",
     framing_mode: str = "fit_blur",
-    caption_style: str = "pop"
+    caption_style: str = "pop",
+    source_language: str = None,
+    retranscribe: bool = False,
+    primary_color: str = None,
+    highlight_color: str = None
 ):
     logger.info(f"Starting master shorts generation for video {video_id}")
     db = SessionLocal()
@@ -1609,6 +1680,10 @@ def generate_master_shorts_task(
             speaker_gender=speaker_gender,
             framing_mode=framing_mode,
             caption_style=caption_style,
+            source_language=source_language,
+            retranscribe=retranscribe,
+            primary_color=primary_color,
+            highlight_color=highlight_color,
             on_variation_complete=_save_variation_clip
         )
 
@@ -1853,10 +1928,43 @@ def caption_full_video_task(video_id: int, clip_id: int, edit_options: dict = No
         db.commit()
 
         # Check if transcript is cached
+        from app.services.transcription_service import normalize_whisper_language, detect_video_context_language, is_hallucination_or_noise
+        source_lang = edit_options.get("source_language")
+        retranscribe = edit_options.get("retranscribe", False)
+        norm_source_lang = normalize_whisper_language(source_lang)
+        if not norm_source_lang and video:
+            context_text = f"{video.original_filename or ''} {(video.content_analysis or {}).get('title', '')}"
+            norm_source_lang = detect_video_context_language(context_text)
+            if norm_source_lang:
+                logger.info(f"Auto-detected language '{norm_source_lang}' from video metadata for full video {video_id}.")
+
+        cached_meta = dict(video.content_analysis or {}).get("transcription_meta", {})
+        cached_lang = cached_meta.get("language")
+        cached_chunked = cached_meta.get("chunked", False)
+        cached_version = cached_meta.get("version", 0)
+
         transcript_words = list(video.transcript or [])
+        cached_is_clean = True
+
+        # If video is > 180s but transcript was generated with older unchunked engine (version < 3)
+        if (video.duration and video.duration > 180) and not cached_chunked and cached_version < 3:
+            cached_is_clean = False
+            logger.info(f"Full video {video_id} duration ({video.duration:.1f}s) > 180s but transcript is unchunked (version {cached_version}). Forcing retranscription for frame-accurate chunked alignment.")
+
+        if cached_is_clean and transcript_words:
+            for w in transcript_words[:50]:
+                t_str = str(w.get("text", "")).strip()
+                if is_hallucination_or_noise(t_str) or "\u0bd7\u0bc6" in t_str or any(0x0600 <= ord(c) <= 0x06FF for c in t_str):
+                    cached_is_clean = False
+                    logger.info(f"Full video {video_id} cached transcript contains hallucination artifacts ('{t_str}'). Forcing retranscription.")
+                    break
+
         transcript_completed = (
-            video.transcription_status == models.TranscriptionStatus.COMPLETED
+            not retranscribe
+            and cached_is_clean
+            and video.transcription_status == models.TranscriptionStatus.COMPLETED
             and bool(transcript_words)
+            and (norm_source_lang is None or cached_lang == norm_source_lang)
         )
     except Exception as init_err:
         logger.error(f"Failed to initialize full video caption task: {init_err}")
@@ -1867,7 +1975,7 @@ def caption_full_video_task(video_id: int, clip_id: int, edit_options: dict = No
 
     # Phase 2: Transcribe if not cached
     if not transcript_completed:
-        logger.info(f"Full video {video_id} transcript not cached. Transcribing audio...")
+        logger.info(f"Full video {video_id} transcript not cached. Transcribing audio [Lang={norm_source_lang}]...")
         db = SessionLocal()
         try:
             video = db.query(models.Video).filter(models.Video.id == video_id).first()
@@ -1875,7 +1983,7 @@ def caption_full_video_task(video_id: int, clip_id: int, edit_options: dict = No
             if not audio_path or not os.path.exists(audio_path):
                 raise RuntimeError("Could not extract audio track for full video captioning.")
 
-            transcription_result = transcription_service.transcribe(audio_path)
+            transcription_result = transcription_service.transcribe(audio_path, language=norm_source_lang)
             if isinstance(transcription_result, dict):
                 transcript_words = transcription_result.get("words", [])
             else:
@@ -1883,6 +1991,19 @@ def caption_full_video_task(video_id: int, clip_id: int, edit_options: dict = No
             video.transcript = transcript_words
             flag_modified(video, "transcript")
             video.transcription_status = models.TranscriptionStatus.COMPLETED
+
+            meta_dict = dict(video.content_analysis or {})
+            meta_dict["transcription_meta"] = {
+                "language": norm_source_lang or "auto",
+                "provider": transcription_service.last_provider or "unknown",
+                "model": transcription_service.last_model or "unknown",
+                "word_count": len(transcript_words),
+                "chunked": True if (video.duration and video.duration > 180) else False,
+                "version": 3
+            }
+            video.content_analysis = meta_dict
+            flag_modified(video, "content_analysis")
+
             db.commit()
             logger.info(f"Full video {video_id} transcribed successfully with {len(transcript_words)} words.")
         except Exception as trans_err:
@@ -1912,6 +2033,9 @@ def caption_full_video_task(video_id: int, clip_id: int, edit_options: dict = No
 
     temp_id = uuid.uuid4().hex[:8]
     ass_path = os.path.join(clips_dir, f"temp_full_{temp_id}.ass")
+    srt_filename = f"full_captions_{clip_id}_{temp_id}.srt"
+    srt_path = os.path.join(clips_dir, srt_filename)
+    srt_relative_path = _safe_relpath(srt_path, str(_BACKEND_DIR))
 
     width = 1920
     height = 1080
@@ -1947,13 +2071,14 @@ def caption_full_video_task(video_id: int, clip_id: int, edit_options: dict = No
     except Exception as pr_err:
         logger.warning(f"Could not probe video resolution: {pr_err}. Defaulting to 1920x1080.")
 
-    caption_style = edit_options.get("caption_style", "pop")
+    caption_style = str(edit_options.get("caption_style", "pop")).lower()
+    captions_enabled = caption_style != "none"
     translate_lang = edit_options.get("translate_language", "none")
     caption_lang = edit_options.get("caption_language", "original")
 
     # Optional translation
     final_words = transcript_words
-    if translate_lang != "none" and caption_lang == "translated":
+    if captions_enabled and translate_lang != "none" and caption_lang == "translated":
         try:
             from app.services.translation_service import translate_and_distribute_words
             final_words = translate_and_distribute_words(transcript_words, translate_lang)
@@ -1961,14 +2086,33 @@ def caption_full_video_task(video_id: int, clip_id: int, edit_options: dict = No
         except Exception as tr_err:
             logger.warning(f"Translation failed for full video, using original: {tr_err}")
 
+    # Phase 4: Validate and clean transcript segments
+    cleaned_words, val_stats = subtitle_service.validate_and_clean_transcript(final_words)
+    logger.info(
+        f"[Full Video Caption] Validation for clip {clip_id}: "
+        f"total={val_stats['total_segments']}, accepted={val_stats['accepted_segments']}, "
+        f"rejected={val_stats['rejected_segments']}"
+    )
+
+    # Generate permanent standalone SRT subtitle file
+    srt_stats = subtitle_service.generate_srt(cleaned_words, srt_path) if captions_enabled else {
+        "caption_count": 0,
+        "first_timestamp": None,
+        "last_timestamp": None,
+        "file_size": 0,
+    }
+
     # Generate ASS with widescreen lower-third configuration
     # For widescreen (e.g. 1920x1080), bottom margin should be ~70-80px from bottom edge
     font_size = edit_options.get("font_size") or max(36, int(height * 0.05))
     margin_v = max(40, int(height * 0.08))
 
+    effective_target_lang = translate_lang if translate_lang != "none" else (norm_source_lang or "none")
     style_config = {
         "caption_style": caption_style,
-        "target_lang": translate_lang,
+        "target_lang": effective_target_lang,
+        "primary_color": edit_options.get("primary_color"),
+        "highlight_color": edit_options.get("highlight_color"),
         "resolution_x": width,
         "resolution_y": height,
         "margin_v": margin_v,
@@ -1977,18 +2121,53 @@ def caption_full_video_task(video_id: int, clip_id: int, edit_options: dict = No
         "max_words": 6,  # 6-8 words per line on widescreen
     }
 
-    try:
-        subtitle_service.generate_ass(final_words, ass_path, style_config)
+    import time
+    render_start = time.time()
 
-        # Burn subtitles into video keeping original aspect ratio
-        subtitle_service.burn_subtitles(video_path, ass_path, output_path, scale_filter=scale_filter)
-        logger.info(f"Successfully burned full video subtitles to {output_path}")
+    try:
+        if captions_enabled:
+            subtitle_service.generate_ass(cleaned_words, ass_path, style_config)
+            # Burn subtitles into video keeping original aspect ratio
+            subtitle_service.burn_subtitles(video_path, ass_path, output_path, scale_filter=scale_filter)
+        else:
+            # Produce a clean full-length video without creating or burning subtitle files.
+            video_args = subtitle_service._get_fast_video_encoding_args()
+            clean_cmd = ["ffmpeg", "-y", "-i", video_path, "-map", "0:v:0", "-map", "0:a?"]
+            if scale_filter:
+                clean_cmd.extend(["-vf", scale_filter])
+            clean_cmd.extend(["-fpsmax", "30", *video_args, "-c:a", "copy", "-movflags", "+faststart", output_path])
+            clean_result = subprocess.run(clean_cmd, capture_output=True)
+            if clean_result.returncode != 0 and any("h264_nvenc" in str(arg) for arg in video_args):
+                cpu_cmd = ["ffmpeg", "-y", "-i", video_path, "-map", "0:v:0", "-map", "0:a?"]
+                if scale_filter:
+                    cpu_cmd.extend(["-vf", scale_filter])
+                cpu_cmd.extend([
+                    "-fpsmax", "30", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "22",
+                    "-tune", "fastdecode", "-threads", "0", "-pix_fmt", "yuv420p",
+                    "-c:a", "copy", "-movflags", "+faststart", output_path,
+                ])
+                clean_result = subprocess.run(cpu_cmd, capture_output=True)
+            if clean_result.returncode != 0:
+                clean_error = clean_result.stderr.decode("utf-8", errors="ignore") if clean_result.stderr else "unknown FFmpeg error"
+                raise RuntimeError(f"Failed to render video without captions: {clean_error[-2000:]}")
+        render_duration = round(time.time() - render_start, 2)
+        output_file_size = os.path.getsize(output_path) if os.path.exists(output_path) else 0
+        logger.info(f"Successfully burned full video subtitles to {output_path} in {render_duration}s ({output_file_size} bytes)")
+
+        # Persist SRT file to remote object storage if enabled
+        if captions_enabled and object_storage.enabled():
+            final_srt_storage = object_storage.upload_file(srt_path, f"clips/{srt_filename}", "text/plain; charset=utf-8")
+        elif captions_enabled:
+            final_srt_storage = srt_relative_path
+        else:
+            final_srt_storage = None
 
         # Update Clip & Video in DB
         db = SessionLocal()
         try:
             c = db.query(models.Clip).filter(models.Clip.id == clip_id).first()
             v = db.query(models.Video).filter(models.Video.id == video_id).first()
+            dur = 0.0
             if c:
                 # Probe final duration from local file before upload
                 try:
@@ -2018,7 +2197,14 @@ def caption_full_video_task(video_id: int, clip_id: int, edit_options: dict = No
                 c.edit_options = {
                     **edit_options,
                     "resolution": f"{width}x{height}",
-                    "captioned_full_video": True,
+                    "captioned_full_video": captions_enabled,
+                    "captions_enabled": captions_enabled,
+                    "srt_path": final_srt_storage,
+                    "caption_count": srt_stats.get("caption_count", 0),
+                    "validation_stats": val_stats,
+                    "srt_stats": srt_stats,
+                    "render_duration_sec": render_duration,
+                    "output_file_size": output_file_size,
                 }
                 flag_modified(c, "edit_options")
 
@@ -2026,22 +2212,34 @@ def caption_full_video_task(video_id: int, clip_id: int, edit_options: dict = No
                 v.status = models.VideoStatus.COMPLETED
 
             db.commit()
+            logger.info(
+                f"[Observability] clip_id={clip_id} video_id={video_id} "
+                f"source_duration={dur}s seg_total={val_stats['total_segments']} "
+                f"seg_accepted={val_stats['accepted_segments']} seg_rejected={val_stats['rejected_segments']} "
+                f"first_caption_ts={srt_stats['first_timestamp']}s last_caption_ts={srt_stats['last_timestamp']}s "
+                f"caption_count={srt_stats['caption_count']} srt_size={srt_stats['file_size']}B "
+                f"render_duration={render_duration}s output_size={output_file_size}B"
+            )
             logger.info(f"Full video caption task completed successfully for clip {clip_id}!")
         finally:
             db.close()
 
     except Exception as burn_err:
-        logger.error(f"Failed to burn full video subtitles: {burn_err}", exc_info=True)
+        logger.error(f"Failed to burn full video subtitles for clip {clip_id}: {burn_err}", exc_info=True)
         db = SessionLocal()
         try:
             c = db.query(models.Clip).filter(models.Clip.id == clip_id).first()
             if c:
                 c.status = models.ClipStatus.FAILED
+                opts = dict(c.edit_options or {})
+                opts["error"] = str(burn_err)
+                c.edit_options = opts
+                flag_modified(c, "edit_options")
                 db.commit()
         finally:
             db.close()
     finally:
-        # Cleanup temp ASS file
+        # Cleanup temp ASS file (keep SRT permanent for download/preview)
         if os.path.exists(ass_path):
             try:
                 os.remove(ass_path)

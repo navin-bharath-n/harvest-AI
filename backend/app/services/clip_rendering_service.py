@@ -91,22 +91,23 @@ class ClipRenderingService:
                 "[bg][fg]overlay=(W-w)/2:(H-h)/2[vf]"
             )
 
-        def _build_cmd(f_complex: str, v_map: str) -> list:
+        from app.services.subtitle_service import subtitle_service
+        video_args = subtitle_service._get_fast_video_encoding_args()
+
+        def _build_cmd(f_complex: str, v_map: str, force_cpu: bool = False) -> list:
+            v_codec_args = (
+                ["-c:v", "libx264", "-threads:v", "1", "-preset", "ultrafast", "-crf", "20", "-pix_fmt", "yuv420p"]
+                if force_cpu else video_args
+            )
             return [
                 "ffmpeg", "-y",
-                "-threads", "1",
-                "-filter_threads", "1",
-                "-filter_complex_threads", "1",
                 "-ss", str(start_time),
                 "-t", str(duration),
                 "-i", video_path,
                 "-filter_complex", f_complex,
                 "-map", v_map,
                 "-map", "0:a:0?",
-                "-c:v", "libx264",
-                "-threads:v", "1",
-                "-preset", "ultrafast",
-                "-crf", "20",
+                *v_codec_args,
                 "-r", "30",
                 "-c:a", "aac",
                 "-b:a", "192k",

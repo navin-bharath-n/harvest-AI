@@ -102,7 +102,10 @@ class WatermarkService:
 
             scaled_label = f"h_scale_{input_idx}"
             out_label = f"v_hdr_{input_idx}"
-            filter_chains.append(f"[{input_idx}:v]scale={video_w}:{hh}[{scaled_label}]")
+            filter_chains.append(
+                f"[{input_idx}:v]format=rgba,scale={video_w}:{hh}:force_original_aspect_ratio=decrease,"
+                f"pad={video_w}:{hh}:(ow-iw)/2:(oh-ih)/2:color=black@0[{scaled_label}]"
+            )
             filter_chains.append(f"[{current_stream}][{scaled_label}]overlay=0:0[{out_label}]")
             current_stream = out_label
             input_idx += 1
@@ -117,7 +120,10 @@ class WatermarkService:
 
             scaled_label = f"f_scale_{input_idx}"
             out_label = f"v_ftr_{input_idx}"
-            filter_chains.append(f"[{input_idx}:v]scale={video_w}:{fh}[{scaled_label}]")
+            filter_chains.append(
+                f"[{input_idx}:v]format=rgba,scale={video_w}:{fh}:force_original_aspect_ratio=decrease,"
+                f"pad={video_w}:{fh}:(ow-iw)/2:(oh-ih)/2:color=black@0[{scaled_label}]"
+            )
 
             # Determine Y position: default is bottom (video_h - fh)
             # Supports 'bottom', 'top', or 'custom:{y_percent}'
@@ -145,13 +151,18 @@ class WatermarkService:
         local_wm = _resolve_local_file(watermark_path) if watermark_path else None
         if local_wm and os.path.isfile(local_wm):
             inputs.extend(["-i", local_wm])
-            scale_val = max(0.04, min(1.0, float(watermark_scale or 0.20)))
+            scale_val = max(0.04, min(0.96, float(watermark_scale or 0.20)))
             wm_w = int(video_w * scale_val)
             wm_w = wm_w - (wm_w % 2)
+            wm_h = int(video_h * 0.96)
+            wm_h = wm_h - (wm_h % 2)
             opacity_val = max(0.10, min(1.0, float(watermark_opacity or 0.90)))
 
             scaled_label = f"wm_scale_{input_idx}"
-            filter_chains.append(f"[{input_idx}:v]scale={wm_w}:-2,format=rgba,colorchannelmixer=aa={opacity_val}[{scaled_label}]")
+            filter_chains.append(
+                f"[{input_idx}:v]scale={wm_w}:{wm_h}:force_original_aspect_ratio=decrease,"
+                f"format=rgba,colorchannelmixer=aa={opacity_val}[{scaled_label}]"
+            )
 
             # Continuous overlay without 2s interval lap
             enable_expr = ""
@@ -169,7 +180,7 @@ class WatermarkService:
                     y_ratio = max(0.0, min(1.0, y_pct / 100.0))
                     out_label = f"v_wm_{input_idx}"
                     filter_chains.append(
-                        f"[{current_stream}][{scaled_label}]overlay=x='min(max(0, (W-w)*{x_ratio:.4f}), W-w)':y='min(max(0, (H-h)*{y_ratio:.4f}), H-h)'{enable_expr}[{out_label}]"
+                        f"[{current_stream}][{scaled_label}]overlay=x='min(max(0, W*{x_ratio:.4f}-w/2), W-w)':y='min(max(0, H*{y_ratio:.4f}-h/2), H-h)'{enable_expr}[{out_label}]"
                     )
                     current_stream = out_label
                 except Exception as parse_err:
@@ -224,18 +235,16 @@ class WatermarkService:
         filter_complex_str = ";".join(filter_chains)
         os.makedirs(os.path.dirname(os.path.abspath(output_video_path)), exist_ok=True)
 
+        from app.services.subtitle_service import subtitle_service
+        fast_v_args = subtitle_service._get_fast_video_encoding_args()
+
         cmd = [
             "ffmpeg", "-y",
-            "-threads", "1",
-            "-filter_threads", "1",
-            "-filter_complex_threads", "1",
             *inputs,
             "-filter_complex", filter_complex_str,
             "-map", f"[{current_stream}]",
             "-map", "0:a?",
-            "-c:v", "libx264",
-            "-preset", "ultrafast",
-            "-crf", "22",
+            *fast_v_args,
             "-c:a", "copy",
             "-movflags", "+faststart",
             output_video_path
@@ -246,8 +255,22 @@ class WatermarkService:
         logger.info(f"Executing FFmpeg branding filter: {' '.join(cmd[:12])}...")
         res = subprocess.run(cmd, capture_output=True, text=True)
         if res.returncode != 0:
-            logger.error(f"FFmpeg branding failed (code {res.returncode}): {res.stderr}")
-            raise RuntimeError(f"FFmpeg branding failed: {res.stderr[:400]}")
+            logger.warning(f"Fast branding render failed ({res.stderr[:200] if res.stderr else ''}). Retrying with CPU libx264...")
+            cpu_cmd = [
+                "ffmpeg", "-y",
+                *inputs,
+                "-filter_complex", filter_complex_str,
+                "-map", f"[{current_stream}]",
+                "-map", "0:a?",
+                "-c:v", "libx264", "-preset", "ultrafast", "-crf", "22",
+                "-c:a", "copy",
+                "-movflags", "+faststart",
+                output_video_path
+            ]
+            res = subprocess.run(cpu_cmd, capture_output=True, text=True)
+            if res.returncode != 0:
+                logger.error(f"FFmpeg branding failed (code {res.returncode}): {res.stderr}")
+                raise RuntimeError(f"FFmpeg branding failed: {res.stderr[:400]}")
 
         if not os.path.exists(output_video_path) or os.path.getsize(output_video_path) == 0:
             raise RuntimeError("Branded video output file was not created or is empty.")
