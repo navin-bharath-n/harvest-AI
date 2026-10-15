@@ -14,6 +14,8 @@ RUN apt-get update \
         g++ \
         git \
         ffmpeg \
+        fonts-noto-core \
+        fontconfig \
         libgl1 \
         libglib2.0-0 \
         postgresql-client \

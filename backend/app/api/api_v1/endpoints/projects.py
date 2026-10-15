@@ -1,9 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import List
+import logging
 from app.core.database import get_db
 from app.api.deps import get_current_user
 from app import models, schemas
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -96,13 +99,22 @@ def delete_project(
 
     for video in db_project.videos:
         from app.services import object_storage
-        object_storage.delete(video.storage_path)
+        if video.storage_path:
+            try:
+                object_storage.delete(video.storage_path)
+            except Exception as e:
+                logger.warning(f"Could not remove video file {video.storage_path}: {e}")
         _remove_media_item(video.audio_path)
         _remove_media_item(video.frame_directory)
         if video.storage_path:
             base_name = os.path.splitext(os.path.basename(video.storage_path))[0]
             _remove_media_item(os.path.join(str(_BACKEND_DIR), "uploads", base_name))
         for clip in video.clips:
+            if clip.storage_path:
+                try:
+                    object_storage.delete(clip.storage_path)
+                except Exception as e:
+                    logger.warning(f"Could not remove clip file {clip.storage_path}: {e}")
             _remove_media_item(clip.storage_path)
 
     db.delete(db_project)

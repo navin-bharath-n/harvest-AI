@@ -132,6 +132,10 @@ class MasterAIAgent:
         speaker_gender: str = "female",
         framing_mode: str = "fit_blur",
         caption_style: str = "pop",
+        source_language: str = None,
+        retranscribe: bool = False,
+        primary_color: str = None,
+        highlight_color: str = None,
         on_variation_complete=None
     ) -> List[dict]:
         """
@@ -143,7 +147,7 @@ class MasterAIAgent:
         - Pristine 9:16 vertical smart crop without jarring cuts.
         """
         from app.services.video_processor import VideoProcessor
-        from app.services.transcription_service import transcription_service
+        from app.services.transcription_service import transcription_service, normalize_whisper_language
         from app.services.content_understanding_service import content_understanding_service
         from app.services.smart_cropping_service import smart_cropping_service
         from app.services.prompt_editing_agent import prompt_editing_agent
@@ -176,12 +180,66 @@ class MasterAIAgent:
         if progress_callback:
             progress_callback("transcribing")
         full_transcript = []
-        if audio_path and os.path.exists(audio_path):
-            logger.info(f"Transcribing audio: {audio_path}")
+        norm_source = normalize_whisper_language(source_language)
+        if not norm_source and db_video:
+            from app.services.transcription_service import detect_video_context_language
+            context_text = f"{db_video.original_filename or ''} {(db_video.content_analysis or {}).get('title', '')}"
+            norm_source = detect_video_context_language(context_text)
+            if norm_source:
+                logger.info(f"Auto-detected source language '{norm_source}' from video metadata for video {video_id}.")
+
+        cached_meta = dict(db_video.content_analysis or {}).get("transcription_meta", {}) if db_video else {}
+        cached_lang = cached_meta.get("language")
+        cached_chunked = cached_meta.get("chunked", False)
+        cached_version = cached_meta.get("version", 0)
+
+        # Check if cached transcript contains obvious hallucinations or corrupted sequences
+        cached_is_clean = True
+
+        # Invalidate unchunked transcripts on videos > 180s
+        if db_video and (db_video.duration and db_video.duration > 180) and not cached_chunked and cached_version < 3:
+            cached_is_clean = False
+            logger.info(f"Video {video_id} duration ({db_video.duration:.1f}s) > 180s but transcript is unchunked (version {cached_version}). Forcing retranscription for frame accuracy.")
+
+        if cached_is_clean and db_video is not None and db_video.transcript:
+            from app.services.transcription_service import is_hallucination_or_noise
+            for w in db_video.transcript[:50]:
+                t_str = str(w.get("text", "")).strip()
+                if is_hallucination_or_noise(t_str) or "\u0bd7\u0bc6" in t_str or any(0x0600 <= ord(c) <= 0x06FF for c in t_str):
+                    cached_is_clean = False
+                    logger.info(f"Cached transcript for video {video_id} contains hallucination artifacts ('{t_str}'). Forcing retranscription.")
+                    break
+
+        if (
+            db_video is not None
+            and db_video.transcript
+            and not retranscribe
+            and cached_is_clean
+            and (norm_source is None or cached_lang == norm_source)
+        ):
+            logger.info(f"Reusing existing clean transcript for video {video_id} ({len(db_video.transcript)} segments, Lang={cached_lang or 'auto'})")
+            full_transcript = list(db_video.transcript)
+        elif audio_path and os.path.exists(audio_path):
+            logger.info(f"Transcribing audio: {audio_path} [Lang={norm_source}]")
             try:
-                full_transcript = transcription_service.transcribe(audio_path)
+                context_str = db_video.original_filename if db_video else None
+                full_transcript = transcription_service.transcribe(
+                    audio_path,
+                    language=norm_source,
+                    context=context_str
+                )
                 if db_video is not None:
                     db_video.transcript = full_transcript
+                    meta_dict = dict(db_video.content_analysis or {})
+                    meta_dict["transcription_meta"] = {
+                        "language": norm_source or "auto",
+                        "provider": transcription_service.last_provider or "unknown",
+                        "model": transcription_service.last_model or "unknown",
+                        "word_count": len(full_transcript),
+                        "chunked": True if (db_video.duration and db_video.duration > 180) else False,
+                        "version": 3
+                    }
+                    db_video.content_analysis = meta_dict
             except Exception as e:
                 logger.warning(f"Transcription failed (continuing without transcript): {e}")
         else:
@@ -447,6 +505,10 @@ class MasterAIAgent:
             instructions = prompt_editing_agent.parse_prompt(persona_prompt)
             # Enforce persona's specific animated caption style and BGM
             instructions["caption_style"] = caption_style or persona_info["caption_style"]
+            if primary_color:
+                instructions["primary_color"] = primary_color
+            if highlight_color:
+                instructions["highlight_color"] = highlight_color
             instructions["music_style"] = persona_info.get("music_style", "standard")
             instructions["zooms"] = "none"
             instructions["transition"] = "none"
@@ -585,7 +647,9 @@ class MasterAIAgent:
                     if has_subtitles:
                         style_config = {
                             "caption_style": caption_preset,
-                            "target_lang": t_lang
+                            "target_lang": t_lang if (t_lang and t_lang != "none") else (source_language or "none"),
+                            "primary_color": instructions.get("primary_color"),
+                            "highlight_color": instructions.get("highlight_color"),
                         }
                         subtitle_service.generate_ass(shifted_words, ass_path, style_config)
 

@@ -27,8 +27,12 @@ import {
   Play,
   Pause,
   Volume2,
-  Move
+  Move,
+  QrCode,
+  Quote,
+  Link2
 } from 'lucide-react';
+import { QRCodeSVG } from 'qrcode.react';
 import { api } from '../api/client';
 import { useAuth } from '../context/AuthContext';
 import harvestLogo from '../Untitled Design.png';
@@ -127,8 +131,11 @@ export default function SocialPublishPage() {
   const [watermarkPos, setWatermarkPos] = useState({ x: 84, y: 8 }); // % coordinates from top-left
   const [isDraggingWatermark, setIsDraggingWatermark] = useState(false);
   const videoContainerRef = useRef(null);
+  const watermarkOverlayRef = useRef(null);
+  const footerOverlayRef = useRef(null);
 
   const [watermarkScale, setWatermarkScale] = useState(20); // 8% to 100% of video width
+  const [watermarkAspectRatio, setWatermarkAspectRatio] = useState(1);
   const [watermarkOpacity, setWatermarkOpacity] = useState(90); // 40% to 100%
   const [watermarkMode, setWatermarkMode] = useState('always'); // 'always'
   const watermarkInputRef = useRef(null);
@@ -141,6 +148,11 @@ export default function SocialPublishPage() {
   const [footerPosition, setFooterPosition] = useState('bottom');
   const [isDraggingFooter, setIsDraggingFooter] = useState(false);
   const footerInputRef = useRef(null);
+
+  const getSafeFooterY = (y, height = footerHeight) => {
+    const halfHeightPct = (Number(height) / 1920) * 50;
+    return Math.max(halfHeightPct, Math.min(100 - halfHeightPct, Number(y) || 0));
+  };
 
   const [isBurningBranding, setIsBurningBranding] = useState(false);
   const burningBranding = isBurningBranding;
@@ -173,9 +185,12 @@ export default function SocialPublishPage() {
       let xPct = ((clientX - rect.left) / rect.width) * 100;
       let yPct = ((clientY - rect.top) / rect.height) * 100;
 
-      // Constrain inside frame with safe margin
-      xPct = Math.max(5, Math.min(95, Math.round(xPct * 10) / 10));
-      yPct = Math.max(5, Math.min(95, Math.round(yPct * 10) / 10));
+      // Coordinates represent the overlay center. Keep the complete logo inside the 9:16 frame.
+      const logoRect = watermarkOverlayRef.current?.getBoundingClientRect();
+      const halfWidthPct = logoRect ? (logoRect.width / rect.width) * 50 : 0;
+      const halfHeightPct = logoRect ? (logoRect.height / rect.height) * 50 : 0;
+      xPct = Math.max(halfWidthPct, Math.min(100 - halfWidthPct, Math.round(xPct * 10) / 10));
+      yPct = Math.max(halfHeightPct, Math.min(100 - halfHeightPct, Math.round(yPct * 10) / 10));
 
       setWatermarkPos({ x: xPct, y: yPct });
       setWatermarkPosition(`custom:${xPct}:${yPct}`);
@@ -220,7 +235,8 @@ export default function SocialPublishPage() {
       if (!rect.height) return;
 
       let yPct = ((clientY - rect.top) / rect.height) * 100;
-      const halfH = ((footerHeight / 1920) * 100) / 2;
+      const bannerRect = footerOverlayRef.current?.getBoundingClientRect();
+      const halfH = bannerRect ? (bannerRect.height / rect.height) * 50 : ((footerHeight / 1920) * 100) / 2;
       yPct = Math.max(halfH, Math.min(100 - halfH, Math.round(yPct * 10) / 10));
 
       setFooterPos({ y: yPct });
@@ -265,7 +281,10 @@ export default function SocialPublishPage() {
   const [showFollowAction, setShowFollowAction] = useState(true);
   const [outroFollowText, setOutroFollowText] = useState('Follow');
   const [outroLongText, setOutroLongText] = useState('');
+  const [outroQrLink, setOutroQrLink] = useState('');
+  const [outroQuoteText, setOutroQuoteText] = useState('');
   const [outroMusicStyle, setOutroMusicStyle] = useState('upbeat');
+  const [asidePreviewTab, setAsidePreviewTab] = useState('video'); // 'video' | 'outro'
 
   const refreshConnections = useCallback(async () => {
     if (!currentUserId) return [];
@@ -328,7 +347,17 @@ export default function SocialPublishPage() {
         const existingBranding = clipResult.edit_options?.branding;
         if (existingBranding) {
           if (existingBranding.watermark_path) setWatermarkPath(existingBranding.watermark_path);
-          if (existingBranding.watermark_position) setWatermarkPosition(existingBranding.watermark_position);
+          if (existingBranding.watermark_position) {
+            setWatermarkPosition(existingBranding.watermark_position);
+            if (existingBranding.watermark_position.startsWith('custom:') || existingBranding.watermark_position.startsWith('coords:')) {
+              const parts = existingBranding.watermark_position.split(':');
+              const parsedX = parseFloat(parts[1]);
+              const parsedY = parseFloat(parts[2]);
+              if (Number.isFinite(parsedX) && Number.isFinite(parsedY)) {
+                setWatermarkPos({ x: Math.max(0, Math.min(100, parsedX)), y: Math.max(0, Math.min(100, parsedY)) });
+              }
+            }
+          }
           if (existingBranding.watermark_scale) setWatermarkScale(Math.round(existingBranding.watermark_scale * 100));
           if (existingBranding.watermark_opacity) setWatermarkOpacity(Math.round(existingBranding.watermark_opacity * 100));
           if (existingBranding.watermark_mode) setWatermarkMode(existingBranding.watermark_mode === 'interval_2s' ? 'always' : existingBranding.watermark_mode);
@@ -336,7 +365,7 @@ export default function SocialPublishPage() {
           if (existingBranding.footer_height) setFooterHeight(existingBranding.footer_height);
           if (existingBranding.footer_position) {
             setFooterPosition(existingBranding.footer_position);
-            if (existingBranding.footer_position.startsWith('custom:')) {
+            if (existingBranding.footer_position.startsWith('custom:') || existingBranding.footer_position.startsWith('coords:')) {
               const parts = existingBranding.footer_position.split(':');
               const parsedY = parseFloat(parts[parts.length - 1]);
               if (!isNaN(parsedY)) setFooterPos({ y: parsedY });
@@ -362,6 +391,8 @@ export default function SocialPublishPage() {
           if (eo.outro_subscribe_text) setOutroSubscribeText(eo.outro_subscribe_text);
           if (eo.outro_follow_text) setOutroFollowText(eo.outro_follow_text);
           if (eo.outro_custom_text) setOutroLongText(eo.outro_custom_text);
+          if (eo.outro_qr_link) setOutroQrLink(eo.outro_qr_link);
+          if (eo.outro_quote_text) setOutroQuoteText(eo.outro_quote_text);
           if (eo.outro_duration) setOutroDuration(Number(eo.outro_duration));
           if (eo.outro_music_style) setOutroMusicStyle(eo.outro_music_style);
         }
@@ -605,6 +636,8 @@ export default function SocialPublishPage() {
         outro_subscribe_text: isCustomMode && showSubscribeAction ? outroSubscribeText : '',
         outro_follow_text: isCustomMode && showFollowAction ? outroFollowText : '',
         outro_custom_text: isCustomMode ? outroLongText : '',
+        outro_qr_link: isCustomMode ? outroQrLink.trim() : '',
+        outro_quote_text: isCustomMode ? outroQuoteText.trim() : '',
         outro_duration: isCustomMode ? outroDuration : (selectedTemplate?.duration || 3.0),
         outro_music_style: outroMusicStyle || 'upbeat',
       };
@@ -922,6 +955,9 @@ export default function SocialPublishPage() {
     }
   };
 
+  // Match the renderer's fit-inside sizing while keeping portrait logos inside the 9:16 frame.
+  const watermarkPreviewWidth = Math.min(Number(watermarkScale) || 20, 96, 96 * watermarkAspectRatio * (16 / 9));
+
   const hasAnyBranding = Boolean(watermarkPreviewUrl || watermarkPath || footerPreviewUrl || footerPath);
   const selectedTemplate = templates.find((t) => t.id === selectedTemplateId);
   const hasAnyOutro = Boolean((outroMode === 'template' && selectedTemplate) || outroMode === 'custom');
@@ -938,10 +974,200 @@ export default function SocialPublishPage() {
         
 
 
+        /* Base input styling: precise heights prevent iOS viewport zoom and clipping */
+        .harvest-publish-input,
+        .harvest-publish-select {
+          font-family: inherit !important;
+          font-size: 0.95rem !important; /* 16px min prevents iOS zoom */
+          font-weight: 400 !important;
+          height: 42px !important;
+          line-height: 42px !important;
+          padding: 0 0.75rem !important;
+          box-sizing: border-box !important;
+          border-radius: 8px !important;
+        }
+
+        .harvest-publish-textarea {
+          font-family: inherit !important;
+          font-size: 0.95rem !important;
+          font-weight: 400 !important;
+          line-height: 1.45 !important;
+          padding: 0.6rem 0.75rem !important;
+          box-sizing: border-box !important;
+          border-radius: 8px !important;
+        }
+
+        .harvest-publish-input:focus,
+        .harvest-publish-textarea:focus,
+        .harvest-publish-select:focus {
+          outline: none;
+          border-color: #1f6f4a !important;
+          box-shadow: 0 0 0 3px rgba(31, 111, 74, 0.15);
+        }
+
+        .harvest-outro-mobile-label {
+          display: none;
+        }
+
+        .harvest-template-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+          gap: 0.85rem;
+          max-height: 420px;
+          overflow-y: auto;
+          padding-right: 4px;
+        }
+
+        .harvest-template-card-thumb {
+          position: relative;
+          width: 100%;
+          height: 110px;
+          background: #111827;
+          overflow: hidden;
+        }
+
         @media (max-width: 860px) {
-          .harvest-publish-layout { grid-template-columns: minmax(0, 1fr) !important; }
-          .harvest-publish-header { padding: 0 1rem !important; }
-          .harvest-publish-brand { font-size: 1rem !important; }
+          /* Header */
+          .harvest-publish-header {
+            height: 54px !important;
+            padding: 0 0.85rem !important;
+            gap: 0.5rem !important;
+          }
+          .harvest-publish-brand {
+            font-size: 1.05rem !important;
+          }
+          .harvest-publish-header img {
+            width: 28px !important;
+            height: 28px !important;
+          }
+          .harvest-publish-user {
+            display: none !important; /* Hides email on small viewports so Sign Out is always accessible */
+          }
+          .harvest-publish-logout-btn {
+            padding: 0.35rem 0.6rem !important;
+            font-size: 0.8rem !important;
+          }
+
+          /* Main container & Hero: compact and clean with ample bottom clearance */
+          .harvest-publish-main {
+            padding: 0.75rem 0.65rem calc(8rem + env(safe-area-inset-bottom, 20px)) !important;
+          }
+          .harvest-publish-hero {
+            padding: 0.75rem 0.85rem !important;
+            margin-bottom: 0.65rem !important;
+            border-radius: 9px !important;
+          }
+          .harvest-publish-hero h1 {
+            font-size: 1.12rem !important;
+            line-height: 1.25 !important;
+            margin-bottom: 0.15rem !important;
+          }
+          .harvest-publish-hero p {
+            display: none !important; /* Hides long filler subtitle on mobile so controls are right at your fingertips */
+          }
+
+          /* Two-stage Tabs */
+          .harvest-publish-stage-tabs {
+            gap: 0.4rem !important;
+            margin-bottom: 0.75rem !important;
+          }
+          .harvest-publish-stage-btn {
+            padding: 0.55rem 0.4rem !important;
+            font-size: 0.82rem !important;
+            gap: 0.35rem !important;
+            min-height: 40px !important;
+            border-radius: 8px !important;
+          }
+          .harvest-publish-stage-btn svg {
+            width: 15px !important;
+            height: 15px !important;
+          }
+          .harvest-publish-tab-sub {
+            display: none !important; /* Condenses labels to '1. Customize' & '2. Publish' on mobile */
+          }
+
+          /* Outro switcher compact labels on mobile */
+          .harvest-outro-desktop-label {
+            display: none !important;
+          }
+          .harvest-outro-mobile-label {
+            display: inline !important;
+          }
+
+          /* Single-column grid with live video preview elevated to the top */
+          .harvest-publish-layout {
+            grid-template-columns: minmax(0, 1fr) !important;
+            gap: 0.85rem !important;
+          }
+
+          /* Aside Video Preview placed right beneath stage tabs on mobile */
+          .harvest-publish-aside {
+            order: -1 !important;
+            position: static !important;
+            padding: 0.85rem !important;
+            border-radius: 9px !important;
+            margin-bottom: 0.25rem !important;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.04) !important;
+          }
+          .harvest-publish-video-box {
+            max-height: 44vh !important;
+            max-width: 260px !important;
+            margin: 0 auto !important;
+          }
+
+          /* On mobile in Stage 1, hide duplicate aside actions so preview stays clean and user flows through forms */
+          .harvest-publish-aside-stage1-actions {
+            display: none !important;
+          }
+
+          /* Section cards: compact & scannable */
+          .harvest-publish-section {
+            padding: 0.85rem !important;
+            border-radius: 9px !important;
+            margin-bottom: 0.75rem !important;
+          }
+          .harvest-publish-section h2 {
+            font-size: 0.98rem !important;
+            margin-bottom: 0.55rem !important;
+          }
+          .harvest-publish-section p.harvest-section-desc {
+            font-size: 0.8rem !important;
+            line-height: 1.35 !important;
+            margin-bottom: 0.65rem !important;
+            color: #64748b !important;
+          }
+
+          /* 2-column compact grid for template cards on mobile */
+          .harvest-template-grid {
+            grid-template-columns: repeat(2, 1fr) !important;
+            gap: 0.55rem !important;
+            max-height: 320px !important;
+          }
+          .harvest-template-card-thumb {
+            height: 78px !important;
+          }
+
+          /* Channel platform cards */
+          .harvest-publish-platform-card {
+            flex-direction: column !important;
+            align-items: stretch !important;
+            gap: 0.65rem !important;
+            padding: 0.75rem 0.85rem !important;
+            border-radius: 8px !important;
+          }
+          .harvest-publish-platform-btn {
+            width: 100% !important;
+            min-width: 0 !important;
+            justify-content: center !important;
+            padding: 0.6rem 0.8rem !important;
+            font-size: 0.84rem !important;
+          }
+
+          /* Mobile bottom action bar for Stage 1 */
+          .harvest-publish-stage1-mobile-actions {
+            display: block !important;
+            margin-top: 0.4rem;
+          }
         }
       `}</style>
 
@@ -952,17 +1178,17 @@ export default function SocialPublishPage() {
           <span className="harvest-publish-brand" style={{ fontSize: '1.25rem', fontFamily: 'Georgia, serif', fontWeight: 700 }}>Harvest Studio</span>
         </button>
         <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-          <span style={{ color: '#5b616b', fontSize: '0.9rem' }}>{user?.full_name || user?.email || 'Account'}</span>
-          <button type="button" onClick={logout} style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', padding: '0.55rem 0.8rem', border: '1px solid #e6e6e1', borderRadius: 7, background: '#fff', color: '#343943', cursor: 'pointer' }}><LogOut size={16} /> Sign Out</button>
+          <span className="harvest-publish-user" style={{ color: '#5b616b', fontSize: '0.9rem' }}>{user?.full_name || user?.email || 'Account'}</span>
+          <button type="button" className="harvest-publish-logout-btn" onClick={logout} style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', padding: '0.55rem 0.8rem', border: '1px solid #e6e6e1', borderRadius: 7, background: '#fff', color: '#343943', cursor: 'pointer' }}><LogOut size={16} /> Sign Out</button>
         </div>
       </header>
 
-      <main style={{ maxWidth: 1240, margin: '0 auto', padding: '2rem 1.25rem 4rem' }}>
+      <main className="harvest-publish-main" style={{ maxWidth: 1240, margin: '0 auto', padding: '2rem 1.25rem 4rem' }}>
         <button type="button" onClick={() => navigate(returnTo)} style={{ display: 'inline-flex', alignItems: 'center', gap: '0.45rem', marginBottom: '1rem', padding: '0.4rem 0', border: 0, color: '#536071', background: 'transparent', fontWeight: 600, cursor: 'pointer' }}>
           <ArrowLeft size={17} /> Back to Studio
         </button>
 
-        <section style={{ padding: '1.4rem 1.5rem', marginBottom: '1.25rem', background: '#fff', border: '1px solid #e6e6e1', borderRadius: 12, boxShadow: '0 2px 8px rgba(22,24,29,0.03)' }}>
+        <section className="harvest-publish-hero" style={{ padding: '1.4rem 1.5rem', marginBottom: '1.25rem', background: '#fff', border: '1px solid #e6e6e1', borderRadius: 12, boxShadow: '0 2px 8px rgba(22,24,29,0.03)' }}>
           <div style={{ color: '#7a808a', textTransform: 'uppercase', letterSpacing: '0.07em', fontWeight: 650, fontSize: '0.76rem', marginBottom: '0.45rem' }}>Publish & Branding Studio</div>
           <h1 style={{ margin: '0 0 0.35rem', fontFamily: 'Georgia, serif', fontSize: '1.65rem' }}>{clip?.title || 'Selected generated video'}</h1>
           <p style={{ margin: 0, color: '#657080', fontSize: '0.95rem' }}>Set your custom thumbnail, add watermarks and header/footer banners, then publish directly to your channels.</p>
@@ -987,9 +1213,10 @@ export default function SocialPublishPage() {
         ) : (
           <>
             {/* Two-Stage Progress Tabs: 1. Customize & Brand vs 2. Channels & Publish */}
-            <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '1.25rem' }}>
+            <div className="harvest-publish-stage-tabs" style={{ display: 'flex', gap: '0.75rem', marginBottom: '1.25rem' }}>
               <button
                 type="button"
+                className="harvest-publish-stage-btn"
                 onClick={() => setCurrentStage('customize')}
                 style={{
                   flex: 1,
@@ -1010,7 +1237,7 @@ export default function SocialPublishPage() {
                 }}
               >
                 <Sliders size={18} />
-                <span>1. Customize &amp; Brand</span>
+                <span>1. Customize <span className="harvest-publish-tab-sub">&amp; Brand</span></span>
                 {(hasAnyCustomization || hasRenderedOnce) && (
                   <span style={{ fontSize: '0.72rem', background: (brandingBurned || hasRenderedOnce) ? '#dcfce7' : '#fef3c7', color: (brandingBurned || hasRenderedOnce) ? '#15803d' : '#b45309', padding: '0.15rem 0.5rem', borderRadius: 99, fontWeight: 700 }}>
                     {(brandingBurned || hasRenderedOnce) ? 'Rendered' : 'Edits Active'}
@@ -1020,6 +1247,7 @@ export default function SocialPublishPage() {
 
               <button
                 type="button"
+                className="harvest-publish-stage-btn"
                 onClick={() => setCurrentStage('publish')}
                 style={{
                   flex: 1,
@@ -1040,7 +1268,7 @@ export default function SocialPublishPage() {
                 }}
               >
                 <UploadCloud size={18} />
-                <span>2. Channels &amp; Publish</span>
+                <span>2. <span className="harvest-publish-tab-sub">Channels &amp; </span>Publish</span>
                 {(hasRenderedOnce || !hasAnyCustomization) && (
                   <span style={{ fontSize: '0.72rem', background: '#dcfce7', color: '#15803d', padding: '0.15rem 0.5rem', borderRadius: 99, fontWeight: 700 }}>
                     Ready
@@ -1051,21 +1279,21 @@ export default function SocialPublishPage() {
 
             <div className="harvest-publish-layout" style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.35fr) minmax(320px, 390px)', alignItems: 'start', gap: '1.4rem' }}>
               {/* Left Column: Form & Tools */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+              <div className="harvest-publish-form-col" style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
                 {currentStage === 'customize' ? (
                   <>
 
               {/* 1. Post Details */}
-              <section style={{ padding: '1.35rem', background: '#fff', border: '1px solid #e6e6e1', borderRadius: 12 }}>
+              <section className="harvest-publish-section" style={{ padding: '1.35rem', background: '#fff', border: '1px solid #e6e6e1', borderRadius: 12 }}>
                 <h2 style={{ margin: '0 0 1rem', fontSize: '1.18rem' }}>1. Post details</h2>
                 <label style={{ display: 'block', marginBottom: '0.9rem', color: '#586273', fontSize: '0.88rem', fontWeight: 600 }}>Video title
-                  <input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={100} style={{ display: 'block', width: '100%', boxSizing: 'border-box', marginTop: '0.35rem', padding: '0.7rem 0.75rem', border: '1px solid #d9dcd8', borderRadius: 7, color: '#16181d', font: 'inherit' }} />
+                  <input className="harvest-publish-input" value={title} onChange={(event) => setTitle(event.target.value)} maxLength={100} style={{ display: 'block', width: '100%', boxSizing: 'border-box', marginTop: '0.35rem', padding: '0.7rem 0.75rem', border: '1px solid #d9dcd8', borderRadius: 7, color: '#16181d' }} />
                 </label>
                 <label style={{ display: 'block', marginBottom: '0.9rem', color: '#586273', fontSize: '0.88rem', fontWeight: 600 }}>Description
-                  <textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={3} maxLength={5000} style={{ display: 'block', width: '100%', boxSizing: 'border-box', resize: 'vertical', marginTop: '0.35rem', padding: '0.7rem 0.75rem', border: '1px solid #d9dcd8', borderRadius: 7, color: '#16181d', font: 'inherit' }} />
+                  <textarea className="harvest-publish-textarea" value={description} onChange={(event) => setDescription(event.target.value)} rows={3} maxLength={5000} style={{ display: 'block', width: '100%', boxSizing: 'border-box', resize: 'vertical', marginTop: '0.35rem', padding: '0.7rem 0.75rem', border: '1px solid #d9dcd8', borderRadius: 7, color: '#16181d' }} />
                 </label>
                 <label style={{ display: 'block', color: '#586273', fontSize: '0.88rem', fontWeight: 600 }}>YouTube visibility
-                  <select value={privacy} onChange={(event) => setPrivacy(event.target.value)} style={{ display: 'block', marginTop: '0.35rem', padding: '0.65rem 0.75rem', border: '1px solid #d9dcd8', borderRadius: 7, background: '#fff', color: '#16181d', font: 'inherit' }}>
+                  <select className="harvest-publish-select" value={privacy} onChange={(event) => setPrivacy(event.target.value)} style={{ display: 'block', width: '100%', boxSizing: 'border-box', marginTop: '0.35rem', padding: '0.65rem 0.75rem', border: '1px solid #d9dcd8', borderRadius: 7, background: '#fff', color: '#16181d' }}>
                     <option value="public">Public</option>
                     <option value="unlisted">Unlisted</option>
                     <option value="private">Private</option>
@@ -1074,7 +1302,7 @@ export default function SocialPublishPage() {
               </section>
 
               {/* 2. Custom Thumbnail Card */}
-              <section style={{ padding: '1.35rem', background: '#fff', border: '1px solid #e6e6e1', borderRadius: 12 }}>
+              <section className="harvest-publish-section" style={{ padding: '1.35rem', background: '#fff', border: '1px solid #e6e6e1', borderRadius: 12 }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.6rem' }}>
                   <h2 style={{ margin: 0, fontSize: '1.18rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                     <ImageIcon size={20} color="#1f6f4a" /> 2. Custom Thumbnail
@@ -1085,7 +1313,7 @@ export default function SocialPublishPage() {
                     </span>
                   )}
                 </div>
-                <p style={{ margin: '0 0 1rem', color: '#657080', fontSize: '0.88rem' }}>
+                <p className="harvest-section-desc" style={{ margin: '0 0 1rem', color: '#657080', fontSize: '0.88rem' }}>
                   Upload a custom thumbnail image (PNG, JPG, WebP) for YouTube and social feeds.
                 </p>
 
@@ -1098,7 +1326,7 @@ export default function SocialPublishPage() {
                 />
 
                 {thumbnailPreviewUrl ? (
-                  <div style={{ display: 'flex', gap: '1.1rem', alignItems: 'center', background: '#f9f9f7', padding: '0.9rem', borderRadius: 9, border: '1px solid #e6e6e1' }}>
+                  <div style={{ display: 'flex', gap: '0.85rem', alignItems: 'center', flexWrap: 'wrap', background: '#f9f9f7', padding: '0.85rem', borderRadius: 9, border: '1px solid #e6e6e1' }}>
                     <div style={{ width: 85, height: 120, borderRadius: 6, overflow: 'hidden', background: '#1c1e24', flexShrink: 0, boxShadow: '0 2px 6px rgba(0,0,0,0.1)' }}>
                       <img src={thumbnailPreviewUrl} alt="Thumbnail Preview" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                     </div>
@@ -1147,7 +1375,7 @@ export default function SocialPublishPage() {
               </section>
 
               {/* 3. Watermark & Footer Branding Studio */}
-              <section style={{ padding: '1.35rem', background: '#fff', border: '1px solid #e6e6e1', borderRadius: 12 }}>
+              <section className="harvest-publish-section" style={{ padding: '1.35rem', background: '#fff', border: '1px solid #e6e6e1', borderRadius: 12 }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.4rem' }}>
                   <h2 style={{ margin: 0, fontSize: '1.18rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                     <Layers size={20} color="#1f6f4a" /> 3. Logo Watermark &amp; Footer Banner
@@ -1162,7 +1390,7 @@ export default function SocialPublishPage() {
                     </span>
                   ) : null}
                 </div>
-                <p style={{ margin: '0 0 1.1rem', color: '#657080', fontSize: '0.88rem' }}>
+                <p className="harvest-section-desc" style={{ margin: '0 0 1.1rem', color: '#657080', fontSize: '0.88rem' }}>
                   Add your brand logo watermark (e.g. "nb") and bottom footer banner. See the live demo on the preview player, then click render to create the full video.
                 </p>
 
@@ -1214,7 +1442,7 @@ export default function SocialPublishPage() {
                 {/* Tab 1: Logo / Watermark */}
                 {activeBrandingTab === 'watermark' && (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '1.1rem' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '1rem', background: '#fcfcfb', border: '1px solid #e6e6e1', borderRadius: 9, padding: '0.9rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.75rem', flexWrap: 'wrap', background: '#fcfcfb', border: '1px solid #e6e6e1', borderRadius: 9, padding: '0.85rem' }}>
                       {watermarkPreviewUrl ? (
                         <div style={{ display: 'flex', alignItems: 'center', gap: '0.85rem' }}>
                           <div style={{ width: 50, height: 50, borderRadius: 8, background: '#1c1e24', display: 'grid', placeItems: 'center', overflow: 'hidden' }}>
@@ -1255,36 +1483,48 @@ export default function SocialPublishPage() {
                           </span>
                         )}
                       </div>
-                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(115px, 1fr))', gap: '0.45rem' }}>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0.45rem' }}>
                         {[
-                          { id: 'top-right', label: 'Top Right', x: 84, y: 8 },
                           { id: 'top-left', label: 'Top Left', x: 16, y: 8 },
                           { id: 'center', label: 'Center', x: 50, y: 50 },
-                          { id: 'bottom-right', label: 'Bottom Right', x: 84, y: 90 },
+                          { id: 'top-right', label: 'Top Right', x: 84, y: 8 },
                           { id: 'bottom-left', label: 'Bottom Left', x: 16, y: 90 },
                           { id: 'footer', label: 'Bottom Center', x: 50, y: 90 },
-                        ].map((p) => (
-                          <button
-                            key={p.id}
-                            type="button"
-                            onClick={() => {
-                              setWatermarkPos({ x: p.x, y: p.y });
-                              setWatermarkPosition(p.id);
-                            }}
-                            style={{
-                              padding: '0.55rem 0.65rem',
-                              borderRadius: 6,
-                              border: `1px solid ${watermarkPosition === p.id ? '#1f6f4a' : '#d9dcd8'}`,
-                              background: watermarkPosition === p.id ? '#eef6f0' : '#fff',
-                              color: watermarkPosition === p.id ? '#1f6f4a' : '#343943',
-                              fontWeight: watermarkPosition === p.id ? 700 : 500,
-                              fontSize: '0.8rem',
-                              cursor: 'pointer',
-                            }}
-                          >
-                            {p.label}
-                          </button>
-                        ))}
+                          { id: 'bottom-right', label: 'Bottom Right', x: 84, y: 90 },
+                        ].map((p) => {
+                          const isSelected = watermarkPosition === p.id;
+                          return (
+                            <button
+                              key={p.id}
+                              type="button"
+                              onClick={() => {
+                                setWatermarkPos({ x: p.x, y: p.y });
+                                setWatermarkPosition(p.id);
+                              }}
+                              style={{
+                                padding: '0.45rem 0.35rem',
+                                minHeight: 38,
+                                borderRadius: 7,
+                                border: isSelected ? '1.5px solid #1f6f4a' : '1px solid #d9dcd8',
+                                background: isSelected ? '#eef6f0' : '#fff',
+                                color: isSelected ? '#1f6f4a' : '#343943',
+                                fontWeight: isSelected ? 700 : 500,
+                                fontSize: '0.78rem',
+                                textAlign: 'center',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                gap: '0.3rem',
+                                cursor: 'pointer',
+                                transition: 'all 0.12s ease',
+                                boxShadow: isSelected ? '0 1px 4px rgba(31,111,74,0.15)' : 'none',
+                              }}
+                            >
+                              {isSelected && <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#1f6f4a', flexShrink: 0 }} />}
+                              <span>{p.label}</span>
+                            </button>
+                          );
+                        })}
                       </div>
                     </div>
 
@@ -1321,7 +1561,7 @@ export default function SocialPublishPage() {
                 {/* Tab 2: Footer Banner */}
                 {activeBrandingTab === 'footer' && (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '1.1rem' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '1rem', background: '#fcfcfb', border: '1px solid #e6e6e1', borderRadius: 9, padding: '0.9rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.75rem', flexWrap: 'wrap', background: '#fcfcfb', border: '1px solid #e6e6e1', borderRadius: 9, padding: '0.85rem' }}>
                       {footerPreviewUrl ? (
                         <div style={{ display: 'flex', alignItems: 'center', gap: '0.85rem' }}>
                           <div style={{ width: 80, height: 36, borderRadius: 6, background: '#1c1e24', overflow: 'hidden' }}>
@@ -1351,11 +1591,11 @@ export default function SocialPublishPage() {
                     </div>
 
                     <label style={{ fontSize: '0.85rem', fontWeight: 600, color: '#586273' }}>
-                      Footer Banner Height: <strong style={{ color: '#16181d' }}>{footerHeight}px</strong>
+                      Footer Banner Size: <strong style={{ color: '#16181d' }}>{footerHeight}px high</strong>
                       <input
                         type="range"
                         min="60"
-                        max="260"
+                        max="768"
                         step="10"
                         value={footerHeight}
                         onChange={(e) => setFooterHeight(Number(e.target.value))}
@@ -1367,13 +1607,12 @@ export default function SocialPublishPage() {
                     <div style={{ background: '#fcfcfb', border: '1px solid #e6e6e1', borderRadius: 9, padding: '0.85rem' }}>
                       <div style={{ fontWeight: 650, fontSize: '0.85rem', marginBottom: '0.4rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                         <span style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                          <Move size={15} color="#1f6f4a" /> Banner Position ({Math.round(footerPos.y)}% from top)
+                          <Move size={15} color="#1f6f4a" /> Banner Position ({Math.round(getSafeFooterY(footerPos.y))}% from top)
                         </span>
                         <span style={{ fontSize: '0.74rem', color: '#1f6f4a', fontWeight: 600 }}>Interactive Draggable</span>
                       </div>
                       <div style={{ display: 'flex', gap: '0.4rem', marginTop: '0.35rem' }}>
                         {[
-                          { id: 'bottom', label: 'Bottom (Default)', y: 94 },
                           { id: 'lower-third', label: 'Lower Third', y: 78 },
                           { id: 'center', label: 'Center', y: 50 },
                           { id: 'top', label: 'Top', y: 8 },
@@ -1382,17 +1621,18 @@ export default function SocialPublishPage() {
                             key={preset.id}
                             type="button"
                             onClick={() => {
-                              setFooterPos({ y: preset.y });
-                              setFooterPosition(`custom:${preset.y}`);
+                              const safeY = getSafeFooterY(preset.y);
+                              setFooterPos({ y: safeY });
+                              setFooterPosition(`custom:${safeY}`);
                             }}
                             style={{
                               flex: 1,
                               padding: '0.4rem 0.5rem',
                               borderRadius: 6,
-                              border: `1px solid ${Math.abs(footerPos.y - preset.y) < 3 ? '#1f6f4a' : '#d9dcd8'}`,
-                              background: Math.abs(footerPos.y - preset.y) < 3 ? '#eef6f0' : '#fff',
-                              color: Math.abs(footerPos.y - preset.y) < 3 ? '#1f6f4a' : '#343943',
-                              fontWeight: Math.abs(footerPos.y - preset.y) < 3 ? 700 : 500,
+                              border: `1px solid ${Math.abs(getSafeFooterY(footerPos.y) - getSafeFooterY(preset.y)) < 3 ? '#1f6f4a' : '#d9dcd8'}`,
+                              background: Math.abs(getSafeFooterY(footerPos.y) - getSafeFooterY(preset.y)) < 3 ? '#eef6f0' : '#fff',
+                              color: Math.abs(getSafeFooterY(footerPos.y) - getSafeFooterY(preset.y)) < 3 ? '#1f6f4a' : '#343943',
+                              fontWeight: Math.abs(getSafeFooterY(footerPos.y) - getSafeFooterY(preset.y)) < 3 ? 700 : 500,
                               fontSize: '0.78rem',
                               cursor: 'pointer',
                             }}
@@ -1430,7 +1670,7 @@ export default function SocialPublishPage() {
                         {brandingBurned
                           ? 'Your watermark and styling are burned into the MP4 and ready to publish.'
                           : (hasAnyBranding
-                            ? 'Drag your logo anywhere on the preview video on the right, then click Render.'
+                            ? 'Drag your logo anywhere on the preview video, then click Render.'
                             : 'Upload your logo watermark or footer banner above, then click Render or Proceed to Publish.')}
                       </div>
                     </div>
@@ -1441,17 +1681,17 @@ export default function SocialPublishPage() {
                     </span>
                   ) : hasAnyBranding ? (
                     <span style={{ fontSize: '0.74rem', background: '#fef3c7', color: '#b45309', border: '1px solid #fde68a', padding: '0.25rem 0.65rem', borderRadius: 99, fontWeight: 700, whiteSpace: 'nowrap' }}>
-                      Render on Right ↗
+                      Ready to Render
                     </span>
                   ) : null}
                 </div>
               </section>
 
               {/* 4. Creator Outro & Call to Action Cards */}
-              <section style={{ padding: '1.35rem', background: '#fff', border: '1px solid #e6e6e1', borderRadius: 12 }}>
+              <section className="harvest-publish-section" style={{ padding: '1.35rem', background: '#fff', border: '1px solid #e6e6e1', borderRadius: 12 }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.4rem' }}>
                   <h2 style={{ margin: 0, fontSize: '1.18rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                    <Film size={20} color="#1f6f4a" /> 4. Outro & Call to Action Cards
+                    <Film size={20} color="#1f6f4a" /> 4. Outro &amp; Call to Action Cards
                   </h2>
                   {outroMode === 'template' && selectedTemplate ? (
                     <span style={{ fontSize: '0.74rem', background: '#eef6f0', color: '#1f6f4a', border: '1px solid #cce5d4', padding: '0.2rem 0.6rem', borderRadius: 99, fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}>
@@ -1467,18 +1707,19 @@ export default function SocialPublishPage() {
                     </span>
                   )}
                 </div>
-                <p style={{ margin: '0 0 1.1rem', color: '#657080', fontSize: '0.88rem' }}>
+                <p className="harvest-section-desc" style={{ margin: '0 0 1.1rem', color: '#657080', fontSize: '0.88rem' }}>
                   Optionally append a professional animated outro screen, subscribe alert, or call-to-action card to the end of your short.
                 </p>
 
                 {/* Outro Mode Switcher */}
                 <div style={{ display: 'flex', gap: '0.35rem', padding: '0.3rem', background: '#f4f5f3', borderRadius: 8, marginBottom: '1.25rem' }}>
                   {[
-                    { id: 'none', label: 'No Outro', icon: X },
-                    { id: 'template', label: 'Cloudflare R2 Templates', icon: Film },
-                    { id: 'custom', label: 'Custom 9:16 Builder', icon: Wand2 },
+                    { id: 'none', label: 'No Outro', mobileLabel: 'No Outro', icon: X },
+                    { id: 'template', label: 'Cloudflare R2 Templates', mobileLabel: 'Templates', icon: Film },
+                    { id: 'custom', label: 'Custom 9:16 Builder', mobileLabel: 'Custom CTA', icon: Wand2 },
                   ].map((tab) => {
                     const TabIcon = tab.icon;
+                    const isSelected = outroMode === tab.id;
                     return (
                       <button
                         key={tab.id}
@@ -1491,24 +1732,27 @@ export default function SocialPublishPage() {
                         }}
                         style={{
                           flex: 1,
-                          padding: '0.55rem 0.75rem',
+                          padding: '0.5rem 0.45rem',
+                          minHeight: 36,
                           border: 0,
                           borderRadius: 6,
-                          background: outroMode === tab.id ? '#fff' : 'transparent',
-                          color: outroMode === tab.id ? '#16181d' : '#657080',
-                          fontWeight: outroMode === tab.id ? 700 : 550,
-                          fontSize: '0.86rem',
+                          background: isSelected ? '#fff' : 'transparent',
+                          color: isSelected ? '#16181d' : '#657080',
+                          fontWeight: isSelected ? 700 : 550,
+                          fontSize: '0.82rem',
                           cursor: 'pointer',
                           display: 'inline-flex',
                           alignItems: 'center',
                           justifyContent: 'center',
-                          gap: '0.4rem',
-                          boxShadow: outroMode === tab.id ? '0 1px 4px rgba(0,0,0,0.06)' : 'none',
+                          gap: '0.35rem',
+                          boxShadow: isSelected ? '0 1px 4px rgba(0,0,0,0.06)' : 'none',
                           transition: 'all 0.15s ease',
+                          whiteSpace: 'nowrap',
                         }}
                       >
-                        <TabIcon size={14} />
-                        {tab.label}
+                        <TabIcon size={14} style={{ flexShrink: 0 }} />
+                        <span className="harvest-outro-desktop-label">{tab.label}</span>
+                        <span className="harvest-outro-mobile-label">{tab.mobileLabel}</span>
                       </button>
                     );
                   })}
@@ -1547,8 +1791,8 @@ export default function SocialPublishPage() {
                       ))}
                     </div>
 
-                    {/* Template Cards Grid */}
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: '0.85rem', maxHeight: '420px', overflowY: 'auto', paddingRight: '4px' }}>
+                    {/* Template Cards Grid: 2-column compact grid on mobile */}
+                    <div className="harvest-template-grid">
                       {templates
                         .filter((t) => templateFilterCategory === 'all' || t.category === templateFilterCategory)
                         .map((tmpl) => {
@@ -1568,7 +1812,7 @@ export default function SocialPublishPage() {
                                 flexDirection: 'column',
                               }}
                             >
-                              <div style={{ position: 'relative', width: '100%', height: 110, background: '#111827', overflow: 'hidden' }}>
+                              <div className="harvest-template-card-thumb">
                                 {tmpl.thumb_url ? (
                                   <img src={tmpl.thumb_url} alt={tmpl.title} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                                 ) : (
@@ -1585,11 +1829,11 @@ export default function SocialPublishPage() {
                                   </span>
                                 )}
                               </div>
-                              <div style={{ padding: '0.65rem', flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
-                                <div style={{ fontWeight: 700, fontSize: '0.82rem', color: '#1e293b', marginBottom: '0.2rem', lineHeight: 1.3 }}>
+                              <div style={{ padding: '0.55rem', flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+                                <div style={{ fontWeight: 700, fontSize: '0.8rem', color: '#1e293b', marginBottom: '0.15rem', lineHeight: 1.25 }}>
                                   {tmpl.title}
                                 </div>
-                                <div style={{ fontSize: '0.72rem', color: '#64748b' }}>
+                                <div style={{ fontSize: '0.7rem', color: '#64748b' }}>
                                   {tmpl.badge || tmpl.category}
                                 </div>
                               </div>
@@ -1602,9 +1846,9 @@ export default function SocialPublishPage() {
 
                 {/* MODE 2: CUSTOM 9:16 BUILDER */}
                 {outroMode === 'custom' && (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', background: '#fcfcfb', border: '1px solid #e6e6e1', borderRadius: 9, padding: '1rem' }}>
-                    <div style={{ fontWeight: 700, fontSize: '0.9rem', color: '#16181d' }}>Action Buttons to Display</div>
-                    <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem', background: '#fcfcfb', border: '1px solid #e6e6e1', borderRadius: 9, padding: '0.85rem' }}>
+                    <div style={{ fontWeight: 700, fontSize: '0.88rem', color: '#16181d' }}>Action Buttons to Display</div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '0.45rem' }}>
                       {[
                         { label: '👍 Like', active: showLikeAction, toggle: () => setShowLikeAction(!showLikeAction) },
                         { label: '💬 Comment', active: showCommentAction, toggle: () => setShowCommentAction(!showCommentAction) },
@@ -1616,14 +1860,19 @@ export default function SocialPublishPage() {
                           type="button"
                           onClick={() => btn.toggle()}
                           style={{
-                            padding: '0.45rem 0.8rem',
+                            padding: '0.42rem 0.6rem',
+                            minHeight: 36,
                             borderRadius: 6,
                             border: btn.active ? '1.5px solid #1f6f4a' : '1px solid #d9dcd8',
                             background: btn.active ? '#eef6f0' : '#fff',
                             color: btn.active ? '#1f6f4a' : '#586273',
                             fontWeight: btn.active ? 700 : 500,
-                            fontSize: '0.82rem',
+                            fontSize: '0.8rem',
                             cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            gap: '0.3rem',
                           }}
                         >
                           {btn.label}
@@ -1659,16 +1908,197 @@ export default function SocialPublishPage() {
                       </label>
                     </div>
 
-                    <label style={{ fontSize: '0.82rem', fontWeight: 600, color: '#586273' }}>
-                      Custom Outro Text / Channel Link (Optional):
+                    {/* Custom Outro Headline */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+                      <label style={{ fontSize: '0.82rem', fontWeight: 600, color: '#16181d' }}>
+                        Custom Outro Text / Headline (Optional):
+                      </label>
                       <input
                         type="text"
                         placeholder="e.g. Follow @harvestai for more tips!"
                         value={outroLongText}
                         onChange={(e) => setOutroLongText(e.target.value)}
-                        style={{ display: 'block', width: '100%', boxSizing: 'border-box', marginTop: '0.35rem', padding: '0.55rem 0.7rem', border: '1px solid #d9dcd8', borderRadius: 6, fontSize: '0.84rem' }}
+                        style={{ display: 'block', width: '100%', boxSizing: 'border-box', padding: '0.55rem 0.7rem', border: '1px solid #d9dcd8', borderRadius: 6, fontSize: '0.84rem' }}
                       />
-                    </label>
+                    </div>
+
+                    {/* Promotional QR Code Link */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <label style={{ fontSize: '0.82rem', fontWeight: 600, color: '#16181d', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                          <QrCode size={15} color="#1f6f4a" />
+                          Promotional Link / QR Code URL (Optional):
+                        </label>
+                        {outroQrLink.trim() && (
+                          <span style={{ fontSize: '0.7rem', color: '#1f6f4a', background: '#eef6f0', padding: '0.15rem 0.45rem', borderRadius: 99, fontWeight: 700, display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                            <Check size={11} /> Scannable QR Active
+                          </span>
+                        )}
+                      </div>
+                      <div style={{ position: 'relative' }}>
+                        <input
+                          type="text"
+                          placeholder="e.g. https://yourstore.com/promo or https://youtube.com/@channel"
+                          value={outroQrLink}
+                          onChange={(e) => setOutroQrLink(e.target.value)}
+                          style={{
+                            display: 'block',
+                            width: '100%',
+                            boxSizing: 'border-box',
+                            padding: '0.55rem 0.7rem 0.55rem 2.2rem',
+                            border: outroQrLink.trim() ? '1.5px solid #1f6f4a' : '1px solid #d9dcd8',
+                            borderRadius: 6,
+                            fontSize: '0.84rem',
+                            background: outroQrLink.trim() ? '#fbfdfb' : '#fff'
+                          }}
+                        />
+                        <Link2 size={14} color="#64748b" style={{ position: 'absolute', left: '0.7rem', top: '50%', transform: 'translateY(-50%)' }} />
+                      </div>
+                      <span style={{ fontSize: '0.74rem', color: '#64748b' }}>
+                        Generates a scannable QR code on the outro. Viewers can scan it with their phones to visit your link directly!
+                      </span>
+                    </div>
+
+                    {/* Promotional Quotes or Custom Texts Box */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+                      <label style={{ fontSize: '0.82rem', fontWeight: 600, color: '#16181d', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                        <Quote size={15} color="#8b5cf6" />
+                        Promotional Quotes / Custom Texts Box (Optional):
+                      </label>
+                      <textarea
+                        rows={2}
+                        placeholder="e.g. “Start building smarter today. Use code HARVEST20 for 20% off!” or any inspiring quote"
+                        value={outroQuoteText}
+                        onChange={(e) => setOutroQuoteText(e.target.value)}
+                        style={{
+                          display: 'block',
+                          width: '100%',
+                          boxSizing: 'border-box',
+                          padding: '0.55rem 0.7rem',
+                          border: outroQuoteText.trim() ? '1.5px solid #8b5cf6' : '1px solid #d9dcd8',
+                          borderRadius: 6,
+                          fontSize: '0.84rem',
+                          fontFamily: 'inherit',
+                          resize: 'vertical',
+                          background: outroQuoteText.trim() ? '#faf5ff' : '#fff'
+                        }}
+                      />
+                      <span style={{ fontSize: '0.74rem', color: '#64748b' }}>
+                        Renders an elegant quote card on the outro with your quote or promotional message.
+                      </span>
+                    </div>
+
+                    {/* Live Visual Preview of Outro Card */}
+                    <div style={{ marginTop: '0.4rem', borderTop: '1px solid #e6e6e1', paddingTop: '0.85rem' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.65rem' }}>
+                        <div style={{ fontSize: '0.82rem', fontWeight: 700, color: '#16181d', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                          <Sparkles size={14} color="#1f6f4a" />
+                          Live Outro Preview Card (Appended to Short)
+                        </div>
+                        <span style={{ fontSize: '0.7rem', color: '#64748b', background: '#f1f5f9', padding: '0.15rem 0.45rem', borderRadius: 99 }}>
+                          {outroDuration}s • {outroMusicStyle}
+                        </span>
+                      </div>
+
+                      <div
+                        style={{
+                          background: 'linear-gradient(180deg, #0b0f19 0%, #111827 50%, #064e3b 100%)',
+                          borderRadius: 12,
+                          padding: '1.25rem 1rem',
+                          color: '#fff',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          alignItems: 'center',
+                          gap: '0.75rem',
+                          boxShadow: '0 8px 24px rgba(0,0,0,0.25)',
+                          border: '1px solid rgba(255,255,255,0.1)',
+                        }}
+                      >
+                        {/* Header */}
+                        <div style={{ textAlign: 'center' }}>
+                          <div style={{ fontSize: '0.92rem', fontWeight: 800, letterSpacing: '0.05em', color: '#38bdf8' }}>
+                            THANKS FOR WATCHING
+                          </div>
+                          <div style={{ fontSize: '0.72rem', color: '#94a3b8', marginTop: 2 }}>
+                            {outroQrLink.trim() ? 'Scan the QR code & stay connected' : 'Support this channel & stay connected'}
+                          </div>
+                        </div>
+
+                        {/* Action Buttons */}
+                        {(showLikeAction || showCommentAction || showSubscribeAction || showFollowAction) && (
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '0.4rem', width: '100%', maxWidth: 360 }}>
+                            {showLikeAction && (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', background: 'rgba(18, 30, 49, 0.95)', border: '1px solid #3b82f6', borderRadius: 8, padding: '0.35rem 0.6rem', fontSize: '0.75rem', fontWeight: 650, color: '#fff' }}>
+                                <span style={{ width: 18, height: 18, borderRadius: 5, background: '#3b82f6', display: 'grid', placeItems: 'center', fontSize: '0.65rem' }}>👍</span>
+                                <span>{outroLikeText || 'Like'}</span>
+                              </div>
+                            )}
+                            {showCommentAction && (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', background: 'rgba(14, 38, 30, 0.95)', border: '1px solid #10b981', borderRadius: 8, padding: '0.35rem 0.6rem', fontSize: '0.75rem', fontWeight: 650, color: '#fff' }}>
+                                <span style={{ width: 18, height: 18, borderRadius: 5, background: '#10b981', display: 'grid', placeItems: 'center', fontSize: '0.65rem' }}>💬</span>
+                                <span>{outroCommentText || 'Comment'}</span>
+                              </div>
+                            )}
+                            {showSubscribeAction && (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', background: 'rgba(42, 18, 22, 0.95)', border: '1px solid #ef4444', borderRadius: 8, padding: '0.35rem 0.6rem', fontSize: '0.75rem', fontWeight: 650, color: '#fff' }}>
+                                <span style={{ width: 18, height: 18, borderRadius: 5, background: '#ef4444', display: 'grid', placeItems: 'center', fontSize: '0.65rem' }}>🔔</span>
+                                <span>{outroSubscribeText || 'Subscribe'}</span>
+                              </div>
+                            )}
+                            {showFollowAction && (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', background: 'rgba(40, 18, 34, 0.95)', border: '1px solid #ec4899', borderRadius: 8, padding: '0.35rem 0.6rem', fontSize: '0.75rem', fontWeight: 650, color: '#fff' }}>
+                                <span style={{ width: 18, height: 18, borderRadius: 5, background: '#ec4899', display: 'grid', placeItems: 'center', fontSize: '0.65rem' }}>❤️</span>
+                                <span>{outroFollowText || 'Follow'}</span>
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Outro Headline text banner */}
+                        {outroLongText.trim() && (
+                          <div style={{ fontSize: '0.8rem', fontWeight: 700, color: '#fff', textAlign: 'center', padding: '0.35rem 0.8rem', background: 'rgba(255,255,255,0.08)', borderRadius: 6, border: '1px solid rgba(255,255,255,0.15)', width: '100%', maxWidth: 360, boxSizing: 'border-box' }}>
+                            👉 {outroLongText.trim()}
+                          </div>
+                        )}
+
+                        {/* Quote Card */}
+                        {outroQuoteText.trim() && (
+                          <div style={{ width: '100%', maxWidth: 360, background: 'rgba(18, 24, 38, 0.95)', border: '1px solid #a855f7', borderRadius: 10, padding: '0.65rem 0.85rem', boxSizing: 'border-box', textAlign: 'center' }}>
+                            <div style={{ fontSize: '0.65rem', fontWeight: 750, color: '#c084fc', letterSpacing: '0.04em', marginBottom: '0.25rem' }}>
+                              ✨ INSPIRING QUOTE / PROMO
+                            </div>
+                            <div style={{ fontSize: '0.78rem', color: '#f1f5f9', fontStyle: 'italic', lineHeight: 1.35 }}>
+                              “{outroQuoteText.trim()}”
+                            </div>
+                          </div>
+                        )}
+
+                        {/* QR Code Container */}
+                        {outroQrLink.trim() ? (
+                          <div style={{ background: '#ffffff', borderRadius: 14, padding: '0.75rem 0.9rem', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.4rem', boxShadow: '0 4px 16px rgba(0,0,0,0.3)', border: '2px solid #38bdf8' }}>
+                            <div style={{ background: '#0f172a', color: '#38bdf8', padding: '0.2rem 0.6rem', borderRadius: 6, fontSize: '0.66rem', fontWeight: 800, letterSpacing: '0.04em' }}>
+                              📱 SCAN TO VISIT / SHOP
+                            </div>
+                            <div style={{ padding: '0.35rem', background: '#fff', borderRadius: 8 }}>
+                              <QRCodeSVG
+                                value={outroQrLink.trim()}
+                                size={116}
+                                level="M"
+                                includeMargin={false}
+                              />
+                            </div>
+                            <div style={{ fontSize: '0.68rem', fontWeight: 700, color: '#334155', maxWidth: 190, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {outroQrLink.trim().replace(/^https?:\/\//, '').replace(/\/$/, '')}
+                            </div>
+                          </div>
+                        ) : (
+                          <div style={{ padding: '0.65rem 1rem', borderRadius: 8, border: '1px dashed rgba(255,255,255,0.25)', background: 'rgba(255,255,255,0.03)', textAlign: 'center', fontSize: '0.74rem', color: '#94a3b8', display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
+                            <QrCode size={16} color="#38bdf8" />
+                            <span>Enter a Promotional Link above to generate a scannable QR Code card</span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
                   </div>
                 )}
 
@@ -1679,6 +2109,70 @@ export default function SocialPublishPage() {
                     <span><strong>No Outro Screen:</strong> The vertical short will finish immediately after the video moment ends without appending any outro screen.</span>
                   </div>
                 )}
+
+                {/* Mobile Bottom Action Bar for Stage 1 */}
+                <div className="harvest-publish-stage1-mobile-actions" style={{ display: 'none', marginTop: '1rem' }}>
+                  {hasRenderedOnce || !hasAnyCustomization ? (
+                    <button
+                      type="button"
+                      onClick={() => setCurrentStage('publish')}
+                      style={{
+                        ...primaryButton,
+                        width: '100%',
+                        boxSizing: 'border-box',
+                        justifyContent: 'center',
+                        background: '#1f6f4a',
+                        padding: '0.8rem 1rem',
+                        fontWeight: 700,
+                        fontSize: '0.92rem',
+                        boxShadow: '0 4px 14px rgba(31, 111, 74, 0.25)',
+                      }}
+                    >
+                      <span>Proceed to Publish Options</span> <ArrowRight size={18} />
+                    </button>
+                  ) : (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                      <button
+                        type="button"
+                        disabled={isBurningBranding}
+                        onClick={burnBrandingIntoVideo}
+                        style={{
+                          ...primaryButton,
+                          width: '100%',
+                          boxSizing: 'border-box',
+                          justifyContent: 'center',
+                          background: '#16a34a',
+                          borderColor: '#15803d',
+                          padding: '0.8rem 1rem',
+                          fontWeight: 700,
+                          fontSize: '0.92rem',
+                          boxShadow: '0 4px 14px rgba(22, 163, 74, 0.25)',
+                          cursor: isBurningBranding ? 'not-allowed' : 'pointer',
+                        }}
+                      >
+                        {isBurningBranding ? (
+                          <><LoaderCircle size={17} className="harvest-publish-spin" /> Rendering Full Video…</>
+                        ) : (
+                          <><Sparkles size={17} /> Render Full Video</>
+                        )}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setCurrentStage('publish')}
+                        style={{
+                          ...secondaryButton,
+                          width: '100%',
+                          boxSizing: 'border-box',
+                          justifyContent: 'center',
+                          fontSize: '0.82rem',
+                          padding: '0.55rem',
+                        }}
+                      >
+                        Skip Branding &amp; Publish Directly →
+                      </button>
+                    </div>
+                  )}
+                </div>
 
               </section>
             </>
@@ -1712,16 +2206,16 @@ export default function SocialPublishPage() {
               </section>
 
               {/* Post Details (Quick Review & Edit) */}
-              <section style={{ padding: '1.35rem', background: '#fff', border: '1px solid #e6e6e1', borderRadius: 12 }}>
+              <section className="harvest-publish-section" style={{ padding: '1.35rem', background: '#fff', border: '1px solid #e6e6e1', borderRadius: 12 }}>
                 <h2 style={{ margin: '0 0 1rem', fontSize: '1.18rem' }}>Post Details</h2>
                 <label style={{ display: 'block', marginBottom: '0.9rem', color: '#586273', fontSize: '0.88rem', fontWeight: 600 }}>Video title
-                  <input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={100} style={{ display: 'block', width: '100%', boxSizing: 'border-box', marginTop: '0.35rem', padding: '0.7rem 0.75rem', border: '1px solid #d9dcd8', borderRadius: 7, color: '#16181d', font: 'inherit' }} />
+                  <input className="harvest-publish-input" value={title} onChange={(event) => setTitle(event.target.value)} maxLength={100} style={{ display: 'block', width: '100%', boxSizing: 'border-box', marginTop: '0.35rem', padding: '0.7rem 0.75rem', border: '1px solid #d9dcd8', borderRadius: 7, color: '#16181d' }} />
                 </label>
                 <label style={{ display: 'block', marginBottom: '0.9rem', color: '#586273', fontSize: '0.88rem', fontWeight: 600 }}>Description
-                  <textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={3} maxLength={5000} style={{ display: 'block', width: '100%', boxSizing: 'border-box', resize: 'vertical', marginTop: '0.35rem', padding: '0.7rem 0.75rem', border: '1px solid #d9dcd8', borderRadius: 7, color: '#16181d', font: 'inherit' }} />
+                  <textarea className="harvest-publish-textarea" value={description} onChange={(event) => setDescription(event.target.value)} rows={3} maxLength={5000} style={{ display: 'block', width: '100%', boxSizing: 'border-box', resize: 'vertical', marginTop: '0.35rem', padding: '0.7rem 0.75rem', border: '1px solid #d9dcd8', borderRadius: 7, color: '#16181d' }} />
                 </label>
                 <label style={{ display: 'block', color: '#586273', fontSize: '0.88rem', fontWeight: 600 }}>YouTube visibility
-                  <select value={privacy} onChange={(event) => setPrivacy(event.target.value)} style={{ display: 'block', marginTop: '0.35rem', padding: '0.65rem 0.75rem', border: '1px solid #d9dcd8', borderRadius: 7, background: '#fff', color: '#16181d', font: 'inherit' }}>
+                  <select className="harvest-publish-select" value={privacy} onChange={(event) => setPrivacy(event.target.value)} style={{ display: 'block', width: '100%', boxSizing: 'border-box', marginTop: '0.35rem', padding: '0.65rem 0.75rem', border: '1px solid #d9dcd8', borderRadius: 7, background: '#fff', color: '#16181d' }}>
                     <option value="public">Public</option>
                     <option value="unlisted">Unlisted</option>
                     <option value="private">Private</option>
@@ -1741,7 +2235,7 @@ export default function SocialPublishPage() {
               )}
 
               {/* Channels & Upload Section (Only visible in Publish stage) */}
-              <section style={{ padding: '1.35rem', background: '#fff', border: '1px solid #e6e6e1', borderRadius: 12 }}>
+              <section className="harvest-publish-section" style={{ padding: '1.35rem', background: '#fff', border: '1px solid #e6e6e1', borderRadius: 12 }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.5rem', marginBottom: '0.35rem' }}>
                   <h2 style={{ margin: 0, fontSize: '1.18rem' }}>Channels &amp; Publish</h2>
                   {isCurrentlyScheduled && (
@@ -1750,7 +2244,7 @@ export default function SocialPublishPage() {
                     </span>
                   )}
                 </div>
-                <p style={{ margin: '0 0 1rem', color: '#657080', fontSize: '0.9rem' }}>
+                <p className="harvest-section-desc" style={{ margin: '0 0 1rem', color: '#657080', fontSize: '0.9rem' }}>
                   Publish immediately or schedule your short to be released at a future time while you are away.
                 </p>
 
@@ -1897,13 +2391,13 @@ export default function SocialPublishPage() {
                         gap: '0.45rem',
                         padding: '0.65rem 0.8rem',
                         borderRadius: 8,
-                        border: publishMode === 'schedule' ? '2px solid #2563eb' : '1px solid #d9dcd8',
+                        border: publishMode === 'schedule' ? '2px solid #1f6f4a' : '1px solid #d9dcd8',
                         background: publishMode === 'schedule' ? '#fff' : '#f4f5f3',
-                        color: publishMode === 'schedule' ? '#2563eb' : '#586273',
+                        color: publishMode === 'schedule' ? '#1f6f4a' : '#586273',
                         fontWeight: 700,
                         fontSize: '0.88rem',
                         cursor: 'pointer',
-                        boxShadow: publishMode === 'schedule' ? '0 1px 6px rgba(37,99,235,0.12)' : 'none',
+                        boxShadow: publishMode === 'schedule' ? '0 1px 6px rgba(31,111,74,0.12)' : 'none',
                         transition: 'all 0.15s ease'
                       }}
                     >
@@ -1912,12 +2406,12 @@ export default function SocialPublishPage() {
                   </div>
 
                   {publishMode === 'schedule' && (
-                    <div style={{ padding: '0.9rem', background: '#fff', border: '1px solid #cbd5e1', borderRadius: 8, marginTop: '0.6rem' }}>
+                    <div style={{ padding: '0.9rem', background: '#fff', border: '1px solid #cce5d4', borderRadius: 8, marginTop: '0.6rem' }}>
                       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.45rem' }}>
                         <label style={{ fontSize: '0.82rem', fontWeight: 700, color: '#1e293b' }}>
                           Select Date &amp; Time:
                         </label>
-                        <span style={{ fontSize: '0.74rem', color: '#64748b', background: '#f1f5f9', padding: '0.2rem 0.5rem', borderRadius: 4, fontWeight: 600 }}>
+                        <span style={{ fontSize: '0.74rem', color: '#1f6f4a', background: '#eef6f0', border: '1px solid #cce5d4', padding: '0.2rem 0.5rem', borderRadius: 4, fontWeight: 650 }}>
                           🌐 {userTimeZone}
                         </span>
                       </div>
@@ -1926,51 +2420,52 @@ export default function SocialPublishPage() {
                         min={getMinScheduleDateTime()}
                         value={scheduleDate}
                         onChange={(e) => setScheduleDate(e.target.value)}
+                        className="harvest-publish-input"
                         style={{
                           width: '100%',
                           padding: '0.6rem 0.75rem',
                           borderRadius: 7,
-                          border: '1.5px solid #94a3b8',
+                          border: '1.5px solid #1f6f4a',
                           fontSize: '0.92rem',
                           color: '#0f172a',
                           fontWeight: 650,
-                          background: '#f8fafc',
+                          background: '#fff',
                           boxSizing: 'border-box',
                           marginBottom: '0.65rem'
                         }}
                       />
-                      {/* Quick Presets */}
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem', marginBottom: '0.6rem' }}>
+                      {/* Quick Presets: 2x2 symmetric grid */}
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '0.45rem', marginBottom: '0.65rem' }}>
                         <button
                           type="button"
                           onClick={() => setPresetSchedule('tomorrow-5am')}
-                          style={{ padding: '0.32rem 0.6rem', fontSize: '0.78rem', fontWeight: 650, background: '#eff6ff', color: '#1d4ed8', border: '1px solid #bfdbfe', borderRadius: 5, cursor: 'pointer' }}
+                          style={{ padding: '0.42rem 0.5rem', minHeight: 36, fontSize: '0.78rem', fontWeight: 650, background: '#eef6f0', color: '#1f6f4a', border: '1px solid #bbf7d0', borderRadius: 6, cursor: 'pointer', textAlign: 'center', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.3rem' }}
                         >
                           🌅 Tomorrow 5:00 AM
                         </button>
                         <button
                           type="button"
                           onClick={() => setPresetSchedule('tomorrow-9am')}
-                          style={{ padding: '0.32rem 0.6rem', fontSize: '0.78rem', fontWeight: 650, background: '#f8fafc', color: '#475569', border: '1px solid #cbd5e1', borderRadius: 5, cursor: 'pointer' }}
+                          style={{ padding: '0.42rem 0.5rem', minHeight: 36, fontSize: '0.78rem', fontWeight: 650, background: '#f8fafc', color: '#475569', border: '1px solid #cbd5e1', borderRadius: 6, cursor: 'pointer', textAlign: 'center', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.3rem' }}
                         >
                           ☀️ Tomorrow 9:00 AM
                         </button>
                         <button
                           type="button"
                           onClick={() => setPresetSchedule('tomorrow-5pm')}
-                          style={{ padding: '0.32rem 0.6rem', fontSize: '0.78rem', fontWeight: 650, background: '#f8fafc', color: '#475569', border: '1px solid #cbd5e1', borderRadius: 5, cursor: 'pointer' }}
+                          style={{ padding: '0.42rem 0.5rem', minHeight: 36, fontSize: '0.78rem', fontWeight: 650, background: '#f8fafc', color: '#475569', border: '1px solid #cbd5e1', borderRadius: 6, cursor: 'pointer', textAlign: 'center', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.3rem' }}
                         >
                           🌆 Tomorrow 5:00 PM
                         </button>
                         <button
                           type="button"
                           onClick={() => setPresetSchedule('plus-1h')}
-                          style={{ padding: '0.32rem 0.6rem', fontSize: '0.78rem', fontWeight: 650, background: '#f8fafc', color: '#475569', border: '1px solid #cbd5e1', borderRadius: 5, cursor: 'pointer' }}
+                          style={{ padding: '0.42rem 0.5rem', minHeight: 36, fontSize: '0.78rem', fontWeight: 650, background: '#f8fafc', color: '#475569', border: '1px solid #cbd5e1', borderRadius: 6, cursor: 'pointer', textAlign: 'center', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.3rem' }}
                         >
                           ⚡ +1 Hour
                         </button>
                       </div>
-                      <div style={{ fontSize: '0.78rem', color: '#475569', lineHeight: 1.45, background: '#f8fafc', padding: '0.55rem 0.75rem', borderRadius: 6, border: '1px solid #e2e8e0' }}>
+                      <div style={{ fontSize: '0.78rem', color: '#166534', lineHeight: 1.45, background: '#f0fdf4', padding: '0.55rem 0.75rem', borderRadius: 6, border: '1px solid #bbf7d0' }}>
                         ⏱ <strong>Automated Delivery:</strong> Once scheduled, Harvest AI will release your video automatically at this time without you needing to be online or awake.
                       </div>
                     </div>
@@ -2039,14 +2534,10 @@ export default function SocialPublishPage() {
                         color: '#fff',
                         background: batchActionStatus === 'succeeded'
                           ? '#10b981'
-                          : isScheduleMode
-                            ? '#1e3a8a'
-                            : '#1f6f4a',
+                          : '#1f6f4a',
                         boxShadow: batchActionStatus === 'succeeded'
                           ? '0 4px 12px rgba(16,185,129,0.35)'
-                          : isScheduleMode
-                            ? '0 4px 12px rgba(30,58,138,0.25)'
-                            : '0 4px 12px rgba(31,111,74,0.25)',
+                          : '0 4px 12px rgba(31,111,74,0.3)',
                         transition: 'all 0.2s ease'
                       }}
                     >
@@ -2092,6 +2583,7 @@ export default function SocialPublishPage() {
                     return (
                       <article
                         key={id}
+                        className="harvest-publish-platform-card"
                         style={{
                           display: 'flex',
                           alignItems: 'center',
@@ -2137,7 +2629,7 @@ export default function SocialPublishPage() {
                                 </span>
                               )}
                               {isAlreadyScheduled && (
-                                <span style={{ color: '#1d4ed8', background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 4, padding: '0.1rem 0.35rem', fontSize: '0.72rem', fontWeight: 700 }}>
+                                <span style={{ color: '#166534', background: '#dcfce7', border: '1px solid #86efac', borderRadius: 4, padding: '0.1rem 0.35rem', fontSize: '0.72rem', fontWeight: 700 }}>
                                   ⏰ Scheduled
                                 </span>
                               )}
@@ -2154,6 +2646,7 @@ export default function SocialPublishPage() {
                               href={clip.published_urls[id]}
                               target="_blank"
                               rel="noopener noreferrer"
+                              className="harvest-publish-platform-btn"
                               style={{
                                 ...primaryButton,
                                 minWidth: 126,
@@ -2169,6 +2662,7 @@ export default function SocialPublishPage() {
                             <button
                               type="button"
                               disabled
+                              className="harvest-publish-platform-btn"
                               style={{
                                 ...primaryButton,
                                 minWidth: 126,
@@ -2183,6 +2677,7 @@ export default function SocialPublishPage() {
                           ) : isSuccess ? (
                             <button
                               type="button"
+                              className="harvest-publish-platform-btn"
                               style={{
                                 ...primaryButton,
                                 minWidth: 126,
@@ -2198,12 +2693,13 @@ export default function SocialPublishPage() {
                             <button
                               type="button"
                               onClick={() => handleIndividualPublish(id)}
+                              className="harvest-publish-platform-btn"
                               style={{
                                 ...primaryButton,
                                 minWidth: 126,
-                                background: '#1d4ed8',
-                                borderColor: '#1e40af',
-                                boxShadow: '0 2px 6px rgba(29,78,216,0.25)'
+                                background: '#15803d',
+                                borderColor: '#166534',
+                                boxShadow: '0 2px 6px rgba(21,128,61,0.25)'
                               }}
                             >
                               <Check size={16} /> Scheduled
@@ -2212,6 +2708,7 @@ export default function SocialPublishPage() {
                             <button
                               type="button"
                               onClick={() => handleIndividualPublish(id)}
+                              className="harvest-publish-platform-btn"
                               style={{
                                 ...primaryButton,
                                 minWidth: 126,
@@ -2226,13 +2723,14 @@ export default function SocialPublishPage() {
                               type="button"
                               disabled={!canUpload}
                               onClick={() => handleIndividualPublish(id)}
+                              className="harvest-publish-platform-btn"
                               style={{
                                 ...primaryButton,
                                 minWidth: 126,
                                 opacity: canUpload ? 1 : 0.5,
                                 cursor: canUpload ? 'pointer' : 'not-allowed',
-                                background: isScheduleMode ? '#1e3a8a' : primaryButton.background,
-                                boxShadow: isScheduleMode ? '0 2px 6px rgba(30,58,138,0.2)' : primaryButton.boxShadow
+                                background: primaryButton.background,
+                                boxShadow: primaryButton.boxShadow
                               }}
                             >
                               {isScheduleMode ? <Clock size={16} /> : <UploadCloud size={16} />}
@@ -2244,6 +2742,7 @@ export default function SocialPublishPage() {
                             type="button"
                             disabled={Boolean(workingPlatform)}
                             onClick={() => connectPlatform(id)}
+                            className="harvest-publish-platform-btn"
                             style={{
                               minWidth: 118,
                               display: 'inline-flex',
@@ -2272,7 +2771,7 @@ export default function SocialPublishPage() {
         </div>
 
             {/* Right Column: Live Interactive Video & Thumbnail Preview */}
-            <aside style={{ padding: '1.25rem', background: '#fff', border: '1px solid #e6e6e1', borderRadius: 12, position: 'sticky', top: 24 }}>
+            <aside className="harvest-publish-aside" style={{ padding: '1.25rem', background: '#fff', border: '1px solid #e6e6e1', borderRadius: 12, position: 'sticky', top: 24 }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.9rem' }}>
                 <h2 style={{ margin: 0, fontFamily: 'Georgia, serif', fontSize: '1.18rem' }}>Live Video Preview</h2>
                 {hasAnyBranding && !brandingBurned && (
@@ -2281,18 +2780,70 @@ export default function SocialPublishPage() {
                   </span>
                 )}
                 {brandingBurned && (
-                  <span style={{ fontSize: '0.72rem', background: '#e8f0fe', color: '#1a73e8', padding: '0.2rem 0.55rem', borderRadius: 99, fontWeight: 700, border: '1px solid #c2d7fa' }}>
+                  <span style={{ fontSize: '0.72rem', background: '#dcfce7', color: '#15803d', padding: '0.2rem 0.55rem', borderRadius: 99, fontWeight: 700, border: '1px solid #86efac' }}>
                     Burned-In Output
                   </span>
                 )}
               </div>
 
+              {/* Live Preview Mode Switcher (Video Clip vs Outro Screen) */}
+              {outroMode !== 'none' && (
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.35rem', marginBottom: '0.75rem', background: '#f1f5f9', padding: '0.22rem', borderRadius: 8 }}>
+                  <button
+                    type="button"
+                    onClick={() => setAsidePreviewTab('video')}
+                    style={{
+                      padding: '0.36rem 0.5rem',
+                      borderRadius: 6,
+                      border: 'none',
+                      background: asidePreviewTab === 'video' ? '#fff' : 'transparent',
+                      color: asidePreviewTab === 'video' ? '#16181d' : '#64748b',
+                      fontWeight: asidePreviewTab === 'video' ? 700 : 500,
+                      fontSize: '0.78rem',
+                      cursor: 'pointer',
+                      boxShadow: asidePreviewTab === 'video' ? '0 1px 3px rgba(0,0,0,0.08)' : 'none',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '0.3rem',
+                    }}
+                  >
+                    <Film size={13} />
+                    <span>Video Clip</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAsidePreviewTab('outro')}
+                    style={{
+                      padding: '0.36rem 0.5rem',
+                      borderRadius: 6,
+                      border: 'none',
+                      background: asidePreviewTab === 'outro' ? '#fff' : 'transparent',
+                      color: asidePreviewTab === 'outro' ? '#1f6f4a' : '#64748b',
+                      fontWeight: asidePreviewTab === 'outro' ? 700 : 500,
+                      fontSize: '0.78rem',
+                      cursor: 'pointer',
+                      boxShadow: asidePreviewTab === 'outro' ? '0 1px 3px rgba(0,0,0,0.08)' : 'none',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '0.3rem',
+                    }}
+                  >
+                    <QrCode size={13} />
+                    <span>Outro Screen</span>
+                  </button>
+                </div>
+              )}
+
               {/* Video Player Container with Live Overlay Layers */}
               <div
                 ref={videoContainerRef}
+                className="harvest-publish-video-box"
                 style={{
                   position: 'relative',
-                  width: '100%',
+                  width: 'min(100%, 36vh)',
+                  height: 'auto',
                   maxHeight: '64vh',
                   aspectRatio: '9 / 16',
                   background: '#0e1014',
@@ -2303,7 +2854,110 @@ export default function SocialPublishPage() {
                   userSelect: (isDraggingWatermark || isDraggingFooter) ? 'none' : 'auto',
                 }}
               >
-                {videoUrl ? (
+                {asidePreviewTab === 'outro' && outroMode === 'custom' ? (
+                  <div
+                    style={{
+                      width: '100%',
+                      height: '100%',
+                      background: 'linear-gradient(180deg, #0b0f19 0%, #111827 50%, #064e3b 100%)',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      padding: '1.25rem 0.85rem',
+                      boxSizing: 'border-box',
+                      color: '#fff',
+                      gap: '0.65rem',
+                      position: 'relative',
+                      overflowY: 'auto',
+                    }}
+                  >
+                    {/* Header */}
+                    <div style={{ textAlign: 'center' }}>
+                      <div style={{ fontSize: '0.88rem', fontWeight: 800, letterSpacing: '0.05em', color: '#38bdf8' }}>
+                        THANKS FOR WATCHING
+                      </div>
+                      <div style={{ fontSize: '0.68rem', color: '#94a3b8', marginTop: 2 }}>
+                        {outroQrLink.trim() ? 'Scan the QR code & stay connected' : 'Support this channel & stay connected'}
+                      </div>
+                    </div>
+
+                    {/* Action buttons */}
+                    {(showLikeAction || showCommentAction || showSubscribeAction || showFollowAction) && (
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '0.35rem', width: '100%', maxWidth: 240 }}>
+                        {showLikeAction && (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', background: 'rgba(18, 30, 49, 0.95)', border: '1px solid #3b82f6', borderRadius: 6, padding: '0.3rem 0.45rem', fontSize: '0.72rem', fontWeight: 650 }}>
+                            <span style={{ fontSize: '0.65rem' }}>👍</span> <span>{outroLikeText || 'Like'}</span>
+                          </div>
+                        )}
+                        {showCommentAction && (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', background: 'rgba(14, 38, 30, 0.95)', border: '1px solid #10b981', borderRadius: 6, padding: '0.3rem 0.45rem', fontSize: '0.72rem', fontWeight: 650 }}>
+                            <span style={{ fontSize: '0.65rem' }}>💬</span> <span>{outroCommentText || 'Comment'}</span>
+                          </div>
+                        )}
+                        {showSubscribeAction && (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', background: 'rgba(42, 18, 22, 0.95)', border: '1px solid #ef4444', borderRadius: 6, padding: '0.3rem 0.45rem', fontSize: '0.72rem', fontWeight: 650 }}>
+                            <span style={{ fontSize: '0.65rem' }}>🔔</span> <span>{outroSubscribeText || 'Subscribe'}</span>
+                          </div>
+                        )}
+                        {showFollowAction && (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', background: 'rgba(40, 18, 34, 0.95)', border: '1px solid #ec4899', borderRadius: 6, padding: '0.3rem 0.45rem', fontSize: '0.72rem', fontWeight: 650 }}>
+                            <span style={{ fontSize: '0.65rem' }}>❤️</span> <span>{outroFollowText || 'Follow'}</span>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Headline banner */}
+                    {outroLongText.trim() && (
+                      <div style={{ fontSize: '0.75rem', fontWeight: 700, color: '#fff', textAlign: 'center', padding: '0.28rem 0.6rem', background: 'rgba(255,255,255,0.08)', borderRadius: 6, border: '1px solid rgba(255,255,255,0.15)', maxWidth: 240, width: '100%', boxSizing: 'border-box' }}>
+                        👉 {outroLongText.trim()}
+                      </div>
+                    )}
+
+                    {/* Quote Card */}
+                    {outroQuoteText.trim() && (
+                      <div style={{ width: '100%', maxWidth: 240, background: 'rgba(18, 24, 38, 0.95)', border: '1px solid #a855f7', borderRadius: 8, padding: '0.45rem 0.65rem', boxSizing: 'border-box', textAlign: 'center' }}>
+                        <div style={{ fontSize: '0.6rem', fontWeight: 750, color: '#c084fc', marginBottom: '0.15rem' }}>
+                          ✨ INSPIRING QUOTE / PROMO
+                        </div>
+                        <div style={{ fontSize: '0.7rem', color: '#f1f5f9', fontStyle: 'italic', lineHeight: 1.3 }}>
+                          “{outroQuoteText.trim()}”
+                        </div>
+                      </div>
+                    )}
+
+                    {/* QR Code */}
+                    {outroQrLink.trim() ? (
+                      <div style={{ background: '#fff', borderRadius: 12, padding: '0.55rem 0.7rem', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.3rem', border: '2px solid #38bdf8' }}>
+                        <div style={{ background: '#0f172a', color: '#38bdf8', padding: '0.15rem 0.45rem', borderRadius: 5, fontSize: '0.6rem', fontWeight: 800 }}>
+                          📱 SCAN TO VISIT / SHOP
+                        </div>
+                        <QRCodeSVG value={outroQrLink.trim()} size={92} level="M" />
+                        <div style={{ fontSize: '0.6rem', fontWeight: 700, color: '#334155', maxWidth: 130, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {outroQrLink.trim().replace(/^https?:\/\//, '').replace(/\/$/, '')}
+                        </div>
+                      </div>
+                    ) : (
+                      <div style={{ padding: '0.5rem 0.75rem', borderRadius: 8, border: '1px dashed rgba(255,255,255,0.25)', background: 'rgba(255,255,255,0.03)', textAlign: 'center', fontSize: '0.68rem', color: '#94a3b8', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                        <QrCode size={13} color="#38bdf8" />
+                        <span>Enter link to generate QR code</span>
+                      </div>
+                    )}
+                  </div>
+                ) : asidePreviewTab === 'outro' && outroMode === 'template' && selectedTemplate ? (
+                  <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: '#000', color: '#fff' }}>
+                    {selectedTemplate.preview_video_url ? (
+                      <video src={selectedTemplate.preview_video_url} autoPlay loop playsInline style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+                    ) : (
+                      <div style={{ textAlign: 'center', padding: '1rem' }}>
+                        <Film size={28} color="#10b981" />
+                        <div style={{ marginTop: '0.5rem', fontWeight: 700, fontSize: '0.9rem' }}>{selectedTemplate.name}</div>
+                        <div style={{ fontSize: '0.74rem', color: '#94a3b8' }}>Template Outro Screen ({selectedTemplate.duration || 3}s)</div>
+                      </div>
+                    )}
+                  </div>
+                ) : videoUrl ? (
                   <>
                     <video
                       src={videoUrl}
@@ -2318,17 +2972,16 @@ export default function SocialPublishPage() {
                         {/* Footer Banner (DRAGGABLE & MOVABLE ANYWHERE VERTICALLY ON THE VIDEO) */}
                         {footerPreviewUrl && (
                           <div
+                            ref={footerOverlayRef}
                             onMouseDown={handleFooterMouseDown}
                             onTouchStart={handleFooterTouchStart}
                             style={{
                               position: 'absolute',
-                              top: `${footerPos.y}%`,
+                              top: `${getSafeFooterY(footerPos.y)}%`,
                               transform: 'translateY(-50%)',
                               left: 0,
                               right: 0,
                               height: `${(footerHeight / 1920) * 100}%`,
-                              minHeight: '6%',
-                              maxHeight: '28%',
                               zIndex: 25,
                               pointerEvents: 'auto',
                               cursor: isDraggingFooter ? 'grabbing' : 'grab',
@@ -2351,7 +3004,7 @@ export default function SocialPublishPage() {
                                 style={{
                                   width: '100%',
                                   height: '100%',
-                                  objectFit: 'cover',
+                                  objectFit: 'contain',
                                   display: 'block',
                                   pointerEvents: 'none',
                                   filter: 'drop-shadow(0 2px 8px rgba(0,0,0,0.6))',
@@ -2377,7 +3030,7 @@ export default function SocialPublishPage() {
                                 backdropFilter: 'blur(4px)',
                                 zIndex: 35,
                               }}>
-                                <Move size={10} /> {isDraggingFooter ? `${Math.round(footerPos.y)}% from top` : 'Drag to reposition banner'}
+                                <Move size={10} /> {isDraggingFooter ? `${Math.round(getSafeFooterY(footerPos.y))}% from top` : 'Drag to reposition banner'}
                               </div>
                             </div>
                           </div>
@@ -2386,6 +3039,7 @@ export default function SocialPublishPage() {
                         {/* Watermark Logo (DRAGGABLE & MOVABLE ANYWHERE ON THE VIDEO) */}
                         {watermarkPreviewUrl && (
                           <div
+                            ref={watermarkOverlayRef}
                             onMouseDown={handleWatermarkMouseDown}
                             onTouchStart={handleWatermarkTouchStart}
 
@@ -2393,8 +3047,7 @@ export default function SocialPublishPage() {
                               position: 'absolute',
                               zIndex: 30,
                               opacity: watermarkOpacity / 100,
-                              width: `${watermarkScale}%`,
-                              maxWidth: '96%',
+                              width: `${watermarkPreviewWidth}%`,
                               pointerEvents: 'auto',
                               cursor: isDraggingWatermark ? 'grabbing' : 'grab',
                               userSelect: 'none',
@@ -2413,9 +3066,17 @@ export default function SocialPublishPage() {
                                 src={watermarkPreviewUrl}
                                 alt="Watermark"
                                 draggable={false}
+                                onLoad={(event) => {
+                                  const { naturalWidth, naturalHeight } = event.currentTarget;
+                                  if (naturalWidth > 0 && naturalHeight > 0) {
+                                    const ratio = naturalWidth / naturalHeight;
+                                    setWatermarkAspectRatio((current) => Math.abs(current - ratio) > 0.001 ? ratio : current);
+                                  }
+                                }}
                                 style={{
                                   width: '100%',
                                   height: 'auto',
+                                  objectFit: 'contain',
                                   display: 'block',
                                   filter: 'drop-shadow(0 2px 8px rgba(0,0,0,0.6))',
                                   pointerEvents: 'none',
@@ -2463,7 +3124,7 @@ export default function SocialPublishPage() {
 
               {/* Action Buttons: Render / Proceed to Publish / Back to Customize */}
               {currentStage === 'customize' ? (
-                <>
+                <div className="harvest-publish-aside-stage1-actions">
                   {hasRenderedOnce ? (
                     <>
                       {/* Once rendered, it stays rendered! Direct publish option is primary */}
@@ -2576,7 +3237,7 @@ export default function SocialPublishPage() {
                       </button>
                     </>
                   )}
-                </>
+                </div>
               ) : (
                 <>
                   {/* Publish stage action: Back to customize button */}
@@ -2598,7 +3259,7 @@ export default function SocialPublishPage() {
                 </>
               )}
 
-              {videoUrl && (
+              {videoUrl && currentStage === 'publish' && (
                 <a
                   href={videoUrl}
                   download={`${title || 'harvest_clip'}.mp4`}

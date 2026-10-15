@@ -87,13 +87,14 @@ CRITICAL RULES FOR CLIP SELECTION:
    - 20% Retention (How well does the clip maintain interest throughout?)
    - 10% Emotion (Does it evoke laughter, surprise, curiosity, or empathy?)
 3. Choose a strong moment, then return a range about {target_length:.0f} seconds long. The application will preserve the selected duration and center the range around your chosen moment; only use a shorter range when the source itself is shorter.
-4. You MUST output EXACTLY 5 clips.
+4. BRANDING LOGO & INTRO RULE: Many videos begin with a silent branding logo, channel bumper, or intro animation before the speaker starts speaking. NEVER set a clip's start_time before the speaker actually begins speaking in the transcript! The start_time MUST strictly align with the first spoken word in the transcript (the spoken hook), completely skipping initial silent or music logo sequences.
+5. You MUST output EXACTLY 5 clips.
 
 You MUST output exactly and ONLY valid JSON matching this schema, with no markdown formatting around it:
 {{
   "clips": [
     {{
-      "start_time": 0.0,
+      "start_time": 4.5,
       "end_time": 35.0,
       "importance_score": 85,
       "viral_score": 92,

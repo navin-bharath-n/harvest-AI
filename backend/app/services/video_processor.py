@@ -112,6 +112,11 @@ class VideoProcessor:
         ]
         try:
             subprocess.run(cmd, capture_output=True, check=True)
+            sz = os.path.getsize(output_path) if os.path.exists(output_path) else 0
+            logger.info(
+                f"[Checkpoint A - Extracted Audio Metadata] Path={output_path} "
+                f"Size={sz}B SampleRate=16000 Channels=1 Format=pcm_s16le"
+            )
         except subprocess.CalledProcessError as e:
             logger.warning(f"FFmpeg audio extraction failed (likely no audio stream). Generating silent fallback audio track. Error: {e}")
             # Get video duration to match the silence duration
@@ -156,14 +161,15 @@ class VideoProcessor:
             raise
             
     def _generate_short(self, video_path: Path, output_path: Path):
+        from app.services.subtitle_service import subtitle_service
+        fast_v_args = subtitle_service._get_fast_video_encoding_args()
+
         cmd = [
             "ffmpeg",
             "-y",
             "-i", str(video_path),
             "-t", "15",
-            "-c:v", "libx264",
-            "-threads", "1",
-            "-preset", "veryfast",
+            *fast_v_args,
             "-c:a", "aac",
             "-movflags", "+faststart",
             str(output_path)
@@ -172,5 +178,18 @@ class VideoProcessor:
             logger.info(f"Generating short clip for {video_path}")
             subprocess.run(cmd, capture_output=True, check=True)
         except subprocess.CalledProcessError as e:
-            logger.error(f"FFmpeg short generation error: {e.stderr}")
-            raise
+            logger.warning(f"Fast short generation failed: {e.stderr}. Retrying with CPU libx264...")
+            fallback_cmd = [
+                "ffmpeg", "-y",
+                "-i", str(video_path),
+                "-t", "15",
+                "-c:v", "libx264", "-preset", "ultrafast",
+                "-c:a", "aac",
+                "-movflags", "+faststart",
+                str(output_path)
+            ]
+            try:
+                subprocess.run(fallback_cmd, capture_output=True, check=True)
+            except subprocess.CalledProcessError as f_err:
+                logger.error(f"FFmpeg short generation fallback error: {f_err.stderr}")
+                raise

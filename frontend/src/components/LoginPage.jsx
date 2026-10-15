@@ -1,11 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
-import {
-  Scissors, Lock, Mail, Eye, EyeOff, ArrowRight,
-  AlertCircle, Loader, ShieldCheck, Clock
-} from 'lucide-react';
+import { Mail, Lock, Eye, EyeOff, ArrowRight, AlertCircle, Loader, Clock } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { api } from '../api/client';
+import harvestLogo from '../Untitled Design.png';
 
 export default function LoginPage() {
   const { login, loginWithGoogleData, isAuthenticated } = useAuth();
@@ -106,7 +104,7 @@ export default function LoginPage() {
     e.preventDefault();
 
     if (lockoutCountdown > 0) {
-      setError(`Too many failed attempts. Please wait ${lockoutCountdown} seconds before trying again.`);
+      setError(`Too many failed attempts. Please wait ${lockoutCountdown}s before trying again.`);
       return;
     }
 
@@ -114,7 +112,7 @@ export default function LoginPage() {
     const cleanPassword = password.trim();
 
     if (!cleanEmail || !cleanPassword) {
-      setError('Please provide both your email address and password.');
+      setError('Please provide your email address and password.');
       return;
     }
 
@@ -139,7 +137,7 @@ export default function LoginPage() {
         setError(msg);
       } else if (newFailed >= 5) {
         setLockoutCountdown(30);
-        setError('Too many failed attempts. Login temporarily paused for 30 seconds.');
+        setError('Too many failed attempts. Paused for 30 seconds.');
       } else {
         setError(msg);
       }
@@ -158,128 +156,155 @@ export default function LoginPage() {
         flexDirection: 'column',
         justifyContent: 'center',
         alignItems: 'center',
-        backgroundColor: '#ffffff',
+        backgroundColor: '#fafaf8',
         color: '#16181d',
-        padding: '2.5rem 1.5rem',
+        padding: '1.25rem 1rem',
         fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
         WebkitFontSmoothing: 'antialiased',
+        boxSizing: 'border-box',
       }}
     >
-      {/* Brand header */}
-      <div style={{ textAlign: 'center', marginBottom: '1.75rem' }}>
-        <Link
-          to="/"
-          style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: '0.6rem',
-            textDecoration: 'none',
-            color: '#16181d',
-            marginBottom: '0.75rem',
-          }}
-        >
-          <div
-            style={{
-              width: 32,
-              height: 32,
-              borderRadius: '6px',
-              backgroundColor: '#16181d',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              color: '#ffffff',
-            }}
-          >
-            <Scissors size={16} />
-          </div>
-          <span
-            style={{
-              fontSize: '1.3rem',
-              fontFamily: '"Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif',
-              fontWeight: 700,
-              letterSpacing: '-0.02em',
-              color: '#16181d',
-            }}
-          >
-            Harvest
-          </span>
-        </Link>
-        <h1
-          style={{
-            fontSize: '1.85rem',
-            fontFamily: '"Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif',
-            fontWeight: 700,
-            letterSpacing: '-0.02em',
-            margin: '0 0 0.35rem',
-            color: '#16181d',
-          }}
-        >
-          Sign In
-        </h1>
-        <p style={{ fontSize: '0.95rem', color: '#5b616b', margin: 0 }}>
-          Enter your credentials to access your studio workspace
-        </p>
-      </div>
-
-      {/* Form Card */}
+      {/* Compact Card */}
       <div
         style={{
           width: '100%',
-          maxWidth: '400px',
+          maxWidth: 380,
           backgroundColor: '#ffffff',
           border: '1px solid #e6e6e1',
-          borderRadius: '8px',
-          padding: '2rem',
-          boxShadow: '0 1px 3px rgba(0, 0, 0, 0.04)',
+          borderRadius: 12,
+          padding: '1.75rem 1.5rem',
+          boxShadow: '0 4px 20px rgba(0, 0, 0, 0.03)',
+          boxSizing: 'border-box',
         }}
       >
-        {/* Error or Lockout Notification */}
+        {/* Brand Header */}
+        <div style={{ textAlign: 'center', marginBottom: '1.25rem' }}>
+          <Link
+            to="/"
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '0.45rem',
+              textDecoration: 'none',
+              color: '#16181d',
+              marginBottom: '0.5rem',
+            }}
+          >
+            <img src={harvestLogo} alt="Harvest logo" style={{ width: 28, height: 28, objectFit: 'contain' }} />
+            <span
+              style={{
+                fontSize: '1.15rem',
+                fontFamily: '"Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif',
+                fontWeight: 700,
+                letterSpacing: '-0.02em',
+              }}
+            >
+              Harvest
+            </span>
+          </Link>
+          <h1
+            style={{
+              fontSize: '1.45rem',
+              fontFamily: '"Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif',
+              fontWeight: 700,
+              letterSpacing: '-0.02em',
+              margin: '0 0 0.2rem',
+              color: '#16181d',
+            }}
+          >
+            Sign In
+          </h1>
+          <p style={{ fontSize: '0.84rem', color: '#667085', margin: 0 }}>
+            Welcome back! Please enter your details
+          </p>
+        </div>
+
+        {/* 1-Click Google Sign In */}
+        <button
+          type="button"
+          onClick={handleGoogleLogin}
+          disabled={googleLoading || loading || isLocked}
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '0.65rem',
+            width: '100%',
+            height: 40,
+            borderRadius: 7,
+            backgroundColor: '#ffffff',
+            color: '#16181d',
+            border: '1px solid #d7d7d1',
+            fontSize: '0.88rem',
+            fontWeight: 600,
+            cursor: (googleLoading || loading || isLocked) ? 'not-allowed' : 'pointer',
+            transition: 'background-color 0.15s ease, border-color 0.15s ease',
+            boxSizing: 'border-box',
+          }}
+        >
+          <svg width="17" height="17" viewBox="0 0 18 18">
+            <path fill="#4285F4" d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844c-.209 1.125-.843 2.078-1.796 2.717v2.258h2.908c1.702-1.567 2.684-3.874 2.684-6.616z" />
+            <path fill="#34A853" d="M9 18c2.43 0 4.467-.806 5.956-2.184l-2.908-2.258c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332C2.438 15.983 5.482 18 9 18z" />
+            <path fill="#FBBC05" d="M3.964 10.707c-.18-.54-.282-1.117-.282-1.707s.102-1.167.282-1.707V4.961H.957C.347 6.173 0 7.548 0 9s.347 2.827.957 4.039l3.007-2.332z" />
+            <path fill="#EA4335" d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0 5.482 0 2.438 2.017.957 4.961L3.964 7.293C4.672 5.166 6.656 3.58 9 3.58z" />
+          </svg>
+          <span>{googleLoading ? 'Connecting…' : 'Continue with Google'}</span>
+        </button>
+
+        {/* Divider */}
+        <div style={{ display: 'flex', alignItems: 'center', margin: '1rem 0', gap: '0.65rem' }}>
+          <div style={{ flex: 1, height: 1, backgroundColor: '#e6e6e1' }} />
+          <span style={{ fontSize: '0.72rem', color: '#8892a0', textTransform: 'uppercase', letterSpacing: '0.04em', fontWeight: 600 }}>or with email</span>
+          <div style={{ flex: 1, height: 1, backgroundColor: '#e6e6e1' }} />
+        </div>
+
+        {/* Error Notification */}
         {error && (
           <div
             role="alert"
             style={{
               display: 'flex',
               alignItems: 'flex-start',
-              gap: '0.65rem',
-              padding: '0.75rem 1rem',
-              borderRadius: '6px',
+              gap: '0.5rem',
+              padding: '0.6rem 0.75rem',
+              borderRadius: 6,
               backgroundColor: isLocked ? '#fffbeb' : '#fef2f2',
               border: isLocked ? '1px solid #fde68a' : '1px solid #fecaca',
               color: isLocked ? '#92400e' : '#b91c1c',
-              fontSize: '0.85rem',
-              marginBottom: '1.25rem',
-              lineHeight: 1.5,
+              fontSize: '0.82rem',
+              marginBottom: '1rem',
+              lineHeight: 1.45,
             }}
           >
             {isLocked ? (
-              <Clock size={16} style={{ flexShrink: 0, marginTop: '2px' }} />
+              <Clock size={15} style={{ flexShrink: 0, marginTop: 1 }} />
             ) : (
-              <AlertCircle size={16} style={{ flexShrink: 0, marginTop: '2px' }} />
+              <AlertCircle size={15} style={{ flexShrink: 0, marginTop: 1 }} />
             )}
             <div>
               <span>{error}</span>
               {isLocked && (
-                <div style={{ marginTop: '0.35rem', fontWeight: 700 }}>
-                  Retry permitted in: {lockoutCountdown}s
+                <div style={{ marginTop: '0.2rem', fontWeight: 700 }}>
+                  Retry in: {lockoutCountdown}s
                 </div>
               )}
             </div>
           </div>
         )}
 
-        <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+        <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '0.9rem' }}>
           {/* Email Address */}
           <div>
             <label
               htmlFor="login-email"
-              style={{ display: 'block', fontSize: '0.875rem', fontWeight: 600, color: '#16181d', marginBottom: '0.45rem' }}
+              style={{ display: 'block', fontSize: '0.82rem', fontWeight: 600, color: '#272b33', marginBottom: '0.35rem' }}
             >
-              Email Address
+              Email
             </label>
             <div style={{ position: 'relative' }}>
               <Mail
-                size={16}
-                style={{ position: 'absolute', left: '0.85rem', top: '50%', transform: 'translateY(-50%)', color: '#7a808a' }}
+                size={15}
+                style={{ position: 'absolute', left: '0.75rem', top: '50%', transform: 'translateY(-50%)', color: '#8892a0', pointerEvents: 'none' }}
               />
               <input
                 id="login-email"
@@ -292,12 +317,13 @@ export default function LoginPage() {
                 placeholder="name@example.com"
                 style={{
                   width: '100%',
-                  padding: '0.65rem 0.85rem 0.65rem 2.4rem',
-                  borderRadius: '6px',
+                  height: 38,
+                  padding: '0 0.75rem 0 2.25rem',
+                  borderRadius: 6,
                   backgroundColor: isLocked ? '#fafaf8' : '#ffffff',
                   border: '1px solid #d7d7d1',
                   color: '#16181d',
-                  fontSize: '0.92rem',
+                  fontSize: '0.88rem',
                   outline: 'none',
                   boxSizing: 'border-box',
                 }}
@@ -307,18 +333,16 @@ export default function LoginPage() {
 
           {/* Password */}
           <div>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.45rem' }}>
-              <label
-                htmlFor="login-password"
-                style={{ fontSize: '0.875rem', fontWeight: 600, color: '#16181d' }}
-              >
-                Password
-              </label>
-            </div>
+            <label
+              htmlFor="login-password"
+              style={{ display: 'block', fontSize: '0.82rem', fontWeight: 600, color: '#272b33', marginBottom: '0.35rem' }}
+            >
+              Password
+            </label>
             <div style={{ position: 'relative' }}>
               <Lock
-                size={16}
-                style={{ position: 'absolute', left: '0.85rem', top: '50%', transform: 'translateY(-50%)', color: '#7a808a' }}
+                size={15}
+                style={{ position: 'absolute', left: '0.75rem', top: '50%', transform: 'translateY(-50%)', color: '#8892a0', pointerEvents: 'none' }}
               />
               <input
                 id="login-password"
@@ -331,12 +355,13 @@ export default function LoginPage() {
                 placeholder="••••••••••••"
                 style={{
                   width: '100%',
-                  padding: '0.65rem 2.4rem 0.65rem 2.4rem',
-                  borderRadius: '6px',
+                  height: 38,
+                  padding: '0 2.25rem 0 2.25rem',
+                  borderRadius: 6,
                   backgroundColor: isLocked ? '#fafaf8' : '#ffffff',
                   border: '1px solid #d7d7d1',
                   color: '#16181d',
-                  fontSize: '0.92rem',
+                  fontSize: '0.88rem',
                   outline: 'none',
                   boxSizing: 'border-box',
                 }}
@@ -346,19 +371,19 @@ export default function LoginPage() {
                 onClick={() => setShowPassword(!showPassword)}
                 style={{
                   position: 'absolute',
-                  right: '0.75rem',
+                  right: '0.65rem',
                   top: '50%',
                   transform: 'translateY(-50%)',
                   background: 'transparent',
                   border: 'none',
-                  color: '#7a808a',
+                  color: '#8892a0',
                   cursor: 'pointer',
-                  padding: 4,
+                  padding: 3,
                   display: 'flex',
                 }}
                 aria-label={showPassword ? 'Hide password' : 'Show password'}
               >
-                {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                {showPassword ? <EyeOff size={15} /> : <Eye size={15} />}
               </button>
             </div>
           </div>
@@ -371,106 +396,49 @@ export default function LoginPage() {
               display: 'inline-flex',
               alignItems: 'center',
               justifyContent: 'center',
-              gap: '0.5rem',
+              gap: '0.45rem',
               width: '100%',
-              padding: '0.75rem',
-              borderRadius: '6px',
+              height: 40,
+              borderRadius: 6,
               backgroundColor: (loading || isLocked) ? '#5b616b' : '#1f6f4a',
               color: '#ffffff',
               border: 'none',
-              fontSize: '0.98rem',
+              fontSize: '0.92rem',
               fontWeight: 600,
               cursor: (loading || isLocked) ? 'not-allowed' : 'pointer',
-              marginTop: '0.5rem',
+              marginTop: '0.35rem',
               transition: 'background-color 0.15s ease',
             }}
           >
             {loading ? (
               <>
-                <Loader size={16} style={{ animation: 'spin 1s linear infinite' }} />
-                Authenticating…
+                <Loader size={15} style={{ animation: 'spin 0.8s linear infinite' }} />
+                Signing in…
               </>
             ) : isLocked ? (
               `Locked (${lockoutCountdown}s)`
             ) : (
               <>
-                Sign In
-                <ArrowRight size={16} />
+                <span>Sign In</span>
+                <ArrowRight size={15} />
               </>
             )}
           </button>
-
-          {/* Divider */}
-          <div style={{ display: 'flex', alignItems: 'center', margin: '1.15rem 0', gap: '0.75rem' }}>
-            <div style={{ flex: 1, height: '1px', backgroundColor: '#e6e6e1' }} />
-            <span style={{ fontSize: '0.74rem', color: '#7a808a', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 650 }}>or</span>
-            <div style={{ flex: 1, height: '1px', backgroundColor: '#e6e6e1' }} />
-          </div>
-
-          {/* Google Sign In Button */}
-          <button
-            type="button"
-            onClick={handleGoogleLogin}
-            disabled={googleLoading || loading || isLocked}
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: '0.75rem',
-              width: '100%',
-              padding: '0.75rem',
-              borderRadius: '6px',
-              backgroundColor: '#ffffff',
-              color: '#16181d',
-              border: '1px solid #d7d7d1',
-              fontSize: '0.92rem',
-              fontWeight: 600,
-              cursor: (googleLoading || loading || isLocked) ? 'not-allowed' : 'pointer',
-              transition: 'all 0.15s ease',
-              boxShadow: '0 1px 2px rgba(0,0,0,0.04)',
-            }}
-          >
-            <svg width="18" height="18" viewBox="0 0 18 18">
-              <path fill="#4285F4" d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844c-.209 1.125-.843 2.078-1.796 2.717v2.258h2.908c1.702-1.567 2.684-3.874 2.684-6.616z" />
-              <path fill="#34A853" d="M9 18c2.43 0 4.467-.806 5.956-2.184l-2.908-2.258c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332C2.438 15.983 5.482 18 9 18z" />
-              <path fill="#FBBC05" d="M3.964 10.707c-.18-.54-.282-1.117-.282-1.707s.102-1.167.282-1.707V4.961H.957C.347 6.173 0 7.548 0 9s.347 2.827.957 4.039l3.007-2.332z" />
-              <path fill="#EA4335" d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0 5.482 0 2.438 2.017.957 4.961L3.964 7.293C4.672 5.166 6.656 3.58 9 3.58z" />
-            </svg>
-            <span>{googleLoading ? 'Connecting to Google…' : 'Continue with Google'}</span>
-          </button>
         </form>
 
-        {/* Security Indicator */}
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: '0.4rem',
-            marginTop: '1.25rem',
-            fontSize: '0.78rem',
-            color: '#7a808a',
-          }}
-        >
-          <ShieldCheck size={14} color="#1f6f4a" />
-          <span>256-bit TLS encrypted session &amp; brute-force protection</span>
-        </div>
-
-        {/* Footer link */}
-        <div style={{ textAlign: 'center', marginTop: '1.25rem', paddingTop: '1rem', borderTop: '1px solid #e6e6e1' }}>
-          <p style={{ fontSize: '0.88rem', color: '#5b616b', margin: 0 }}>
+        {/* Footer Link */}
+        <div style={{ textAlign: 'center', marginTop: '1.15rem', paddingTop: '0.9rem', borderTop: '1px solid #f0f0eb' }}>
+          <p style={{ fontSize: '0.825rem', color: '#667085', margin: 0 }}>
             Don't have an account?{' '}
             <Link
               to="/register"
               style={{
-                color: '#16181d',
+                color: '#1f6f4a',
                 fontWeight: 600,
-                textDecoration: 'underline',
-                textDecorationColor: '#b9b9b2',
-                textUnderlineOffset: '4px',
+                textDecoration: 'none',
               }}
             >
-              Create an account
+              Sign up
             </Link>
           </p>
         </div>

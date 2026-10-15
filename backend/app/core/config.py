@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     CELERY_CONCURRENCY: int = 2
 
     GROQ_API_KEY: Optional[str] = None
+    GEMINI_API_KEY: Optional[str] = None
     QWEN_API_KEY: Optional[str] = None
 
     DATABASE_URI: Optional[str] = None

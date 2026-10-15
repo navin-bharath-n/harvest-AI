@@ -106,6 +106,12 @@ def _draw_vector_icon(d: ImageDraw.ImageDraw, icon_type: str, x: int, y: int, si
         d.polygon(tri, fill=color)
 
 
+try:
+    import qrcode
+except ImportError:
+    qrcode = None
+
+
 def create_9_16_outro_image(
     output_png_path: str,
     like_text: Optional[str] = "Like",
@@ -113,12 +119,14 @@ def create_9_16_outro_image(
     subscribe_text: Optional[str] = "Subscribe",
     follow_text: Optional[str] = "Follow",
     long_text: Optional[str] = "",
+    qr_link: Optional[str] = "",
+    quote_text: Optional[str] = "",
     target_width: int = 1080,
     target_height: int = 1920,
 ) -> str:
     """
     Renders a stunning 1080x1920 9:16 vertical outro card with user-entered
-    actions and an optional custom long text card.
+    actions, optional custom quote card, and scannable QR code promotional card.
     """
     # 1. Dark sleek canvas (#0b0f19)
     canvas = Image.new("RGBA", (target_width, target_height), (11, 15, 25, 255))
@@ -144,128 +152,287 @@ def create_9_16_outro_image(
         active_actions.append({"icon_type": "follow", "label": follow_text.strip(), "color": (236, 72, 153, 255), "bg": (40, 18, 34, 240)})
 
     clean_long_text = (long_text or "").strip()
+    clean_qr_link = (qr_link or "").strip()
+    clean_quote_text = (quote_text or "").strip()
+
     has_actions = len(active_actions) > 0
     has_long_text = bool(clean_long_text)
+    has_qr = bool(clean_qr_link) and qrcode is not None
+    has_quote = bool(clean_quote_text)
 
     font_title = _get_font(42, bold=True)
     font_sub = _get_font(26, bold=False)
     font_btn = _get_font(34, bold=True)
+    font_btn_compact = _get_font(26, bold=True)
     font_long = _get_font(32, bold=False)
-    font_long_bold = _get_font(36, bold=True)
+    font_long_bold = _get_font(34, bold=True)
+    font_quote = _get_font(30, bold=False)
 
-    # Determine layout mode
-    if has_actions and has_long_text:
-        start_y = 260
-    elif has_actions and not has_long_text:
-        start_y = 380
-    else:
-        start_y = 440
+    # Dynamically estimate total content height to vertically center on the 1080x1920 screen
+    header_h = 110
+    buttons_h = 0
+    if has_actions:
+        if has_qr or has_quote:
+            num_rows = (len(active_actions) + 1) // 2
+            buttons_h = num_rows * (76 + 16) + 20
+        else:
+            buttons_h = len(active_actions) * (100 + 24) + 24
+
+    headline_h = 0
+    if has_long_text:
+        headline_h = 55 if (has_qr or has_quote) else 230
+
+    quote_h = 0
+    if has_quote:
+        quote_lines_est = _wrap_text(clean_quote_text, max_chars_per_line=34)
+        quote_h = max(130, len(quote_lines_est) * 44 + 80) + 26
+
+    qr_h = (370 + 20) if has_qr else 0
+
+    total_content_h = header_h + buttons_h + headline_h + quote_h + qr_h
+    start_y = max(160, min(360, (target_height - total_content_h) // 2))
 
     # Header section
     draw.text((target_width // 2, start_y), "THANKS FOR WATCHING", font=font_title, fill=(56, 189, 248, 255), anchor="mm")
-    draw.text((target_width // 2, start_y + 55), "Support this channel & stay connected", font=font_sub, fill=(148, 163, 184, 255), anchor="mm")
+    sub_text = "Scan the QR code & stay connected" if has_qr else "Support this channel & stay connected"
+    draw.text((target_width // 2, start_y + 55), sub_text, font=font_sub, fill=(148, 163, 184, 255), anchor="mm")
 
-    current_y = start_y + 130
+    current_y = start_y + 120
 
     # Draw Action Buttons
     if has_actions:
-        btn_w = 780
-        btn_h = 100
-        btn_x = (target_width - btn_w) // 2
-        btn_gap = 24
+        if has_qr or has_quote:
+            # Compact 2x2 grid when QR code or quote card is displayed
+            btn_w = 400
+            btn_h = 76
+            btn_x1 = 130
+            btn_x2 = 550
+            btn_gap = 16
 
-        for item in active_actions:
-            # Button container
-            draw.rounded_rectangle(
-                [btn_x, current_y, btn_x + btn_w, current_y + btn_h],
-                radius=24,
-                fill=item["bg"],
-                outline=item["color"],
-                width=2,
-            )
+            for idx, item in enumerate(active_actions):
+                col = idx % 2
+                row = idx // 2
+                bx = btn_x1 if col == 0 else btn_x2
+                by = current_y + row * (btn_h + btn_gap)
 
-            # Icon badge on the left
-            badge_size = 64
-            badge_x = btn_x + 20
-            badge_y = current_y + (btn_h - badge_size) // 2
-            draw.rounded_rectangle(
-                [badge_x, badge_y, badge_x + badge_size, badge_y + badge_size],
-                radius=16,
-                fill=item["color"],
-            )
-            # Render crisp vector icon
-            icon_padding = 14
-            _draw_vector_icon(
-                draw,
-                item["icon_type"],
-                badge_x + icon_padding,
-                badge_y + icon_padding,
-                badge_size - 2 * icon_padding,
-                color=(255, 255, 255, 255),
-            )
+                draw.rounded_rectangle(
+                    [bx, by, bx + btn_w, by + btn_h],
+                    radius=20,
+                    fill=item["bg"],
+                    outline=item["color"],
+                    width=2,
+                )
 
-            # Label text
-            draw.text(
-                (badge_x + badge_size + 24, current_y + btn_h // 2),
-                item["label"],
-                font=font_btn,
-                fill=(255, 255, 255, 255),
-                anchor="lm",
-            )
+                badge_size = 50
+                badge_x = bx + 16
+                badge_y = by + (btn_h - badge_size) // 2
+                draw.rounded_rectangle(
+                    [badge_x, badge_y, badge_x + badge_size, badge_y + badge_size],
+                    radius=14,
+                    fill=item["color"],
+                )
+                _draw_vector_icon(
+                    draw,
+                    item["icon_type"],
+                    badge_x + 10,
+                    badge_y + 10,
+                    badge_size - 20,
+                    color=(255, 255, 255, 255),
+                )
+                draw.text(
+                    (badge_x + badge_size + 18, by + btn_h // 2),
+                    item["label"],
+                    font=font_btn_compact,
+                    fill=(255, 255, 255, 255),
+                    anchor="lm",
+                )
 
-            current_y += btn_h + btn_gap
+            num_rows = (len(active_actions) + 1) // 2
+            current_y += num_rows * (btn_h + btn_gap) + 20
+        else:
+            # Full-width buttons when no QR code
+            btn_w = 780
+            btn_h = 100
+            btn_x = (target_width - btn_w) // 2
+            btn_gap = 24
 
-        current_y += 30
+            for item in active_actions:
+                draw.rounded_rectangle(
+                    [btn_x, current_y, btn_x + btn_w, current_y + btn_h],
+                    radius=24,
+                    fill=item["bg"],
+                    outline=item["color"],
+                    width=2,
+                )
 
-    # Draw Custom Long Text / Link Card
+                badge_size = 64
+                badge_x = btn_x + 20
+                badge_y = current_y + (btn_h - badge_size) // 2
+                draw.rounded_rectangle(
+                    [badge_x, badge_y, badge_x + badge_size, badge_y + badge_size],
+                    radius=16,
+                    fill=item["color"],
+                )
+                _draw_vector_icon(
+                    draw,
+                    item["icon_type"],
+                    badge_x + 14,
+                    badge_y + 14,
+                    badge_size - 28,
+                    color=(255, 255, 255, 255),
+                )
+                draw.text(
+                    (badge_x + badge_size + 24, current_y + btn_h // 2),
+                    item["label"],
+                    font=font_btn,
+                    fill=(255, 255, 255, 255),
+                    anchor="lm",
+                )
+                current_y += btn_h + btn_gap
+
+            current_y += 24
+
+    # Draw Custom Headline / Outro Text Callout
     if has_long_text:
-        card_w = 860
-        card_x = (target_width - card_w) // 2
-
-        # Wrap text into lines
-        lines = _wrap_text(clean_long_text, max_chars_per_line=34 if has_actions else 30)
-        line_height = 48 if has_actions else 54
-        text_block_h = len(lines) * line_height
-        card_h = max(200, text_block_h + 100)
-
-        # Center vertically if only long text
-        if not has_actions:
-            current_y = (target_height - card_h) // 2
-
-        # Draw card container
-        draw.rounded_rectangle(
-            [card_x, current_y, card_x + card_w, current_y + card_h],
-            radius=28,
-            fill=(22, 27, 34, 240),
-            outline=(56, 189, 248, 180),  # Soft cyan accent
-            width=2,
-        )
-
-        # Top pill for the card
-        draw.text(
-            (target_width // 2, current_y + 40),
-            "📢  CREATOR NOTE & LINK",
-            font=_get_font(22, bold=True),
-            fill=(56, 189, 248, 255),
-            anchor="mm",
-        )
-
-        # Render lines of text
-        text_y = current_y + 85
-        font_to_use = font_long if has_actions else font_long_bold
-        for line in lines:
+        if has_qr or has_quote:
+            # Sleek callout banner
             draw.text(
-                (target_width // 2, text_y),
-                line,
-                font=font_to_use,
+                (target_width // 2, current_y + 20),
+                clean_long_text,
+                font=font_long_bold,
                 fill=(255, 255, 255, 255),
                 anchor="mm",
             )
+            current_y += 55
+        else:
+            # Standard Creator Note & Link card
+            card_w = 860
+            card_x = (target_width - card_w) // 2
+            lines = _wrap_text(clean_long_text, max_chars_per_line=34 if has_actions else 30)
+            line_height = 48 if has_actions else 54
+            text_block_h = len(lines) * line_height
+            card_h = max(200, text_block_h + 100)
+
+            if not has_actions:
+                current_y = (target_height - card_h) // 2
+
+            draw.rounded_rectangle(
+                [card_x, current_y, card_x + card_w, current_y + card_h],
+                radius=28,
+                fill=(22, 27, 34, 240),
+                outline=(56, 189, 248, 180),
+                width=2,
+            )
+            draw.text(
+                (target_width // 2, current_y + 40),
+                "CREATOR NOTE & LINK",
+                font=_get_font(22, bold=True),
+                fill=(56, 189, 248, 255),
+                anchor="mm",
+            )
+            text_y = current_y + 85
+            for line in lines:
+                draw.text((target_width // 2, text_y), line, font=font_long, fill=(255, 255, 255, 255), anchor="mm")
+                text_y += line_height
+            current_y += card_h + 30
+
+    # Draw Custom Quote / Slogan Card
+    if has_quote:
+        card_w = 860
+        card_x = (target_width - card_w) // 2
+        quote_lines = _wrap_text(clean_quote_text, max_chars_per_line=34)
+        line_height = 44
+        text_block_h = len(quote_lines) * line_height
+        card_h = max(130, text_block_h + 80)
+
+        draw.rounded_rectangle(
+            [card_x, current_y, card_x + card_w, current_y + card_h],
+            radius=24,
+            fill=(18, 24, 38, 240),
+            outline=(168, 85, 247, 180),  # Soft purple accent
+            width=2,
+        )
+        draw.text(
+            (target_width // 2, current_y + 32),
+            "INSPIRING QUOTE / PROMO",
+            font=_get_font(20, bold=True),
+            fill=(192, 132, 252, 255),
+            anchor="mm",
+        )
+        text_y = current_y + 70
+        for idx, line in enumerate(quote_lines):
+            line_str = f"“{line}”" if len(quote_lines) == 1 else (f"“{line}" if idx == 0 else (f"{line}”" if idx == len(quote_lines) - 1 else line))
+            draw.text((target_width // 2, text_y), line_str, font=font_quote, fill=(241, 245, 249, 255), anchor="mm")
             text_y += line_height
+
+        current_y += card_h + 26
+
+    # Draw Promotional QR Code Card
+    if has_qr:
+        try:
+            qr = qrcode.QRCode(
+                version=None,
+                error_correction=qrcode.constants.ERROR_CORRECT_M,
+                box_size=8,
+                border=2,
+            )
+            qr.add_data(clean_qr_link)
+            qr.make(fit=True)
+            qr_img = qr.make_image(fill_color="#0f172a", back_color="#ffffff").convert("RGBA")
+            qr_display_size = 240
+            qr_img = qr_img.resize((qr_display_size, qr_display_size), Image.Resampling.LANCZOS)
+
+            card_w = 560
+            card_h = 370
+            card_x = (target_width - card_w) // 2
+
+            # White sleek rounded card container
+            draw.rounded_rectangle(
+                [card_x, current_y, card_x + card_w, current_y + card_h],
+                radius=32,
+                fill=(255, 255, 255, 255),
+                outline=(56, 189, 248, 255),
+                width=3,
+            )
+
+            # Top capsule pill inside card
+            pill_w = 280
+            pill_h = 34
+            pill_x = (target_width - pill_w) // 2
+            draw.rounded_rectangle(
+                [pill_x, current_y + 14, pill_x + pill_w, current_y + 14 + pill_h],
+                radius=10,
+                fill=(15, 23, 42, 255),
+            )
+            draw.text(
+                (target_width // 2, current_y + 14 + pill_h // 2),
+                "SCAN TO VISIT / SHOP",
+                font=_get_font(18, bold=True),
+                fill=(56, 189, 248, 255),
+                anchor="mm",
+            )
+
+            # Paste QR Code in center
+            canvas.paste(qr_img, ((target_width - qr_display_size) // 2, current_y + 60), qr_img)
+
+            # Link text below QR code
+            clean_display_url = clean_qr_link.replace("https://", "").replace("http://", "").rstrip("/")
+            if len(clean_display_url) > 34:
+                clean_display_url = clean_display_url[:31] + "..."
+            draw.text(
+                (target_width // 2, current_y + 328),
+                clean_display_url,
+                font=_get_font(20, bold=True),
+                fill=(51, 65, 85, 255),
+                anchor="mm",
+            )
+            current_y += card_h + 20
+        except Exception as qre:
+            logger.warning(f"Failed to generate QR code for outro: {qre}")
 
     # Bottom branding
     draw.text(
-        (target_width // 2, target_height - 90),
+        (target_width // 2, target_height - 70),
         "Made with Harvest AI",
         font=_get_font(22, bold=False),
         fill=(100, 116, 139, 255),
@@ -331,6 +498,8 @@ class CTAOverlayService:
         subscribe_text: Optional[str] = "Subscribe",
         follow_text: Optional[str] = "",
         long_text: Optional[str] = "",
+        qr_link: Optional[str] = "",
+        quote_text: Optional[str] = "",
         duration: float = 3.0,
         music_track_path: Optional[str] = None,
         music_preset: Optional[str] = None,
@@ -339,8 +508,7 @@ class CTAOverlayService:
         """
         Appends a 9:16 vertical outro screen of length `duration` (e.g. 3.0s)
         after the video finishes.
-        If with_audio=True: adds upbeat outro audio track & smooth fade-out (for original audio mode).
-        If with_audio=False: pads outro with silence so bg music or uploaded audio can extend over it.
+        Supports action buttons, promotional QR code, and custom quote/message.
         """
         if not os.path.exists(video_path):
             logger.error(f"Video file not found: {video_path}")
@@ -353,6 +521,8 @@ class CTAOverlayService:
             and not (subscribe_text and subscribe_text.strip())
             and not (follow_text and follow_text.strip())
             and not (long_text and long_text.strip())
+            and not (qr_link and qr_link.strip())
+            and not (quote_text and quote_text.strip())
         ):
             logger.info("Outro requested but all texts are empty. Skipping outro append.")
             return True
@@ -371,6 +541,8 @@ class CTAOverlayService:
                 subscribe_text=subscribe_text,
                 follow_text=follow_text,
                 long_text=long_text,
+                qr_link=qr_link,
+                quote_text=quote_text,
                 target_width=1080,
                 target_height=1920,
             )

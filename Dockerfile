@@ -16,6 +16,7 @@ RUN apt-get update \
         nodejs \
         fonts-dejavu-core \
         fonts-freefont-ttf \
+        fonts-noto-core \
         fontconfig \
         libgl1 \
         libglib2.0-0 \

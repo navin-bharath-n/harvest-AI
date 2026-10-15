@@ -129,9 +129,29 @@ export const api = {
   },
 
   getClipMedia: async (clipId) => {
+    try {
+      const metadata = await client.get(`/videos/clip-media/${clipId}/media-url`);
+      if (metadata.data?.direct && metadata.data.url) {
+        return metadata.data.url;
+      }
+    } catch {
+      // Fallback to fetch/blob if direct media-url fails
+    }
     const response = await authFetch(`/videos/clip-media/${clipId}`);
     if (!response.ok) throw new Error(`Unable to load clip (${response.status})`);
     return URL.createObjectURL(await response.blob());
+  },
+
+  getClipDownloadUrl: async (clipId) => {
+    try {
+      const metadata = await client.get(`/videos/clip-media/${clipId}/download-url`);
+      if (metadata.data?.direct && metadata.data.url) {
+        return metadata.data.url;
+      }
+    } catch {
+      // Fallback to endpoint
+    }
+    return `/api/v1/videos/clip-media/${clipId}/download`;
   },
 
   getVideoMedia: async (videoId) => {
@@ -184,6 +204,10 @@ export const api = {
       speaker_gender: config.speaker_gender || 'female',
       framing_mode: config.framing_mode || 'fit_blur',
       caption_style: config.caption_style || 'pop',
+      primary_color: config.primary_color || null,
+      highlight_color: config.highlight_color || null,
+      source_language: config.source_language || null,
+      retranscribe: !!config.retranscribe,
     };
     const response = await client.post(`/videos/${videoId}/master-generate`, payload);
     return response.data;
@@ -191,6 +215,11 @@ export const api = {
 
   extractHighlights: async (videoId, length = 30) => {
     const response = await client.post(`/videos/${videoId}/extract-highlights`, { length });
+    return response.data;
+  },
+
+  captionFullVideo: async (videoId, options = {}) => {
+    const response = await client.post(`/videos/${videoId}/caption-full-video`, options);
     return response.data;
   },
 
@@ -235,6 +264,8 @@ export const api = {
     const response = await client.post(`/videos/${videoId}/select-moment`, {
       moment_id: momentId,
       caption_style: captionStyle,
+      primary_color: options.primaryColor || null,
+      highlight_color: options.highlightColor || null,
       translate_language: options.translateLanguage || 'none',
       caption_language: options.captionLanguage || 'original',
       dub_voice: Boolean(options.dubVoice),
@@ -309,6 +340,20 @@ export const api = {
   transcribeVideo: async (videoId) => {
     const response = await client.post(`/videos/${videoId}/transcribe`);
     return response.data;
+  },
+
+  // Ultra-fast transcription fetch or generation (~2s, VEED style)
+  ensureTranscript: async (videoId) => {
+    const response = await client.post(`/videos/${videoId}/ensure-transcript`);
+    return response.data;
+  },
+
+  // Fetch or generate translated words with distributed timestamps for live captions
+  getTranslatedTranscript: async (videoId, targetLang) => {
+    const response = await client.post(`/videos/${videoId}/translated-transcript`, null, {
+      params: { target_lang: targetLang },
+    });
+    return response.data?.words || [];
   },
 
   // Detect viral highlights / hooks
