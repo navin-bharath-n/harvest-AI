@@ -4,6 +4,7 @@ import {
   TrendingUp, Users, QrCode, Play, Sparkles, AlertCircle,
   ArrowUpRight, BarChart3, Clock, Compass, FileText, Share2, Layers
 } from 'lucide-react';
+import { api } from '../api/client';
 import Navbar from './Navbar';
 import Footer from './Footer';
 
@@ -15,16 +16,11 @@ export default function GrowthDashboardPage() {
   const handleGenerateFormats = async () => {
     setGeneratingFormats(true);
     try {
-      // Call formats endpoint
-      const res = await fetch('/api/v1/formats/generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tone: 'authentic' }),
-      });
-      const data = await res.json();
+      const data = await api.generateFormats({ tone: 'authentic' });
       setFormatsResult(data);
       setActiveTab('formats');
     } catch (err) {
+      console.warn('API format generation failed, using local preview:', err);
       // Local fallback preview
       setFormatsResult({
         carousel_slides: [

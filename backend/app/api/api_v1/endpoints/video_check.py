@@ -74,12 +74,12 @@ async def evaluate_video_for_quality(request: VideoCheckRequest):
 
     # Calculate deterministic yet realistic quality signals
     seed = sum(ord(c) for c in (title or url or "encore_video_check"))
-    random.seed(seed)
+    rng = random.Random(seed)
 
-    hook_score = random.randint(68, 86)
-    audio_score = random.randint(70, 89)
-    visual_score = random.randint(75, 92)
-    caption_score = random.randint(78, 95)
+    hook_score = rng.randint(68, 86)
+    audio_score = rng.randint(70, 89)
+    visual_score = rng.randint(75, 92)
+    caption_score = rng.randint(78, 95)
     policy_score = 98
 
     composite_score = int(

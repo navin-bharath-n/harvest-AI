@@ -1,7 +1,8 @@
 import React from 'react';
-import { Lock, ArrowRight, Scissors } from 'lucide-react';
+import { Lock, ArrowRight, Sparkles } from 'lucide-react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import harvestLogo from '../Untitled Design.png';
 
 export default function ProtectedRoute({ children }) {
   const { isAuthenticated, isLoading } = useAuth();
@@ -16,10 +17,10 @@ export default function ProtectedRoute({ children }) {
           alignItems: 'center',
           justifyContent: 'center',
           minHeight: '100vh',
-          backgroundColor: '#ffffff',
-          color: '#5b616b',
+          backgroundColor: '#0D0E16',
+          color: '#A9ABC2',
           gap: '1rem',
-          fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+          fontFamily: '"Outfit", system-ui, sans-serif',
         }}
       >
         <div
@@ -27,12 +28,12 @@ export default function ProtectedRoute({ children }) {
             width: 32,
             height: 32,
             borderRadius: '50%',
-            border: '3px solid #e6e6e1',
-            borderTopColor: '#1f6f4a',
+            border: '3px solid #2E3150',
+            borderTopColor: '#3DD6C6',
             animation: 'spin 0.7s linear infinite',
           }}
         />
-        <p style={{ fontSize: '0.9rem', margin: 0, color: '#16181d' }}>Authenticating session…</p>
+        <p style={{ fontSize: '0.9rem', margin: 0, color: '#F4F2EE' }}>Authenticating Encore session…</p>
       </div>
     );
   }
@@ -46,9 +47,9 @@ export default function ProtectedRoute({ children }) {
           alignItems: 'center',
           justifyContent: 'center',
           minHeight: '100vh',
-          backgroundColor: '#ffffff',
+          backgroundColor: '#0D0E16',
           padding: '2rem 1.5rem',
-          fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+          fontFamily: '"Outfit", system-ui, sans-serif',
           WebkitFontSmoothing: 'antialiased',
         }}
       >
@@ -60,34 +61,24 @@ export default function ProtectedRoute({ children }) {
             alignItems: 'center',
             gap: '0.6rem',
             textDecoration: 'none',
-            color: '#16181d',
+            color: '#F4F2EE',
             marginBottom: '1.75rem',
           }}
         >
-          <div
-            style={{
-              width: 32,
-              height: 32,
-              borderRadius: '6px',
-              backgroundColor: '#16181d',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              color: '#ffffff',
-            }}
-          >
-            <Scissors size={16} />
-          </div>
+          <img
+            src={harvestLogo}
+            alt="Encore"
+            style={{ width: 32, height: 32, objectFit: 'contain', borderRadius: 8 }}
+          />
           <span
             style={{
-              fontSize: '1.3rem',
-              fontFamily: '"Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif',
-              fontWeight: 700,
+              fontSize: '1.4rem',
+              fontWeight: 800,
               letterSpacing: '-0.02em',
-              color: '#16181d',
+              color: '#F4F2EE',
             }}
           >
-            Harvest
+            Encore
           </span>
         </Link>
 
@@ -96,44 +87,43 @@ export default function ProtectedRoute({ children }) {
             maxWidth: 420,
             width: '100%',
             textAlign: 'center',
-            backgroundColor: '#ffffff',
-            border: '1px solid #e6e6e1',
-            borderRadius: '8px',
+            backgroundColor: '#161827',
+            border: '1px solid #2E3150',
+            borderRadius: '16px',
             padding: '2.5rem 2rem',
-            boxShadow: '0 1px 3px rgba(0, 0, 0, 0.04)',
+            boxShadow: '0 8px 32px rgba(0, 0, 0, 0.4)',
           }}
         >
           <div
             style={{
-              width: 44,
-              height: 44,
+              width: 48,
+              height: 48,
               margin: '0 auto 1.25rem',
-              borderRadius: '8px',
-              backgroundColor: '#fafaf8',
-              border: '1px solid #e6e6e1',
+              borderRadius: '12px',
+              backgroundColor: '#1A1C2C',
+              border: '1px solid #2E3150',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              color: '#16181d',
+              color: '#3DD6C6',
             }}
           >
-            <Lock size={18} />
+            <Lock size={20} />
           </div>
 
           <h2
             style={{
-              color: '#16181d',
+              color: '#F4F2EE',
               fontSize: '1.5rem',
-              fontFamily: '"Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif',
-              fontWeight: 700,
+              fontWeight: 800,
               letterSpacing: '-0.02em',
               margin: '0 0 0.5rem 0',
             }}
           >
             Authentication Required
           </h2>
-          <p style={{ color: '#5b616b', fontSize: '0.925rem', lineHeight: 1.6, margin: '0 0 1.75rem 0' }}>
-            Please sign in to access your projects and studio workspace.
+          <p style={{ color: '#A9ABC2', fontSize: '0.925rem', lineHeight: 1.6, margin: '0 0 1.75rem 0' }}>
+            Please sign in to access your creator studio, growth rooms, and content calendar.
           </p>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
@@ -145,14 +135,14 @@ export default function ProtectedRoute({ children }) {
                 justifyContent: 'center',
                 gap: '0.5rem',
                 padding: '0.75rem 1.25rem',
-                borderRadius: '6px',
-                backgroundColor: '#1f6f4a',
-                color: '#ffffff',
-                fontWeight: 600,
+                borderRadius: '10px',
+                backgroundColor: '#3DD6C6',
+                color: '#0D0E16',
+                fontWeight: 700,
                 fontSize: '0.95rem',
                 border: 'none',
                 cursor: 'pointer',
-                transition: 'background-color 0.15s ease',
+                transition: 'opacity 0.15s ease',
               }}
             >
               <span>Sign In</span>
@@ -162,13 +152,13 @@ export default function ProtectedRoute({ children }) {
             <button
               onClick={() => navigate('/')}
               style={{
-                backgroundColor: '#ffffff',
-                border: '1px solid #e6e6e1',
-                borderRadius: '6px',
+                backgroundColor: '#1A1C2C',
+                border: '1px solid #2E3150',
+                borderRadius: '10px',
                 padding: '0.7rem 1.25rem',
-                color: '#16181d',
+                color: '#C9CBDD',
                 fontSize: '0.9rem',
-                fontWeight: 500,
+                fontWeight: 600,
                 cursor: 'pointer',
               }}
             >

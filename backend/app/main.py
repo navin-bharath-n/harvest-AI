@@ -55,8 +55,9 @@ def auto_migrate_database(engine):
         from app.models.project import Project
         from app.models.video import Video, Clip
         from app.models.social_connection import SocialConnection
+        from app.models.smart_link import SmartLink
         
-        model_classes = [User, Project, Video, Clip, SocialConnection]
+        model_classes = [User, Project, Video, Clip, SocialConnection, SmartLink]
         
         with engine.begin() as conn:
             for model_cls in model_classes:
@@ -145,7 +146,7 @@ def sync_postgres_sequences(engine):
     from sqlalchemy import text
     try:
         with engine.begin() as conn:
-            for table_name in ["users", "projects", "videos", "clips", "social_connections"]:
+            for table_name in ["users", "projects", "videos", "clips", "social_connections", "smart_links"]:
                 query = text(f"""
                     SELECT setval(
                         pg_get_serial_sequence('{table_name}', 'id'),
@@ -471,9 +472,15 @@ def root():
 
 @app.get("/r/{slug}")
 def smart_redirect(slug: str, request: Request):
-    """PRD K-1: Dynamic smart link redirect."""
+    """PRD K-1: Dynamic smart link redirect with full DB persistence."""
     from app.api.api_v1.endpoints.smart_links import handle_smart_redirect
-    return handle_smart_redirect(slug, request)
+    from app.core.database import SessionLocal
+    db = SessionLocal()
+    try:
+        medium = request.query_params.get("medium", "web")
+        return handle_smart_redirect(slug, request, medium=medium, db=db)
+    finally:
+        db.close()
 
 
 if __name__ == "__main__":

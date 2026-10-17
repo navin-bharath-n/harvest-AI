@@ -1,32 +1,22 @@
 import logging
 import uuid
 import datetime
-from typing import Optional, List, Dict, Any
-from fastapi import APIRouter, HTTPException, Request, Response
+from typing import Optional, List
+from fastapi import APIRouter, HTTPException, Depends, Request
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
+from app.core.database import get_db
+from app.models.smart_link import SmartLink
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# In-memory tracking store for smart links & analytics (synced with DB/Redis when configured)
-_SMART_LINKS_DB: Dict[str, Dict[str, Any]] = {
-    "encore-main": {
-        "slug": "encore-main",
-        "title": "Main Channel & Evergreen Link",
-        "primary_url": "https://www.youtube.com/@DailyWhisper365",
-        "deep_link_ios": "youtube://www.youtube.com/@DailyWhisper365",
-        "deep_link_android": "vnd.youtube://www.youtube.com/@DailyWhisper365",
-        "is_evergreen": True,
-        "latest_video_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-        "total_clicks": 1420,
-        "qr_scans": 894,
-        "followers_attributed": 312,
-        "created_at": "2026-10-16T12:00:00Z",
-    }
-}
 
+# ---------------------------------------------------------------------------
+# Pydantic schemas
+# ---------------------------------------------------------------------------
 
 class SmartLinkCreateRequest(BaseModel):
     title: str
@@ -48,102 +38,121 @@ class SmartLinkResponse(BaseModel):
     followers_attributed: int
     created_at: str
 
+    class Config:
+        from_attributes = True
 
-@router.post("/", response_model=SmartLinkResponse)
-def create_smart_link(req: SmartLinkCreateRequest):
-    """PRD K-1: Create a tracked smart link for bios, QR codes, and outro cards."""
-    slug = (req.slug or str(uuid.uuid4())[:8]).strip().lower()
-    smart_record = {
-        "slug": slug,
-        "title": req.title,
-        "primary_url": req.primary_url,
-        "deep_link_ios": req.deep_link_ios or req.primary_url,
-        "deep_link_android": req.deep_link_android or req.primary_url,
-        "is_evergreen": req.is_evergreen,
-        "latest_video_url": req.primary_url,
-        "total_clicks": 0,
-        "qr_scans": 0,
-        "followers_attributed": 0,
-        "created_at": datetime.datetime.utcnow().isoformat(),
-    }
-    _SMART_LINKS_DB[slug] = smart_record
 
+# ---------------------------------------------------------------------------
+# Helper
+# ---------------------------------------------------------------------------
+
+def _to_response(link: SmartLink) -> SmartLinkResponse:
     return SmartLinkResponse(
-        slug=slug,
-        title=smart_record["title"],
-        primary_url=smart_record["primary_url"],
-        smart_url=f"/r/{slug}",
-        is_evergreen=smart_record["is_evergreen"],
-        total_clicks=smart_record["total_clicks"],
-        qr_scans=smart_record["qr_scans"],
-        followers_attributed=smart_record["followers_attributed"],
-        created_at=smart_record["created_at"],
+        slug=link.slug,
+        title=link.title,
+        primary_url=link.primary_url,
+        smart_url=f"/r/{link.slug}",
+        is_evergreen=link.is_evergreen,
+        total_clicks=link.total_clicks or 0,
+        qr_scans=link.qr_scans or 0,
+        followers_attributed=link.followers_attributed or 0,
+        created_at=link.created_at.isoformat() if link.created_at else datetime.datetime.utcnow().isoformat(),
     )
 
 
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
+
+@router.post("/", response_model=SmartLinkResponse)
+def create_smart_link(req: SmartLinkCreateRequest, db: Session = Depends(get_db)):
+    """PRD K-1: Create a tracked smart link for bios, QR codes, and outro cards."""
+    slug = (req.slug or str(uuid.uuid4())[:8]).strip().lower()
+
+    # Prevent duplicate slugs
+    if db.query(SmartLink).filter(SmartLink.slug == slug).first():
+        raise HTTPException(status_code=409, detail=f"Slug '{slug}' is already taken. Choose a different one.")
+
+    link = SmartLink(
+        slug=slug,
+        title=req.title,
+        primary_url=req.primary_url,
+        deep_link_ios=req.deep_link_ios or req.primary_url,
+        deep_link_android=req.deep_link_android or req.primary_url,
+        is_evergreen=req.is_evergreen,
+        latest_video_url=req.primary_url,
+        total_clicks=0,
+        qr_scans=0,
+        followers_attributed=0,
+    )
+    db.add(link)
+    db.commit()
+    db.refresh(link)
+    return _to_response(link)
+
+
 @router.get("/", response_model=List[SmartLinkResponse])
-def list_smart_links():
+def list_smart_links(db: Session = Depends(get_db)):
     """List all created smart links and their live growth attribution stats."""
-    return [
-        SmartLinkResponse(
-            slug=item["slug"],
-            title=item["title"],
-            primary_url=item["primary_url"],
-            smart_url=f"/r/{item['slug']}",
-            is_evergreen=item.get("is_evergreen", False),
-            total_clicks=item.get("total_clicks", 0),
-            qr_scans=item.get("qr_scans", 0),
-            followers_attributed=item.get("followers_attributed", 0),
-            created_at=item.get("created_at", ""),
-        )
-        for item in _SMART_LINKS_DB.values()
-    ]
+    links = db.query(SmartLink).order_by(SmartLink.created_at.desc()).all()
+    return [_to_response(link) for link in links]
+
+
+@router.get("/{slug}", response_model=SmartLinkResponse)
+def get_smart_link(slug: str, db: Session = Depends(get_db)):
+    """PRD K-1: Retrieve metadata for a single smart link by slug."""
+    link = db.query(SmartLink).filter(SmartLink.slug == slug).first()
+    if not link:
+        raise HTTPException(status_code=404, detail="Smart link not found")
+    return _to_response(link)
 
 
 @router.get("/{slug}/stats")
-def get_smart_link_stats(slug: str):
+def get_smart_link_stats(slug: str, db: Session = Depends(get_db)):
     """PRD L-1 & L-3: Detailed attribution stats (devices, platforms, scans vs clicks)."""
-    item = _SMART_LINKS_DB.get(slug)
-    if not item:
+    link = db.query(SmartLink).filter(SmartLink.slug == slug).first()
+    if not link:
         raise HTTPException(status_code=404, detail="Smart link not found")
 
+    clicks = link.total_clicks or 0
     return {
         "slug": slug,
-        "title": item["title"],
-        "total_clicks": item["total_clicks"],
-        "qr_scans": item["qr_scans"],
-        "followers_attributed": item["followers_attributed"],
+        "title": link.title,
+        "total_clicks": clicks,
+        "qr_scans": link.qr_scans or 0,
+        "followers_attributed": link.followers_attributed or 0,
         "platform_breakdown": {
-            "youtube": int(item["total_clicks"] * 0.45),
-            "instagram": int(item["total_clicks"] * 0.35),
-            "tiktok": int(item["total_clicks"] * 0.15),
-            "other": int(item["total_clicks"] * 0.05),
+            "youtube": int(clicks * 0.45),
+            "instagram": int(clicks * 0.35),
+            "tiktok": int(clicks * 0.15),
+            "other": int(clicks * 0.05),
         },
         "device_breakdown": {
-            "mobile_ios": int(item["total_clicks"] * 0.52),
-            "mobile_android": int(item["total_clicks"] * 0.38),
-            "desktop_or_tv": int(item["total_clicks"] * 0.10),
+            "mobile_ios": int(clicks * 0.52),
+            "mobile_android": int(clicks * 0.38),
+            "desktop_or_tv": int(clicks * 0.10),
         },
     }
 
 
 @router.get("/redirect/{slug}")
-def handle_smart_redirect(slug: str, request: Request, medium: Optional[str] = "web"):
+def handle_smart_redirect(slug: str, request: Request, medium: Optional[str] = "web", db: Session = Depends(get_db)):
     """
     PRD K-1 & K-3: Smart redirect with device & platform detection and deep linking.
+    Also used by the root /r/{slug} route in main.py.
     """
-    item = _SMART_LINKS_DB.get(slug)
-    if not item:
-        # Graceful fallback to default homepage
+    link = db.query(SmartLink).filter(SmartLink.slug == slug).first()
+    if not link:
+        # Graceful fallback
         return RedirectResponse(url="/")
 
-    item["total_clicks"] += 1
+    # Increment counters
+    link.total_clicks = (link.total_clicks or 0) + 1
     if medium in ("outro_qr", "qr"):
-        item["qr_scans"] += 1
-    if item["total_clicks"] % 4 == 0:
-        item["followers_attributed"] += 1
+        link.qr_scans = (link.qr_scans or 0) + 1
+    if link.total_clicks % 4 == 0:
+        link.followers_attributed = (link.followers_attributed or 0) + 1
+    db.commit()
 
-    user_agent = request.headers.get("user-agent", "").lower()
-    destination = item["latest_video_url"] if item.get("is_evergreen") else item["primary_url"]
-
-    return RedirectResponse(url=destination, status_code=302)
+    destination = link.latest_video_url if link.is_evergreen else link.primary_url
+    return RedirectResponse(url=destination or link.primary_url, status_code=302)

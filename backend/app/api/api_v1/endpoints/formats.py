@@ -48,7 +48,8 @@ def generate_non_video_formats(
         clip = db.query(Clip).filter(Clip.id == req.clip_id).first()
         if clip:
             opts = clip.edit_options or {}
-            transcript = opts.get("transcript") or clip.summary or ""
+            video_transcript = clip.video.transcript if getattr(clip, "video", None) else None
+            transcript = opts.get("transcript") or video_transcript or ""
 
     if not transcript:
         transcript = "In today's fast-paced digital world, focus and consistency are the real superpowers. True growth comes from small daily iterations, authentic connections, and showing up even when you don't feel like it."

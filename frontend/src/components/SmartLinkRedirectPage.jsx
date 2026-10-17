@@ -1,11 +1,14 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { ExternalLink, Smartphone, Tv, Play, Share2, Sparkles, CheckCircle2 } from 'lucide-react';
+import { Play, Share2, CheckCircle2, Loader2, Sparkles, ExternalLink } from 'lucide-react';
+import { api } from '../api/client';
 
 export default function SmartLinkRedirectPage() {
   const { slug } = useParams();
   const [copied, setCopied] = useState(false);
   const [device, setDevice] = useState('mobile');
+  const [linkData, setLinkData] = useState(null);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const ua = navigator.userAgent.toLowerCase();
@@ -18,7 +21,27 @@ export default function SmartLinkRedirectPage() {
     }
   }, []);
 
-  const channelUrl = 'https://www.youtube.com/@DailyWhisper365';
+  useEffect(() => {
+    let mounted = true;
+    const fetchLink = async () => {
+      if (!slug) return;
+      try {
+        const data = await api.getSmartLink(slug);
+        if (mounted) setLinkData(data);
+      } catch (err) {
+        console.warn(`Smart link for '${slug}' not found on server, using fallback preview.`, err);
+      } finally {
+        if (mounted) setLoading(false);
+      }
+    };
+    fetchLink();
+    return () => {
+      mounted = false;
+    };
+  }, [slug]);
+
+  const title = linkData?.title || (slug ? `${slug.charAt(0).toUpperCase() + slug.slice(1)} Channel` : 'Encore Creator');
+  const destinationUrl = linkData?.primary_url || 'https://www.youtube.com/';
   const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=320x320&data=${encodeURIComponent(window.location.href)}`;
 
   const handleCopy = () => {
@@ -35,10 +58,19 @@ export default function SmartLinkRedirectPage() {
           ENCORE SMART LINK
         </span>
 
-        <div>
-          <h1 style={{ margin: 0, fontSize: 28, fontWeight: 800 }}>DailyWhisper365</h1>
-          <p style={{ margin: '6px 0 0', fontSize: 14, color: '#A9ABC2' }}>A daily prayer for a brighter tomorrow</p>
-        </div>
+        {loading ? (
+          <div style={{ padding: '24px 0', display: 'flex', alignItems: 'center', gap: 8, color: '#A9ABC2' }}>
+            <Loader2 size={18} className="animate-spin" />
+            <span>Resolving creator channel…</span>
+          </div>
+        ) : (
+          <div>
+            <h1 style={{ margin: 0, fontSize: 28, fontWeight: 800 }}>{title}</h1>
+            <p style={{ margin: '6px 0 0', fontSize: 14, color: '#A9ABC2' }}>
+              {linkData?.is_evergreen ? 'Always links to the newest release' : 'Official Creator Destination'}
+            </p>
+          </div>
+        )}
 
         {/* QR Code Block for TV / Desktop or phone sharing */}
         <div style={{ background: '#ffffff', padding: 12, borderRadius: 20, boxShadow: '0 8px 30px rgba(0,0,0,0.4)' }}>
@@ -51,12 +83,12 @@ export default function SmartLinkRedirectPage() {
 
         {/* Primary Action Button */}
         <a
-          href={channelUrl}
+          href={destinationUrl}
           target="_blank"
           rel="noopener noreferrer"
           style={{ width: '100%', background: '#3DD6C6', color: '#0D0E16', fontWeight: 800, fontSize: 16, padding: '16px 20px', borderRadius: 14, textDecoration: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, boxSizing: 'border-box' }}
         >
-          <Play size={20} fill="currentColor" /> Open Latest Video
+          <Play size={20} fill="currentColor" /> Open Latest Content
         </a>
 
         {/* Secondary Actions */}
@@ -77,7 +109,7 @@ export default function SmartLinkRedirectPage() {
         </div>
 
         <span style={{ fontSize: 11, color: '#5B617A' }}>
-          Tracked by Encore · Device: {device} · Slug: {slug}
+          Tracked by Encore · Device: {device} · Slug: {slug || 'default'}
         </span>
       </div>
     </div>

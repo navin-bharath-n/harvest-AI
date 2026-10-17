@@ -57,7 +57,15 @@ export default function LoginPage() {
       try {
         let parsedUser = null;
         if (googleUser) {
-          parsedUser = typeof googleUser === 'object' ? googleUser : JSON.parse(decodeURIComponent(googleUser));
+          if (typeof googleUser === 'object') {
+            parsedUser = googleUser;
+          } else {
+            try {
+              parsedUser = JSON.parse(googleUser);
+            } catch {
+              parsedUser = JSON.parse(decodeURIComponent(googleUser));
+            }
+          }
         }
         loginWithGoogleData(googleToken, parsedUser);
         const from = location.state?.from?.pathname || '/studio';

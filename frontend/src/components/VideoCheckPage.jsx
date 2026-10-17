@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { CheckCircle2, Sparkles, AlertTriangle, ArrowRight, Play, Wrench, ShieldCheck, Flame } from 'lucide-react';
-import axios from 'axios';
+import { api } from '../api/client';
 import Navbar from './Navbar';
 import Footer from './Footer';
 
@@ -24,13 +24,13 @@ export default function VideoCheckPage() {
     setFixedItems(new Set());
     setBonusScore(0);
     try {
-      const res = await axios.post('/api/v1/video-check/evaluate', {
+      const data = await api.evaluateVideoCheck({
         url: targetUrl || 'https://youtube.com/shorts/sample-check',
         title: targetUrl ? targetUrl.split('/').pop() : 'Creator Short',
         playbook: targetPlaybook,
         platform: 'shorts',
       });
-      setReport(res.data);
+      setReport(data);
     } catch (err) {
       // Fallback report for local client preview
       setReport({

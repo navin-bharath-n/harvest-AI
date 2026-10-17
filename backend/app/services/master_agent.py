@@ -398,6 +398,7 @@ class MasterAIAgent:
                 default_w = _calc_window(0.0)
                 candidate_windows = [default_w] * target_variation_count
         else:
+            initial_count = max(1, len(candidate_windows))
             while len(candidate_windows) < target_variation_count:
                 if video_duration > target_dur * 1.2:
                     idx_needed = len(candidate_windows)
@@ -405,7 +406,7 @@ class MasterAIAgent:
                     s_t = min(idx_needed * step, max(0.0, video_duration - target_dur))
                     candidate_windows.append(_calc_window(s_t))
                 else:
-                    candidate_windows.append(candidate_windows[len(candidate_windows) % len(candidate_windows)])
+                    candidate_windows.append(candidate_windows[len(candidate_windows) % initial_count])
 
         logger.info(f"Candidate highlight windows: {candidate_windows}")
 

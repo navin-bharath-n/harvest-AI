@@ -91,14 +91,15 @@ def detect_audio_highlights(audio_path: str, min_duration: float = 15.0, max_dur
             # Clip duration to standard highlight range
             if dur < min_duration:
                 # Pad segment duration to min_duration centered around the peak
-                peak_sec = start_sec + np.argmax(smoothed_rms[start_sec:end_sec+1])
+                peak_sec = start_sec + int(np.argmax(smoothed_rms[start_sec:end_sec+1]))
                 start_sec = max(0, peak_sec - int(min_duration // 2))
-                end_sec = start_sec + int(min_duration)
+                end_sec = min(num_windows, start_sec + int(min_duration))
+                start_sec = max(0, end_sec - int(min_duration))
             elif dur > max_duration:
                 # Trim segment duration to max_duration around the peak
-                peak_sec = start_sec + np.argmax(smoothed_rms[start_sec:end_sec+1])
+                peak_sec = start_sec + int(np.argmax(smoothed_rms[start_sec:end_sec+1]))
                 start_sec = max(0, peak_sec - int(max_duration // 2))
-                end_sec = start_sec + int(max_duration)
+                end_sec = min(num_windows, start_sec + int(max_duration))
                 
             segment_rms = smoothed_rms[start_sec:end_sec+1]
             if len(segment_rms) == 0:

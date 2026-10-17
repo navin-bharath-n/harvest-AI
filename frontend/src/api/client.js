@@ -602,5 +602,41 @@ export const api = {
   cancelAllGenerations: async () => {
     const response = await client.post('/videos/cancel-all');
     return response.data;
+  },
+
+  // Video Check: Pre-publish AI quality evaluation
+  evaluateVideoCheck: async (payload) => {
+    const response = await client.post('/video-check/evaluate', payload);
+    return response.data;
+  },
+
+  // One Upload, Every Format: Non-video format generator (carousels, threads, posts)
+  generateFormats: async (payload = { tone: 'authentic' }) => {
+    const response = await client.post('/formats/generate', payload);
+    return response.data;
+  },
+
+  // Smart Links: List all smart links
+  getSmartLinks: async () => {
+    const response = await client.get('/smart-links/');
+    return response.data;
+  },
+
+  // Smart Links: Get single smart link by slug
+  getSmartLink: async (slug) => {
+    const response = await client.get(`/smart-links/${slug}`);
+    return response.data;
+  },
+
+  // Smart Links: Create a new tracked smart link
+  createSmartLink: async (payload) => {
+    const response = await client.post('/smart-links/', payload);
+    return response.data;
+  },
+
+  // Smart Links: Get attribution stats
+  getSmartLinkStats: async (slug) => {
+    const response = await client.get(`/smart-links/${slug}/stats`);
+    return response.data;
   }
 };

@@ -290,36 +290,6 @@ class VoiceService:
             subprocess.run(cmd, capture_output=True, check=True)
             return output_path
 
-        # 3. Tertiary Fallback: Local gTTS with pitch-shift
-        try:
-            temp_mp3 = output_path.replace(".wav", f"_{uuid.uuid4().hex[:6]}.mp3")
-            gtts_lang = lang_norm.split("-")[0]
-            tts = gTTS(text=text, lang=gtts_lang)
-            tts.save(temp_mp3)
-            
-            filter_chain = []
-            if gender_norm == "male":
-                filter_chain = ["-filter:a", "asetrate=44100*0.84,atempo=1.19"]
-            else:
-                filter_chain = ["-filter:a", "asetrate=44100*1.10,atempo=0.91"]
-                
-            cmd = [
-                "ffmpeg", "-y", "-loglevel", "error",
-                "-i", temp_mp3,
-                "-acodec", "pcm_s16le",
-                "-ar", "44100",
-                "-ac", "1"
-            ] + filter_chain + [output_path]
-            
-            subprocess.run(cmd, capture_output=True, check=True)
-            if os.path.exists(temp_mp3):
-                os.remove(temp_mp3)
-            logger.info(f"Generated gTTS voiceover to {output_path}")
-            return output_path
-        except Exception as e:
-            logger.error(f"All TTS generation methods failed: {e}")
-            raise RuntimeError(f"Could not synthesize dubbed speech in '{lang_norm}'") from e
-
     def get_audio_duration(self, audio_path: str) -> float:
         try:
             cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", audio_path]

@@ -4,6 +4,7 @@ from pathlib import Path
 from app.core.celery_app import celery_app
 from app.core.database import SessionLocal
 from app import models
+from app.core.config import settings
 from sqlalchemy.orm.attributes import flag_modified
 
 logger = logging.getLogger(__name__)

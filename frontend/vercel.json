@@ -5,6 +5,10 @@
       "destination": "https://harvest-ai-soql.onrender.com/api/$1"
     },
     {
+      "source": "/r/(.*)",
+      "destination": "https://harvest-ai-soql.onrender.com/r/$1"
+    },
+    {
       "source": "/(.*)",
       "destination": "/index.html"
     }

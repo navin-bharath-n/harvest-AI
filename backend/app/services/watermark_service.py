@@ -213,11 +213,14 @@ class WatermarkService:
                 filter_chains.append(f"[{current_stream}][{scaled_label}]overlay=(W-w)/2:(H-h)/2{enable_expr}[{out_label}]")
                 current_stream = out_label
             elif pos == "header_and_footer":
-                # Watermark displayed at both header and footer
+                # Watermark displayed at both header and footer (split scaled stream first)
+                split_top = f"wm_top_{input_idx}"
+                split_bot = f"wm_bot_{input_idx}"
                 label_mid = f"v_wm_mid_{input_idx}"
                 out_label = f"v_wm_{input_idx}"
-                filter_chains.append(f"[{current_stream}][{scaled_label}]overlay=(W-w)/2:{pad_y}{enable_expr}[{label_mid}]")
-                filter_chains.append(f"[{label_mid}][{scaled_label}]overlay=(W-w)/2:H-h-{pad_y}{enable_expr}[{out_label}]")
+                filter_chains.append(f"[{scaled_label}]split[{split_top}][{split_bot}]")
+                filter_chains.append(f"[{current_stream}][{split_top}]overlay=(W-w)/2:{pad_y}{enable_expr}[{label_mid}]")
+                filter_chains.append(f"[{label_mid}][{split_bot}]overlay=(W-w)/2:H-h-{pad_y}{enable_expr}[{out_label}]")
                 current_stream = out_label
             else:
                 # Default "header" / "top" center
