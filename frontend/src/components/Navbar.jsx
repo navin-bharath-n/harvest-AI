@@ -21,11 +21,11 @@ export default function Navbar() {
           align-items: center;
           justify-content: space-between;
           padding: 0.85rem clamp(1.2rem, 5vw, 3.5rem);
-          background-color: rgba(255, 255, 255, 0.94);
+          background-color: rgba(13, 14, 22, 0.94);
           backdrop-filter: blur(12px);
           -webkit-backdrop-filter: blur(12px);
-          border-bottom: 1px solid #e6e6e1;
-          color: #16181d;
+          border-bottom: 1px solid #2E3150;
+          color: #F4F2EE;
           transition: padding 0.15s ease;
         }
         .hv-nav-brand {
@@ -33,20 +33,39 @@ export default function Navbar() {
           align-items: center;
           gap: 0.6rem;
           text-decoration: none;
-          color: #16181d;
+          color: #F4F2EE;
           flex-shrink: 0;
         }
         .hv-nav-logo {
-          width: 38px;
-          height: 38px;
+          width: 34px;
+          height: 34px;
           object-fit: contain;
-          border-radius: 6px;
+          border-radius: 8px;
         }
         .hv-nav-brand-text {
-          font-size: 1.25rem;
-          font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
-          font-weight: 700;
+          font-size: 1.35rem;
+          font-family: "Outfit", "Bricolage Grotesque", system-ui, sans-serif;
+          font-weight: 800;
           letter-spacing: -0.02em;
+          color: #F4F2EE;
+        }
+        .hv-nav-links {
+          display: flex;
+          align-items: center;
+          gap: 1.5rem;
+        }
+        .hv-nav-link {
+          color: #C9CBDD;
+          text-decoration: none;
+          font-size: 0.92rem;
+          font-weight: 600;
+          transition: color 0.15s ease;
+          display: inline-flex;
+          align-items: center;
+          gap: 0.35rem;
+        }
+        .hv-nav-link:hover {
+          color: #3DD6C6;
         }
         .hv-nav-actions {
           display: flex;
@@ -59,69 +78,68 @@ export default function Navbar() {
           align-items: center;
           gap: 0.45rem;
           padding: 0.55rem 1.15rem;
-          border-radius: 6px;
-          background-color: #1f6f4a;
-          color: #ffffff;
+          border-radius: 8px;
+          background-color: #3DD6C6;
+          color: #0D0E16;
           text-decoration: none;
           border: none;
           font-size: 0.92rem;
-          font-weight: 600;
+          font-weight: 700;
           cursor: pointer;
           white-space: nowrap;
-          transition: background-color 0.15s ease;
+          transition: opacity 0.15s ease;
         }
         .hv-nav-btn-primary:hover {
-          background-color: #185a3c;
+          opacity: 0.9;
         }
         .hv-nav-btn-ghost {
           display: inline-flex;
           align-items: center;
           gap: 0.4rem;
           padding: 0.5rem 0.8rem;
-          border-radius: 6px;
+          border-radius: 8px;
           background-color: transparent;
-          color: #16181d;
+          color: #C9CBDD;
           text-decoration: none;
           border: none;
           font-size: 0.92rem;
-          font-weight: 500;
+          font-weight: 600;
           cursor: pointer;
           white-space: nowrap;
           transition: color 0.15s ease, background-color 0.15s ease;
         }
         .hv-nav-btn-ghost:hover {
-          background-color: #f4f4f2;
+          background-color: #1A1C2C;
+          color: #F4F2EE;
         }
         .hv-nav-btn-outline {
           display: inline-flex;
           align-items: center;
           gap: 0.4rem;
           padding: 0.5rem 0.8rem;
-          border-radius: 6px;
+          border-radius: 8px;
           background-color: transparent;
-          color: #5b616b;
-          border: 1px solid #e6e6e1;
+          color: #A9ABC2;
+          border: 1px solid #2E3150;
           font-size: 0.85rem;
           cursor: pointer;
           white-space: nowrap;
           transition: background-color 0.15s ease;
         }
         .hv-nav-btn-outline:hover {
-          background-color: #f7f7f5;
+          background-color: #1A1C2C;
+        }
+        @media (max-width: 860px) {
+          .hv-nav-links {
+            display: none;
+          }
         }
         @media (max-width: 640px) {
           .hv-nav-header {
             padding: 0.65rem 0.85rem;
           }
-          .hv-nav-brand {
-            gap: 0.45rem;
-          }
-          .hv-nav-logo {
-            width: 32px;
-            height: 32px;
-          }
           .hv-nav-brand-text {
-            font-size: 1.12rem;
+            font-size: 1.15rem;
           }
           .hv-nav-actions {
             gap: 0.35rem;
@@ -129,26 +147,27 @@ export default function Navbar() {
           .hv-nav-btn-primary {
             padding: 0.42rem 0.72rem;
             font-size: 0.82rem;
-            gap: 0.3rem;
-          }
-          .hv-nav-btn-ghost {
-            padding: 0.42rem 0.52rem;
-            font-size: 0.82rem;
-            gap: 0.25rem;
-          }
-          .hv-nav-btn-outline {
-            padding: 0.42rem 0.52rem;
-            font-size: 0.8rem;
-            gap: 0.25rem;
           }
         }
       `}</style>
       <header className="hv-nav-header">
         {/* Brand */}
         <Link to="/" className="hv-nav-brand">
-          <img src={harvestLogo} alt="Harvest AI logo" className="hv-nav-logo" />
-          <span className="hv-nav-brand-text">Harvest</span>
+          <img src={harvestLogo} alt="Encore logo" className="hv-nav-logo" />
+          <span className="hv-nav-brand-text">Encore</span>
         </Link>
+
+        {/* Center Nav Links */}
+        <nav className="hv-nav-links" aria-label="Main Navigation">
+          <Link to="/check" className="hv-nav-link" style={{ color: '#3DD6C6' }}>
+            <span>Video Check</span>
+            <span style={{ fontSize: 10, fontWeight: 800, background: 'rgba(61, 214, 198, 0.15)', padding: '2px 6px', borderRadius: 4 }}>FREE</span>
+          </Link>
+          <Link to="/pricing" className="hv-nav-link">Rooms</Link>
+          <Link to="/studio" className="hv-nav-link">Studio</Link>
+          <Link to="/growth" className="hv-nav-link">Growth</Link>
+          <Link to="/calendar" className="hv-nav-link">Calendar</Link>
+        </nav>
 
         {/* Nav Actions */}
         <div className="hv-nav-actions">
@@ -174,12 +193,15 @@ export default function Navbar() {
             </>
           ) : (
             <>
+              <Link to="/check" className="hv-nav-btn-ghost">
+                <span>Check Video</span>
+              </Link>
               <Link to="/login" className="hv-nav-btn-ghost">
                 <LogIn size={14} />
                 <span>Sign In</span>
               </Link>
               <Link to="/register" className="hv-nav-btn-primary">
-                <span>Get Started</span>
+                <span>Start Free</span>
               </Link>
             </>
           )}

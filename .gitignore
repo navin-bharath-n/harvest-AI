@@ -64,3 +64,7 @@ backend/gcp-key.json
 **/*client_secret*.json
 *.apps.googleusercontent.com.json
 frontend/src/Untitled Design (1).png
+drive-download*.zip
+prd_materials/
+tmp/
+output/

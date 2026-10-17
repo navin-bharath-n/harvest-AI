@@ -469,6 +469,13 @@ app.mount("/uploads", StaticFiles(directory=uploads_dir), name="uploads")
 def root():
     return {"message": f"Welcome to {settings.PROJECT_NAME} API"}
 
+@app.get("/r/{slug}")
+def smart_redirect(slug: str, request: Request):
+    """PRD K-1: Dynamic smart link redirect."""
+    from app.api.api_v1.endpoints.smart_links import handle_smart_redirect
+    return handle_smart_redirect(slug, request)
+
+
 if __name__ == "__main__":
     import uvicorn
     from generate_certs import generate_self_signed_cert
