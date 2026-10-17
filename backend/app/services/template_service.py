@@ -1,8 +1,7 @@
 """
-Template Service for Creator Outro & Video Templates.
-Manages templates stored in Cloudflare R2 (r2://).
-Syncs local Templates/ to Cloudflare R2, provides listing with presigned URLs,
-and handles concatenating R2 templates to rendered clips.
+Template Service for local Creator Outro & Video Templates.
+Serves source templates from the repository's Templates/ directory and prepares
+cached MP4 previews locally for browser playback and video rendering.
 """
 
 import os
@@ -10,6 +9,7 @@ import shutil
 import logging
 import subprocess
 import tempfile
+import uuid
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
@@ -183,6 +183,102 @@ class TemplateService:
                 if f.is_file() and f.stat().st_size > 20000:
                     return str(f)
         return None
+
+    def _find_catalog_item(self, template_id: str) -> Optional[Dict[str, Any]]:
+        normalized_id = str(template_id or "").removeprefix("local://templates/")
+        return next((item for item in TEMPLATE_CATALOG if item["id"] == normalized_id), None)
+
+    def get_template_source_path(self, template_id: str) -> Optional[Path]:
+        """Resolve only catalogued template IDs to files under the local Templates/ folder."""
+        item = self._find_catalog_item(template_id)
+        templates_dir = self.get_templates_dir()
+        if not item or not templates_dir:
+            return None
+        source_path = (templates_dir / item["source_file"]).resolve()
+        if source_path.parent != templates_dir.resolve() or not source_path.is_file():
+            return None
+        return source_path
+
+    def get_local_template_video_path(self, template_id: str) -> Optional[Path]:
+        """Create (once) a normalized local MP4 from a catalogued source asset."""
+        item = self._find_catalog_item(template_id)
+        source_path = self.get_template_source_path(template_id)
+        if not item or not source_path:
+            return None
+
+        cache_dir = Path(tempfile.gettempdir()) / "harvest_local_templates"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        output_path = cache_dir / f"{item['id']}.mp4"
+        if output_path.is_file() and output_path.stat().st_mtime >= source_path.stat().st_mtime:
+            return output_path
+
+        duration = float(item.get("duration", 5.0))
+        is_image = source_path.suffix.lower() in {".png", ".jpg", ".jpeg"}
+        is_gif = source_path.suffix.lower() == ".gif"
+        source_has_audio = False
+        if not is_image and not is_gif:
+            probe = subprocess.run(
+                ["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=codec_type", "-of", "csv=p=0", str(source_path)],
+                capture_output=True, text=True, timeout=10,
+            )
+            source_has_audio = bool(probe.stdout.strip())
+
+        command = ["ffmpeg", "-y", "-loglevel", "error"]
+        if is_image:
+            command += ["-loop", "1", "-t", f"{duration:.2f}", "-i", str(source_path)]
+        elif is_gif:
+            command += ["-stream_loop", "-1", "-i", str(source_path)]
+        else:
+            command += ["-i", str(source_path)]
+
+        audio_path = self._resolve_audio_track(item.get("audio_track")) if item.get("audio_track") else None
+        if audio_path:
+            command += ["-stream_loop", "-1", "-i", audio_path]
+            audio_map = "1:a:0"
+        elif source_has_audio:
+            audio_map = "0:a:0"
+        else:
+            command += ["-f", "lavfi", "-t", f"{duration:.2f}", "-i", "anullsrc=r=44100:cl=stereo"]
+            audio_map = "1:a:0"
+
+        temp_output = output_path.with_name(f"{output_path.stem}.{uuid.uuid4().hex}.tmp.mp4")
+        command += [
+            "-map", "0:v:0", "-map", audio_map,
+            "-vf", "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p",
+            "-t", f"{duration:.2f}", "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+            "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2", "-movflags", "+faststart",
+            str(temp_output),
+        ]
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, timeout=180)
+            if result.returncode != 0 or not temp_output.is_file() or temp_output.stat().st_size == 0:
+                logger.error("Could not prepare local template %s: %s", item["id"], result.stderr[-2000:])
+                temp_output.unlink(missing_ok=True)
+                return None
+            temp_output.replace(output_path)
+            return output_path
+        except Exception:
+            temp_output.unlink(missing_ok=True)
+            logger.exception("Could not prepare local template %s", item["id"])
+            return None
+
+    def get_local_template_thumbnail_path(self, template_id: str) -> Optional[Path]:
+        """Return a locally generated thumbnail for the normalized template preview."""
+        video_path = self.get_local_template_video_path(template_id)
+        item = self._find_catalog_item(template_id)
+        if not video_path or not item:
+            return None
+        thumbnail_path = video_path.with_suffix(".jpg")
+        if thumbnail_path.is_file() and thumbnail_path.stat().st_mtime >= video_path.stat().st_mtime:
+            return thumbnail_path
+        result = subprocess.run(
+            ["ffmpeg", "-y", "-loglevel", "error", "-ss", "1", "-i", str(video_path), "-frames:v", "1", "-q:v", "2", str(thumbnail_path)],
+            capture_output=True, text=True, timeout=20,
+        )
+        if result.returncode != 0 or not thumbnail_path.is_file():
+            logger.warning("Could not create thumbnail for local template %s: %s", item["id"], result.stderr[-1000:])
+            return None
+        return thumbnail_path
 
     def _object_exists_in_r2(self, client, bucket: str, key: str) -> bool:
         """Checks if a key already exists in Cloudflare R2 bucket."""
@@ -443,29 +539,13 @@ class TemplateService:
 
     def list_templates(self) -> List[Dict[str, Any]]:
         """
-        Returns all templates with signed Cloudflare R2 URLs for streaming & previewing.
-        Media is loaded directly from Cloudflare R2, NOT local disk.
+        Return templates backed by repository-local files and local API routes.
         """
-        provider = object_storage._provider() or "r2"
-        endpoint, credentials = object_storage._r2_values()
-        bucket = credentials[1]
-
         templates = []
         for item in TEMPLATE_CATALOG:
-            r2_video_path = f"{provider}://{bucket}/{item['r2_key']}"
-            r2_thumb_path = f"{provider}://{bucket}/{item['thumb_key']}"
-
-            video_url = ""
-            thumb_url = ""
-            try:
-                video_url = object_storage.url(r2_video_path)
-            except Exception as e:
-                logger.debug(f"Could not generate signed video URL for {item['id']}: {e}")
-
-            try:
-                thumb_url = object_storage.url(r2_thumb_path)
-            except Exception as e:
-                logger.debug(f"Could not generate signed thumb URL for {item['id']}: {e}")
+            if not self.get_template_source_path(item["id"]):
+                logger.warning("Skipping local template %s because its source file is missing", item["id"])
+                continue
 
             templates.append({
                 "id": item["id"],
@@ -475,16 +555,17 @@ class TemplateService:
                 "duration": item["duration"],
                 "aspect_ratio": "9:16",
                 "resolution": "1080x1920",
-                "storage_path": r2_video_path,
-                "video_url": video_url,
-                "thumb_url": thumb_url,
+                "storage_path": item["id"],
+                "video_url": f"/templates/{item['id']}/media",
+                "preview_video_url": f"/templates/{item['id']}/media",
+                "thumb_url": f"/templates/{item['id']}/thumbnail",
                 "badge": item.get("badge", "Outro"),
                 "accent": item.get("accent", "#1f6f4a"),
             })
         return templates
 
     def get_template(self, template_id: str) -> Optional[Dict[str, Any]]:
-        """Finds a single template by ID with signed R2 URLs."""
+        """Find a single catalogued local template."""
         for t in self.list_templates():
             if t["id"] == template_id:
                 return t
@@ -492,8 +573,8 @@ class TemplateService:
 
     def append_template_to_video(self, video_path: str, template_id_or_path: str, with_audio: bool = True) -> bool:
         """
-        Concatenates an R2-stored template outro to a rendered video.
-        Downloads/caches remote R2 template using object_storage.local_path().
+        Concatenates a local template outro to a rendered video.
+        Existing remote R2 paths remain readable for already saved renders.
         Standardizes concatenation strictly in 1080x1920, 30fps, SAR 1:1, stereo AAC.
         If with_audio=False, appends video visuals only and pads audio with silence so that
         background music or uploaded audio can extend over the entire extended duration.
@@ -502,25 +583,25 @@ class TemplateService:
             logger.error(f"Input video not found: {video_path}")
             return False
 
-        # Determine R2 storage path
+        # Resolve current local template IDs locally; preserve remote resolution
+        # for previously saved edit options that still contain an R2 URL.
         storage_path = template_id_or_path
         if not object_storage.is_remote(storage_path):
-            tmpl = self.get_template(template_id_or_path)
+            tmpl = self._find_catalog_item(template_id_or_path)
             if not tmpl:
                 logger.error(f"Template '{template_id_or_path}' not found in catalog")
                 return False
-            storage_path = tmpl["storage_path"]
-
-        # Fetch local cached copy of R2 object
-        try:
-            logger.info(f"Resolving R2 template '{storage_path}' to local worker cache...")
-            cached_template_file = object_storage.local_path(storage_path)
-            if not os.path.exists(cached_template_file):
-                logger.error(f"Cached template file does not exist: {cached_template_file}")
+            cached_template_file = self.get_local_template_video_path(tmpl["id"])
+        else:
+            try:
+                cached_template_file = Path(object_storage.local_path(storage_path))
+            except Exception as e:
+                logger.error(f"Failed to fetch legacy remote template: {e}", exc_info=True)
                 return False
-        except Exception as e:
-            logger.error(f"Failed to fetch template from R2: {e}", exc_info=True)
+        if not cached_template_file or not cached_template_file.is_file():
+            logger.error(f"Local template media is unavailable: {template_id_or_path}")
             return False
+        cached_template_file = str(cached_template_file)
 
         temp_dir = tempfile.mkdtemp(prefix="harvest_tmpl_concat_")
         merged_path = os.path.join(temp_dir, "merged_output.mp4")
@@ -563,7 +644,7 @@ class TemplateService:
             except Exception:
                 tmpl_dur = 5.0
 
-            logger.info(f"Concatenating video (audio={has_input_audio}) + R2 template (audio={has_tmpl_audio}, with_audio={with_audio}, dur={tmpl_dur}s)")
+            logger.info(f"Concatenating video (audio={has_input_audio}) + local template (audio={has_tmpl_audio}, with_audio={with_audio}, dur={tmpl_dur}s)")
 
             # ─────────────────────────────────────────────────────────────
             # METHOD 1: Fast stream-copy Concat Demuxer (-c copy)
@@ -612,7 +693,7 @@ class TemplateService:
             copy_res = subprocess.run(copy_cmd, capture_output=True, text=True, timeout=30)
             if copy_res.returncode == 0 and os.path.exists(merged_path) and os.path.getsize(merged_path) > 1000:
                 shutil.move(merged_path, video_path)
-                logger.info(f"Successfully appended R2 template '{template_id_or_path}' via stream-copy demuxer!")
+                logger.info(f"Successfully appended local template '{template_id_or_path}' via stream-copy demuxer!")
                 return True
             else:
                 logger.warning(f"Fast stream-copy demuxer failed ({copy_res.stderr.strip() if copy_res.stderr else 'unknown'}), falling back to template-only normalization")
@@ -641,7 +722,7 @@ class TemplateService:
                 copy_res2 = subprocess.run(copy_cmd, capture_output=True, text=True, timeout=30)
                 if copy_res2.returncode == 0 and os.path.exists(merged_path) and os.path.getsize(merged_path) > 1000:
                     shutil.move(merged_path, video_path)
-                    logger.info(f"Successfully appended normalized R2 template '{template_id_or_path}'!")
+                    logger.info(f"Successfully appended normalized local template '{template_id_or_path}'!")
                     return True
 
             logger.warning(f"Template concatenation could not be completed safely under memory limits; preserving original clip.")

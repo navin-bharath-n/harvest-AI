@@ -651,7 +651,10 @@ def translate_and_distribute_words(shifted_words: List[Dict], target_lang: str) 
             distributed_words.append({
                 "start": w_start,
                 "end": max(w_start + 0.05, w_end),
-                "text": w
+                "text": w,
+                "_word_aligned": bool(sentence["words"]) and all(
+                    bool(source_word.get("_word_aligned")) for source_word in sentence["words"]
+                ),
             })
 
     result_words = subtitle_service.clean_transcript_words(distributed_words)

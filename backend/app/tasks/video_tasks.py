@@ -947,12 +947,14 @@ def render_clip_task(clip_id: int):
                     absolute_words.append({
                         "start": start_val,
                         "end": end_val,
-                        "text": w["text"]
+                        "text": w["text"],
+                        "_word_aligned": bool(w.get("_word_aligned")),
                     })
                     shifted_words.append({
                         "start": max(0.0, round(start_val - start_time, 2)),
                         "end": max(0.05, round(end_val - start_time, 2)),
-                        "text": w["text"]
+                        "text": w["text"],
+                        "_word_aligned": bool(w.get("_word_aligned")),
                     })
         else:
             full_transcript = transcript_snapshot
@@ -968,12 +970,14 @@ def render_clip_task(clip_id: int):
                 absolute_words.append({
                     "start": w_st,
                     "end": w_en,
-                    "text": w["text"]
+                    "text": w["text"],
+                    "_word_aligned": bool(w.get("_word_aligned")),
                 })
                 shifted_words.append({
                     "start": max(0.0, round(w_st - start_time, 2)),
                     "end": max(0.05, round(w_en - start_time, 2)),
-                    "text": w["text"]
+                    "text": w["text"],
+                    "_word_aligned": bool(w.get("_word_aligned")),
                 })
 
         # 4. Translate subtitles based on caption language configuration
@@ -1245,6 +1249,7 @@ def render_clip_task(clip_id: int):
                         long_text = instructions.get("outro_custom_text", edit_options.get("outro_custom_text", ""))
                         qr_link = instructions.get("outro_qr_link", edit_options.get("outro_qr_link", ""))
                         quote_text = instructions.get("outro_quote_text", edit_options.get("outro_quote_text", ""))
+                        outro_config = instructions.get("outro_config", edit_options.get("outro_config", {}))
                         dur = float(instructions.get("outro_duration", edit_options.get("outro_duration", 3.0)))
                         logger.info(f"Extending video with 9:16 creator outro ({dur}s) for clip {clip_id} (bg music will cover extended length)")
                         ok = cta_overlay_service.append_9_16_outro(
@@ -1256,6 +1261,7 @@ def render_clip_task(clip_id: int):
                             long_text=long_text,
                             qr_link=qr_link,
                             quote_text=quote_text,
+                            outro_config=outro_config,
                             duration=dur,
                             with_audio=False,
                         )
@@ -1308,7 +1314,7 @@ def render_clip_task(clip_id: int):
                 try:
                     if template_id or template_storage_path:
                         target_tmpl = template_storage_path or template_id
-                        logger.info(f"Appending Cloudflare R2 template outro '{target_tmpl}' (with_audio={audio_mode != 'mute'}) to clip {clip_id}")
+                        logger.info(f"Appending local template outro '{target_tmpl}' (with_audio={audio_mode != 'mute'}) to clip {clip_id}")
                         ok = template_service.append_template_to_video(output_path, target_tmpl, with_audio=(audio_mode != "mute"))
                         if not ok:
                             logger.warning(f"Template append returned False; keeping output clip {clip_id} intact.")
@@ -1320,6 +1326,7 @@ def render_clip_task(clip_id: int):
                         long_text = instructions.get("outro_custom_text", edit_options.get("outro_custom_text", ""))
                         qr_link = instructions.get("outro_qr_link", edit_options.get("outro_qr_link", ""))
                         quote_text = instructions.get("outro_quote_text", edit_options.get("outro_quote_text", ""))
+                        outro_config = instructions.get("outro_config", edit_options.get("outro_config", {}))
                         dur = float(instructions.get("outro_duration", edit_options.get("outro_duration", 3.0)))
                         outro_music_style = instructions.get("outro_music_style", edit_options.get("outro_music_style", "upbeat"))
                         logger.info(f"Appending 9:16 creator outro ({dur}s, style={outro_music_style}, with_audio={audio_mode != 'mute'}) to clip {clip_id}")
@@ -1332,6 +1339,7 @@ def render_clip_task(clip_id: int):
                             long_text=long_text,
                             qr_link=qr_link,
                             quote_text=quote_text,
+                            outro_config=outro_config,
                             duration=dur,
                             music_preset=None if audio_mode == "mute" else outro_music_style,
                             with_audio=(audio_mode != "mute"),
@@ -1954,7 +1962,7 @@ def caption_full_video_task(video_id: int, clip_id: int, edit_options: dict = No
         if cached_is_clean and transcript_words:
             for w in transcript_words[:50]:
                 t_str = str(w.get("text", "")).strip()
-                if is_hallucination_or_noise(t_str) or "\u0bd7\u0bc6" in t_str or any(0x0600 <= ord(c) <= 0x06FF for c in t_str):
+                if is_hallucination_or_noise(t_str, allow_spoken_literal=bool(w.get("_word_aligned"))) or "\u0bd7\u0bc6" in t_str or any(0x0600 <= ord(c) <= 0x06FF for c in t_str):
                     cached_is_clean = False
                     logger.info(f"Full video {video_id} cached transcript contains hallucination artifacts ('{t_str}'). Forcing retranscription.")
                     break

@@ -255,7 +255,7 @@ NOISE_OR_HALLUCINATION_PATTERNS = [
 ]
 
 
-def is_hallucination_or_noise(text: str) -> bool:
+def is_hallucination_or_noise(text: str, *, allow_spoken_literal: bool = False) -> bool:
     """
     Unicode-aware noise check.
     Ensures Tamil and multilingual text (including combining vowel signs and viramas,
@@ -268,9 +268,17 @@ def is_hallucination_or_noise(text: str) -> bool:
     has_valid_char = any(
         unicodedata.category(c)[0] in ("L", "M", "N") for c in s
     )
-    if not has_valid_char:
+    spoken_symbol = allow_spoken_literal and any(c in "+−-×÷=/%$₹€£¥#@&" for c in s)
+    if not has_valid_char and not spoken_symbol:
         return True
-    for pat in NOISE_OR_HALLUCINATION_PATTERNS:
+    for pattern_index, pat in enumerate(NOISE_OR_HALLUCINATION_PATTERNS):
+        # Word-aligned ASR tokens can legitimately be spoken times/ranges, such as
+        # "12:30", "2-3", or "#1". Preserve those and symbol-only tokens when
+        # their audio timestamps came directly from the recognizer.
+        if allow_spoken_literal and pattern_index in (3, 4):
+            continue
+        if allow_spoken_literal and spoken_symbol and pattern_index == 2:
+            continue
         if pat.search(s):
             return True
     return False
@@ -498,10 +506,10 @@ class TranscriptionService:
                         st = float(getattr(w, "start", 0.0))
                         en = float(getattr(w, "end", 0.0))
                     clean_text = sanitize_multilingual_text(text)
-                    if clean_text and not is_hallucination_or_noise(clean_text):
+                    if clean_text and not is_hallucination_or_noise(clean_text, allow_spoken_literal=True):
                         if en <= st:
                             en = st + 0.1
-                        transcript.append({"start": round(st, 2), "end": round(en, 2), "text": clean_text})
+                        transcript.append({"start": round(st, 2), "end": round(en, 2), "text": clean_text, "_word_aligned": True})
             else:
                 segments = getattr(resp, "segments", None) or []
                 for seg in segments:
@@ -512,10 +520,10 @@ class TranscriptionService:
                             st = float(w.get("start", 0.0) if isinstance(w, dict) else getattr(w, "start", 0.0))
                             en = float(w.get("end", 0.0) if isinstance(w, dict) else getattr(w, "end", 0.0))
                             clean_text = sanitize_multilingual_text(text)
-                            if clean_text and not is_hallucination_or_noise(clean_text):
+                            if clean_text and not is_hallucination_or_noise(clean_text, allow_spoken_literal=True):
                                 if en <= st:
                                     en = st + 0.1
-                                transcript.append({"start": round(st, 2), "end": round(en, 2), "text": clean_text})
+                                transcript.append({"start": round(st, 2), "end": round(en, 2), "text": clean_text, "_word_aligned": True})
                     else:
                         text = seg.get("text", "") if isinstance(seg, dict) else getattr(seg, "text", "")
                         st = float(seg.get("start", 0.0) if isinstance(seg, dict) else getattr(seg, "start", 0.0))
@@ -524,7 +532,7 @@ class TranscriptionService:
                         if clean_text and not is_hallucination_or_noise(clean_text):
                             if en <= st:
                                 en = st + 0.1
-                            transcript.append({"start": round(st, 2), "end": round(en, 2), "text": clean_text})
+                        transcript.append({"start": round(st, 2), "end": round(en, 2), "text": clean_text})
 
             dur = round(time.time() - start_time, 2)
             first_tok = transcript[0]["text"] if transcript else ""
@@ -591,7 +599,8 @@ class TranscriptionService:
                     all_words.append({
                         "start": round(float(w["start"]) + start_t, 2),
                         "end": round(float(w["end"]) + start_t, 2),
-                        "text": w["text"]
+                        "text": w["text"],
+                        "_word_aligned": bool(w.get("_word_aligned")),
                     })
                 logger.info(
                     f"Chunk {i + 1}/{num_chunks} ({start_t:.1f}s -> {start_t + dur_t:.1f}s) finished: "
@@ -773,7 +782,7 @@ class TranscriptionService:
             if segment.words:
                 for word in segment.words:
                     w_text = sanitize_multilingual_text(word.word.strip())
-                    if w_text and not is_hallucination_or_noise(w_text):
+                    if w_text and not is_hallucination_or_noise(w_text, allow_spoken_literal=True):
                         st = float(word.start)
                         en = float(word.end)
                         if en <= st:
@@ -781,7 +790,8 @@ class TranscriptionService:
                         transcript.append({
                             "start": round(st, 2),
                             "end": round(en, 2),
-                            "text": w_text
+                            "text": w_text,
+                            "_word_aligned": True
                         })
             else:
                 if seg_text:
@@ -867,7 +877,7 @@ class TranscriptionService:
 
                 for annotation in word_annotations:
                     word = sanitize_multilingual_text(getattr(annotation, "text", ""))
-                    if not word or is_hallucination_or_noise(word):
+                    if not word or is_hallucination_or_noise(word, allow_spoken_literal=True):
                         continue
                     word_start = offset_seconds(getattr(annotation, "start_offset", None)) + chunk_offset
                     word_end = offset_seconds(getattr(annotation, "end_offset", None)) + chunk_offset
@@ -877,6 +887,7 @@ class TranscriptionService:
                         "start": round(word_start, 2),
                         "end": round(word_end, 2),
                         "text": word,
+                        "_word_aligned": True,
                     })
 
                 if not word_annotations:
@@ -953,13 +964,14 @@ class TranscriptionService:
                             start_sec = word_info.start_time.total_seconds() + offset
                             end_sec = word_info.end_time.total_seconds() + offset
                             word = word_info.word.strip()
-                            if word and not is_hallucination_or_noise(word):
+                            if word and not is_hallucination_or_noise(word, allow_spoken_literal=True):
                                 if end_sec <= start_sec:
                                     end_sec = start_sec + 0.1
                                 transcript.append({
                                     "start": round(start_sec, 2),
                                     "end": round(end_sec, 2),
-                                    "text": word
+                                    "text": word,
+                                    "_word_aligned": True
                                 })
                 finally:
                     if os.path.exists(chunk_path):

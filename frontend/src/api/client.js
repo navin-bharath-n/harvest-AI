@@ -301,20 +301,28 @@ export const api = {
     return response.data;
   },
 
-  // Cloudflare R2 Video Templates
+  // Local Video Templates
   getTemplates: async () => {
     const response = await client.get('/templates/');
-    return response.data || [];
+    const apiBase = (client.defaults.baseURL || '').replace(/\/$/, '');
+    return (response.data || []).map((template) => ({
+      ...template,
+      video_url: template.video_url ? `${apiBase}${template.video_url}` : '',
+      preview_video_url: template.preview_video_url ? `${apiBase}${template.preview_video_url}` : '',
+      thumb_url: template.thumb_url ? `${apiBase}${template.thumb_url}` : '',
+    }));
   },
 
   getTemplate: async (templateId) => {
     const response = await client.get(`/templates/${templateId}`);
-    return response.data;
-  },
-
-  syncTemplates: async (force = false) => {
-    const response = await client.post('/templates/sync', null, { params: { force } });
-    return response.data;
+    const apiBase = (client.defaults.baseURL || '').replace(/\/$/, '');
+    const template = response.data;
+    return {
+      ...template,
+      video_url: template.video_url ? `${apiBase}${template.video_url}` : '',
+      preview_video_url: template.preview_video_url ? `${apiBase}${template.preview_video_url}` : '',
+      thumb_url: template.thumb_url ? `${apiBase}${template.thumb_url}` : '',
+    };
   },
 
   rerenderCaption: async (clipId, captionStyle) => {
@@ -482,6 +490,13 @@ export const api = {
   // Get details of a single clip
   getClip: async (clipId) => {
     const response = await client.get(`/videos/clips/${clipId}`);
+    return response.data;
+  },
+
+  suggestClipSocialMetadata: async (clipId, force = false) => {
+    const response = await client.post(`/videos/clips/${clipId}/metadata-suggestions`, null, {
+      params: force ? { force: true } : undefined,
+    });
     return response.data;
   },
 

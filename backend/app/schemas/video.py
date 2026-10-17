@@ -61,6 +61,7 @@ class ClipBrandingRequest(BaseModel):
     outro_custom_text: Optional[str] = ""
     outro_qr_link: Optional[str] = ""
     outro_quote_text: Optional[str] = ""
+    outro_config: Optional[dict] = None
     outro_duration: Optional[float] = 3.0
     outro_music_style: Optional[str] = "upbeat"
 
@@ -103,6 +104,9 @@ class SelectMomentRequest(BaseModel):
     outro_subscribe_text: Optional[str] = "Subscribe"
     outro_follow_text: Optional[str] = ""
     outro_custom_text: Optional[str] = ""
+    outro_qr_link: Optional[str] = ""
+    outro_quote_text: Optional[str] = ""
+    outro_config: Optional[dict] = None
     outro_duration: Optional[float] = 3.0
     outro_music_style: Optional[str] = "upbeat"
     template_id: Optional[str] = None

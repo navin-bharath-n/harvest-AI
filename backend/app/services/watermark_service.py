@@ -237,6 +237,11 @@ class WatermarkService:
 
         from app.services.subtitle_service import subtitle_service
         fast_v_args = subtitle_service._get_fast_video_encoding_args()
+        if fast_v_args and fast_v_args[0] == "-c:v" and len(fast_v_args) > 1 and fast_v_args[1] == "h264_nvenc":
+            # Prefer high visual quality for the final branded download.
+            fast_v_args = ["-c:v", "h264_nvenc", "-preset", "p5", "-cq", "18", "-pix_fmt", "yuv420p"]
+        else:
+            fast_v_args = ["-c:v", "libx264", "-preset", "medium", "-crf", "18", "-threads", "0", "-pix_fmt", "yuv420p"]
 
         cmd = [
             "ffmpeg", "-y",
@@ -262,7 +267,7 @@ class WatermarkService:
                 "-filter_complex", filter_complex_str,
                 "-map", f"[{current_stream}]",
                 "-map", "0:a?",
-                "-c:v", "libx264", "-preset", "ultrafast", "-crf", "22",
+                "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-threads", "0",
                 "-c:a", "copy",
                 "-movflags", "+faststart",
                 output_video_path

@@ -242,7 +242,9 @@ class SubtitleService:
 
             # Check if text contains valid human language characters (letters, marks, or numbers)
             norm_check = _normalize_word_for_dedup(text)
-            if not norm_check:
+            word_aligned_literal = bool(item.get("_word_aligned"))
+            spoken_symbol = word_aligned_literal and any(c in "+−-×÷=/%$₹€£¥#@&" for c in text)
+            if not norm_check and not spoken_symbol:
                 stats["rejected_segments"] += 1
                 stats["rejection_reasons"]["empty_text"] += 1
                 continue
@@ -250,8 +252,8 @@ class SubtitleService:
             # Filter out non-speech sound brackets, music notes, timestamp hallucinations, chapter codes
             if (
                 re.match(r"^\[.*\]$|^\(.*\)$|^[♪♫♬]+$", text)
-                or re.match(r"^\d{1,4}[-:\.]\d{1,4}(?:[-:\.]\d{1,4})?$", text)
-                or re.match(r"^#\d+$", text)
+                or (not word_aligned_literal and re.match(r"^\d{1,4}[-:\.]\d{1,4}(?:[-:\.]\d{1,4})?$", text))
+                or (not word_aligned_literal and re.match(r"^#\d+$", text))
             ):
                 stats["rejected_segments"] += 1
                 stats["rejection_reasons"]["noise_filtered"] += 1

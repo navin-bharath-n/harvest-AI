@@ -205,7 +205,7 @@ class MasterAIAgent:
             from app.services.transcription_service import is_hallucination_or_noise
             for w in db_video.transcript[:50]:
                 t_str = str(w.get("text", "")).strip()
-                if is_hallucination_or_noise(t_str) or "\u0bd7\u0bc6" in t_str or any(0x0600 <= ord(c) <= 0x06FF for c in t_str):
+                if is_hallucination_or_noise(t_str, allow_spoken_literal=bool(w.get("_word_aligned"))) or "\u0bd7\u0bc6" in t_str or any(0x0600 <= ord(c) <= 0x06FF for c in t_str):
                     cached_is_clean = False
                     logger.info(f"Cached transcript for video {video_id} contains hallucination artifacts ('{t_str}'). Forcing retranscription.")
                     break
@@ -578,7 +578,8 @@ class MasterAIAgent:
                     shifted_words.append({
                         "start": round(w_st, 2),
                         "end": round(w_en, 2),
-                        "text": w.get("text", "")
+                        "text": w.get("text", ""),
+                        "_word_aligned": bool(w.get("_word_aligned")),
                     })
                 orig_shifted_words = shifted_words.copy()
 

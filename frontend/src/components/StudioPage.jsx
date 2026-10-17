@@ -152,7 +152,7 @@ export default function StudioPage() {
   const [momentWorkflowStep, setMomentWorkflowStep] = useState('moments');
   const [showAudioModal, setShowAudioModal] = useState(false);
 
-  // Cloudflare R2 Video Templates State
+  // Local Video Templates State
   const [templates, setTemplates] = useState([]);
   const [templatesLoading, setTemplatesLoading] = useState(false);
   const [templatesError, setTemplatesError] = useState('');
@@ -161,7 +161,7 @@ export default function StudioPage() {
   const [previewingModalTemplate, setPreviewingModalTemplate] = useState(null);
   const [playingTemplateCardId, setPlayingTemplateCardId] = useState(null);
   const [templateFilterCategory, setTemplateFilterCategory] = useState('all');
-  // Outro Mode: 'template' (Cloudflare R2 video) | 'custom' (9:16 interactive builder) | 'none'
+  // Outro Mode: 'template' (local video) | 'custom' (9:16 interactive builder) | 'none'
   const [outroMode, setOutroMode] = useState('none');
 
   // 9:16 Creator Outro Screen State (Custom builder)
@@ -219,8 +219,8 @@ export default function StudioPage() {
         setSelectedTemplateId(data[0].id);
       }
     } catch (err) {
-      console.error('Failed to load Cloudflare R2 templates:', err);
-      setTemplatesError('Could not load templates from Cloudflare R2');
+      console.error('Failed to load local templates:', err);
+      setTemplatesError('Could not load local templates');
     } finally {
       setTemplatesLoading(false);
     }
@@ -4974,7 +4974,7 @@ export default function StudioPage() {
         </div>
       )}
 
-      {/* ── Cloudflare R2 Templates Modal ── */}
+      {/* ── Local Templates Modal ── */}
       {showTemplatesModal && (
         <div
           style={{
@@ -5021,7 +5021,7 @@ export default function StudioPage() {
                   </div>
                   <div>
                     <h3 style={{ margin: 0, fontSize: '1.15rem', color: '#0f172a', fontWeight: 700 }}>
-                      Cloudflare R2 Video Templates
+                      Local Video Templates
                     </h3>
                     <p style={{ margin: 0, fontSize: '0.8rem', color: '#64748b' }}>
                       High quality motion outros stored and streamed directly from <strong>Cloudflare R2</strong> (9:16 Vertical • 1080x1920)
@@ -5032,7 +5032,7 @@ export default function StudioPage() {
 
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                 <span className="template-r2-pill">
-                  ⚡ {templates.length} R2 Templates Active
+                  ⚡ {templates.length} Local Templates Available
                 </span>
                 <button
                   type="button"

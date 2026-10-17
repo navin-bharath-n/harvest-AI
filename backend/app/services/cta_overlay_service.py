@@ -10,28 +10,33 @@ import shutil
 import subprocess
 import tempfile
 import logging
+import re
+import json
+from pathlib import Path
 from typing import Optional, List
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 logger = logging.getLogger(__name__)
 
 
-def _get_font(size: int, bold: bool = False) -> ImageFont.ImageFont:
+def _get_font(size: int, bold: bool = False, family: str = "sans") -> ImageFont.ImageFont:
     """Safely load TrueType font with cross-platform fallback."""
-    windows_font_paths = [
-        "C:/Windows/Fonts/segoeuib.ttf" if bold else "C:/Windows/Fonts/segoeui.ttf",
-        "C:/Windows/Fonts/arialbd.ttf" if bold else "C:/Windows/Fonts/arial.ttf",
-    ]
+    family = (family or "sans").lower()
+    if family == "script":
+        windows_font_paths = ["C:/Windows/Fonts/segoesc.ttf", "C:/Windows/Fonts/seguisbi.ttf"]
+        linux_paths = ["/usr/share/fonts/truetype/dejavu/DejaVuSerifCondensed-Italic.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf"]
+    elif family == "serif":
+        windows_font_paths = ["C:/Windows/Fonts/georgiab.ttf" if bold else "C:/Windows/Fonts/georgia.ttf", "C:/Windows/Fonts/timesbd.ttf" if bold else "C:/Windows/Fonts/times.ttf"]
+        linux_paths = ["/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf", "/usr/share/fonts/truetype/liberation/LiberationSerif-Bold.ttf" if bold else "/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf"]
+    else:
+        windows_font_paths = ["C:/Windows/Fonts/segoeuib.ttf" if bold else "C:/Windows/Fonts/segoeui.ttf", "C:/Windows/Fonts/arialbd.ttf" if bold else "C:/Windows/Fonts/arial.ttf"]
+        linux_paths = ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"]
     for fp in windows_font_paths:
         if os.path.exists(fp):
             try:
                 return ImageFont.truetype(fp, size=size)
             except Exception:
                 pass
-    linux_paths = [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-    ]
     for fp in linux_paths:
         if os.path.exists(fp):
             try:
@@ -112,6 +117,325 @@ except ImportError:
     qrcode = None
 
 
+def _faith_outro_defaults() -> dict:
+    """Load the local JSON defaults extracted from the supplied outro template."""
+    config_path = Path(__file__).resolve().parents[1] / "assets" / "outro_templates" / "dw365-outro" / "config.json"
+    try:
+        with config_path.open("r", encoding="utf-8") as config_file:
+            return json.load(config_file)
+    except Exception as exc:
+        logger.warning("Could not read local Faith outro config: %s", exc)
+        return {"design": "faith_cinematic", "fontFamily": "serif"}
+
+
+def _resolve_outro_background(background_path: Optional[str]) -> Optional[str]:
+    """Resolve an uploaded background image without allowing arbitrary local paths."""
+    if not background_path:
+        return None
+    try:
+        from app.services import object_storage
+        if object_storage.is_remote(background_path):
+            resolved = object_storage.local_path(background_path)
+            return resolved if os.path.isfile(resolved) else None
+
+        backend_root = Path(__file__).resolve().parents[2]
+        uploads_root = (backend_root / "uploads").resolve()
+        raw_path = Path(background_path)
+        resolved = raw_path.resolve() if raw_path.is_absolute() else (backend_root / raw_path).resolve()
+        if os.path.commonpath([str(uploads_root), str(resolved)]) != str(uploads_root):
+            logger.warning("Rejected outro background outside the uploads directory")
+            return None
+        return str(resolved) if resolved.is_file() else None
+    except Exception as exc:
+        logger.warning("Could not resolve outro background image: %s", exc)
+        return None
+
+
+def create_faith_cinematic_outro_image(
+    output_png_path: str,
+    *,
+    config: Optional[dict] = None,
+    like_text: str = "",
+    comment_text: str = "",
+    subscribe_text: str = "",
+    follow_text: str = "",
+    long_text: str = "",
+    qr_link: str = "",
+    quote_text: str = "",
+    target_width: int = 1080,
+    target_height: int = 1920,
+) -> str:
+    """Render the supplied cinematic outro design with user-editable text and background."""
+    defaults = _faith_outro_defaults()
+    settings = {**defaults, **(config or {})}
+    font_family = str(settings.get("font_family") or settings.get("fontFamily") or "serif")
+    if font_family not in {"sans", "serif", "script"}:
+        font_family = "serif"
+
+    def text_value(key: str, default: str, limit: int = 120) -> str:
+        value = settings.get(key, default)
+        return str(value if value is not None else "").strip()[:limit]
+
+    background_path = _resolve_outro_background(text_value("background_image_path", "", 500))
+    if background_path:
+        try:
+            with Image.open(background_path) as source:
+                canvas = ImageOps.fit(source.convert("RGBA"), (target_width, target_height), method=Image.Resampling.LANCZOS)
+        except Exception as exc:
+            logger.warning("Could not load custom outro background; using a gradient instead: %s", exc)
+            canvas = Image.new("RGBA", (target_width, target_height), (8, 20, 38, 255))
+    else:
+        canvas = Image.new("RGBA", (target_width, target_height), (8, 20, 38, 255))
+        pixels = canvas.load()
+        for y in range(target_height):
+            blend = y / max(1, target_height - 1)
+            color = (int(23 - 14 * blend), int(75 - 61 * blend), int(123 - 98 * blend), 255)
+            for x in range(target_width):
+                pixels[x, y] = color
+
+    overlay = Image.new("RGBA", (target_width, target_height), (0, 0, 0, 0))
+    overlay_draw = ImageDraw.Draw(overlay)
+    for y in range(target_height):
+        ratio = y / max(1, target_height - 1)
+        alpha = int(55 + 145 * ratio)
+        overlay_draw.line((0, y, target_width, y), fill=(3, 10, 20, alpha))
+    canvas = Image.alpha_composite(canvas, overlay)
+    draw = ImageDraw.Draw(canvas)
+
+    gold = (255, 202, 91, 255)
+    white = (255, 250, 243, 255)
+    brand = text_value("brand", "DailyWhisper", 45)
+    accent = text_value("brand_accent", text_value("brandAccent", "365", 20), 20)
+    subbrand = text_value("subbrand", "A DAILY PRAYER FOR A BRIGHTER TOMORROW", 80)
+    headline = text_value("headline", "Thanks for", 80)
+    headline_emphasis = text_value("headline_emphasis", text_value("headlineEmphasis", "Watching", 80), 80)
+    tagline = text_value("tagline", "STAY CONNECTED • STAY BLESSED", 100)
+    footer = text_value("footer", "To God Be the Glory", 80)
+    bottom_note = text_value("bottom_note", text_value("bottomNote", "PRAY DAILY • GROW IN FAITH • SHARE LOVE", 100), 100)
+    qr_title = text_value("qr_title", text_value("qrTitle", "SCAN & CONNECT", 50), 50)
+    qr_label = text_value("qr_label", text_value("qrLabel", "OUR CHANNEL", 50), 50)
+    qr_description = text_value("qr_description", text_value("qrDescription", "Watch more prayers, songs and uplifting messages.", 120), 120)
+    quote_title = text_value("quote_title", "✨ INSPIRING QUOTE / PROMO", 60)
+    promo_font_family = str(settings.get("promo_font_family") or "sans").lower()
+    quote_font_family = str(settings.get("quote_font_family") or font_family).lower()
+    if promo_font_family not in {"sans", "serif", "script"}:
+        promo_font_family = "sans"
+    if quote_font_family not in {"sans", "serif", "script"}:
+        quote_font_family = font_family
+    supports = settings.get("action_support") or settings.get("actionSupport") or {}
+    if not isinstance(supports, dict):
+        supports = {}
+    action_colors = settings.get("action_colors") or {}
+    if not isinstance(action_colors, dict):
+        action_colors = {}
+    action_card_style = str(settings.get("action_card_style") or "filled").lower()
+    if action_card_style not in {"filled", "outline", "glass", "neon"}:
+        action_card_style = "filled"
+    action_font_family = str(settings.get("action_font_family") or font_family).lower()
+    if action_font_family not in {"sans", "serif", "script"}:
+        action_font_family = "sans"
+    try:
+        action_card_opacity = max(0, min(100, int(settings.get("action_card_opacity", 35))))
+    except (TypeError, ValueError):
+        action_card_opacity = 35
+
+    def color_from_hex(value, fallback):
+        try:
+            raw = str(value or "").strip().lstrip("#")
+            if len(raw) == 3:
+                raw = "".join(char * 2 for char in raw)
+            if len(raw) != 6:
+                return fallback
+            return tuple(int(raw[index:index + 2], 16) for index in (0, 2, 4))
+        except (TypeError, ValueError):
+            return fallback
+
+    promo_text_rgb = color_from_hex(settings.get("promo_text_color"), (255, 255, 255))
+    promo_bg_rgb = color_from_hex(settings.get("promo_bg_color"), (255, 255, 255))
+    quote_text_rgb = color_from_hex(settings.get("quote_text_color"), (241, 245, 249))
+    quote_title_rgb = color_from_hex(settings.get("quote_title_color"), (192, 132, 252))
+    quote_bg_rgb = color_from_hex(settings.get("quote_bg_color"), (18, 24, 38))
+    quote_border_rgb = color_from_hex(settings.get("quote_border_color"), (168, 85, 247))
+
+    def transparency_alpha(key, default):
+        try:
+            transparency = max(0, min(95, int(settings.get(key, default))))
+        except (TypeError, ValueError):
+            transparency = default
+        return round(255 * (100 - transparency) / 100)
+
+    promo_bg_alpha = transparency_alpha("promo_transparency", 82)
+    quote_bg_alpha = transparency_alpha("quote_transparency", 5)
+
+    def centered(text: str, y: int, size: int, fill, bold=False, max_width=920, family=None):
+        if not text:
+            return
+        selected_family = family or font_family
+        font_size = size
+        font = _get_font(font_size, bold=bold, family=selected_family)
+        while font_size > 18 and draw.textbbox((0, 0), text, font=font)[2] > max_width:
+            font_size -= 2
+            font = _get_font(font_size, bold=bold, family=selected_family)
+        draw.text((target_width // 2, y), text, font=font, fill=fill, anchor="mm")
+
+    def composite_rounded_panel(base, box, radius, fill, outline, width, glow=None):
+        """Blend translucent panel pixels over the background before flattening to RGB."""
+        layer = Image.new("RGBA", base.size, (0, 0, 0, 0))
+        layer_draw = ImageDraw.Draw(layer)
+        if glow:
+            for glow_width, glow_alpha, glow_rgb in glow:
+                layer_draw.rounded_rectangle(
+                    [box[0] - 2, box[1] - 2, box[2] + 2, box[3] + 2],
+                    radius=radius,
+                    outline=(*glow_rgb, glow_alpha),
+                    width=glow_width,
+                )
+        layer_draw.rounded_rectangle(box, radius=radius, fill=fill, outline=outline, width=width)
+        return Image.alpha_composite(base, layer)
+
+    centered(f"{brand} {accent}".strip(), 100, 48, white, bold=True)
+    centered(subbrand, 163, 21, white, max_width=900)
+    centered(headline, 330, 84, white, family="script" if font_family == "script" else font_family)
+    centered(headline_emphasis, 455, 118, gold, family="script" if font_family == "script" else font_family)
+    centered(tagline, 590, 25, white, max_width=950)
+    if long_text and long_text.strip():
+        canvas = composite_rounded_panel(canvas, [130, 620, target_width - 130, 684], 15, (*promo_bg_rgb, promo_bg_alpha), (255, 255, 255, 90), 2)
+        draw = ImageDraw.Draw(canvas)
+        centered(long_text.strip()[:100], 652, 24, (*promo_text_rgb, 255), bold=True, max_width=target_width - 300, family=promo_font_family)
+
+    action_items = [
+        ("like", like_text, (35, 191, 255)),
+        ("comment", comment_text, (39, 231, 126)),
+        ("subscribe", subscribe_text, (255, 72, 75)),
+        # The fourth CTA is presented as Share, while retaining the existing API
+        # field name for compatibility with already saved branding settings.
+        ("share", follow_text, (224, 66, 228)),
+    ]
+    active_actions = [action for action in action_items if action[1]]
+    if active_actions:
+        columns = 4 if len(active_actions) == 4 else (2 if len(active_actions) > 1 else 1)
+        gap_x, gap_y = 18, 16
+        margin = 64
+        card_width = (target_width - 2 * margin - gap_x * (columns - 1)) // columns
+        card_height = 248 if columns == 4 else 132
+        rows = (len(active_actions) + columns - 1) // columns
+        total_width = card_width * columns + gap_x * (columns - 1)
+        x_start = (target_width - total_width) // 2
+        y_start = 700
+        for index, (key, action_label, default_edge) in enumerate(active_actions):
+            edge_rgb = color_from_hex(action_colors.get(key), default_edge)
+            edge = (*edge_rgb, 255)
+            x = x_start + (index % columns) * (card_width + gap_x)
+            y = y_start + (index // columns) * (card_height + gap_y)
+            if action_card_style == "outline":
+                fill = (7, 16, 29, 222)
+                outline = edge
+                outline_width = 4
+            elif action_card_style == "glass":
+                fill = (255, 255, 255, int(255 * action_card_opacity / 100))
+                outline = edge
+                outline_width = 3
+            else:
+                fill = (*tuple(int(channel * 0.35) for channel in edge_rgb), 238)
+                outline = edge
+                outline_width = 3
+            if action_card_style == "neon":
+                fill = (*tuple(int(channel * 0.22) for channel in edge_rgb), 248)
+                outline = edge
+                outline_width = 4
+            radius = 34 if columns == 4 else 22
+            glow = [(14, 24, edge_rgb), (8, 42, edge_rgb)] if action_card_style == "neon" else None
+            canvas = composite_rounded_panel(canvas, [x, y, x + card_width, y + card_height], radius, fill, outline, outline_width, glow=glow)
+            draw = ImageDraw.Draw(canvas)
+            if columns == 4:
+                icon = {"like": "♥", "comment": "•••", "subscribe": "▶", "share": "↗"}[key]
+                icon_y = y + 68
+                icon_bg = [x + card_width // 2 - 38, icon_y - 38, x + card_width // 2 + 38, icon_y + 38]
+                draw.rounded_rectangle(icon_bg, radius=22, fill=edge)
+                center_x = x + card_width // 2
+                if key == "like":
+                    draw.polygon([(center_x - 22, icon_y - 3), (center_x - 10, icon_y - 3), (center_x + 1, icon_y - 23), (center_x + 9, icon_y - 24), (center_x + 12, icon_y - 18), (center_x + 8, icon_y - 5), (center_x + 22, icon_y - 5), (center_x + 27, icon_y + 1), (center_x + 20, icon_y + 23), (center_x - 22, icon_y + 23)], fill=white)
+                elif key == "comment":
+                    draw.rounded_rectangle([center_x - 24, icon_y - 17, center_x + 24, icon_y + 13], radius=10, fill=white)
+                    draw.polygon([(center_x - 12, icon_y + 9), (center_x - 20, icon_y + 23), (center_x + 1, icon_y + 10)], fill=white)
+                    for dot_x in (center_x - 12, center_x, center_x + 12):
+                        draw.ellipse([dot_x - 3, icon_y - 4, dot_x + 3, icon_y + 2], fill=edge)
+                elif key == "subscribe":
+                    draw.rounded_rectangle([center_x - 25, icon_y - 17, center_x + 25, icon_y + 17], radius=10, fill=white)
+                    draw.polygon([(center_x - 6, icon_y - 10), (center_x + 12, icon_y), (center_x - 6, icon_y + 10)], fill=edge)
+                else:
+                    first_node = (center_x - 16, icon_y)
+                    upper_node = (center_x + 16, icon_y - 17)
+                    lower_node = (center_x + 16, icon_y + 17)
+                    draw.line([first_node, upper_node], fill=white, width=6)
+                    draw.line([first_node, lower_node], fill=white, width=6)
+                    for node_x, node_y in (first_node, upper_node, lower_node):
+                        draw.ellipse([node_x - 8, node_y - 8, node_x + 8, node_y + 8], fill=white)
+                label_font = _get_font(25, bold=True, family=action_font_family)
+                draw.text((x + card_width // 2, y + 137), action_label.strip()[:24].upper(), font=label_font, fill=white, anchor="mm")
+                support_x, support_y, support_width = x + card_width // 2, y + 190, card_width - 28
+                support_anchor = "mm"
+            else:
+                draw.rounded_rectangle([x + 16, y + 18, x + 58, y + 60], radius=10, fill=edge)
+                icon = {"like": "↑", "comment": "•••", "subscribe": "▶", "share": "↗"}[key]
+                draw.text((x + 37, y + 39), icon, font=_get_font(23, bold=True, family="sans"), fill=white, anchor="mm")
+                label_font = _get_font(23, bold=True, family=action_font_family)
+                draw.text((x + 72, y + 39), action_label.strip()[:32], font=label_font, fill=white, anchor="lm")
+                support_x, support_y, support_width = x + 72, y + 76, card_width - 92
+                support_anchor = "lm"
+            support = str(supports.get(key, supports.get("follow", "") if key == "share" else "")).strip()[:45]
+            if support:
+                words = support.split()
+                lines, line = [], ""
+                support_font = _get_font(18, family=action_font_family)
+                for word in words:
+                    trial = f"{line} {word}".strip()
+                    if draw.textbbox((0, 0), trial, font=support_font)[2] > support_width and line:
+                        lines.append(line)
+                        line = word
+                    else:
+                        line = trial
+                if line:
+                    lines.append(line)
+                for line_index, line_text in enumerate(lines[:2]):
+                    draw.text((support_x, support_y + line_index * 24), line_text, font=support_font, fill=(255, 255, 255, 235), anchor=support_anchor)
+
+    clean_qr_link = (qr_link or "").strip()
+    if clean_qr_link and qrcode is not None:
+        try:
+            qr = qrcode.QRCode(version=None, error_correction=qrcode.constants.ERROR_CORRECT_M, box_size=8, border=2)
+            qr.add_data(clean_qr_link)
+            qr.make(fit=True)
+            qr_size = 280
+            card = [245, 1120, target_width - 245, 1590]
+            draw.rounded_rectangle(card, radius=30, fill=(255, 255, 255, 250), outline=(56, 189, 248, 255), width=5)
+            draw.rounded_rectangle([target_width // 2 - 118, 1140, target_width // 2 + 118, 1187], radius=12, fill=(15, 23, 42, 255))
+            draw.text((target_width // 2, 1164), qr_title[:40], font=_get_font(22, bold=True, family="sans"), fill=(56, 189, 248, 255), anchor="mm")
+            qr_img = qr.make_image(fill_color="#0b1730", back_color="#ffffff").convert("RGBA")
+            qr_img = qr_img.resize((qr_size, qr_size), Image.Resampling.NEAREST)
+            canvas.alpha_composite(qr_img, ((target_width - qr_size) // 2, 1195))
+            centered(qr_label, 1490, 26, (21, 31, 62, 255), bold=True, max_width=520, family="sans")
+            for index, line_text in enumerate(_wrap_text(qr_description, max_chars_per_line=42)[:2]):
+                centered(line_text, 1520 + index * 22, 16, (36, 43, 58, 255), max_width=520, family="sans")
+        except Exception as exc:
+            logger.warning("Failed to generate QR code for cinematic outro: %s", exc)
+
+    if quote_text and quote_text.strip():
+        quote = "“" + quote_text.strip()[:180] + "”"
+        quote_lines = _wrap_text(quote, max_chars_per_line=68)[:3]
+        quote_bottom = 1020 + max(1, len(quote_lines)) * 27 + 18
+        canvas = composite_rounded_panel(canvas, [110, 980, target_width - 110, quote_bottom], 22, (*quote_bg_rgb, quote_bg_alpha), (*quote_border_rgb, 255), 3)
+        draw = ImageDraw.Draw(canvas)
+        centered(quote_title, 1005, 18, (*quote_title_rgb, 255), bold=True, max_width=820, family="sans")
+        for index, line_text in enumerate(quote_lines):
+            centered(line_text, 1035 + index * 27, 23, (*quote_text_rgb, 255), max_width=820, family=quote_font_family)
+
+    centered(footer, 1640, 38, gold, bold=True, family=font_family)
+    centered(bottom_note, 1705, 22, white, max_width=950)
+    canvas.convert("RGB").save(output_png_path, "PNG")
+    return output_png_path
+
+
 def create_9_16_outro_image(
     output_png_path: str,
     like_text: Optional[str] = "Like",
@@ -121,6 +445,7 @@ def create_9_16_outro_image(
     long_text: Optional[str] = "",
     qr_link: Optional[str] = "",
     quote_text: Optional[str] = "",
+    outro_config: Optional[dict] = None,
     target_width: int = 1080,
     target_height: int = 1920,
 ) -> str:
@@ -128,6 +453,21 @@ def create_9_16_outro_image(
     Renders a stunning 1080x1920 9:16 vertical outro card with user-entered
     actions, optional custom quote card, and scannable QR code promotional card.
     """
+    if isinstance(outro_config, dict) and outro_config.get("design") == "faith_cinematic":
+        return create_faith_cinematic_outro_image(
+            output_png_path,
+            config=outro_config,
+            like_text=like_text or "",
+            comment_text=comment_text or "",
+            subscribe_text=subscribe_text or "",
+            follow_text=follow_text or "",
+            long_text=long_text or "",
+            qr_link=qr_link or "",
+            quote_text=quote_text or "",
+            target_width=target_width,
+            target_height=target_height,
+        )
+
     # 1. Dark sleek canvas (#0b0f19)
     canvas = Image.new("RGBA", (target_width, target_height), (11, 15, 25, 255))
     draw = ImageDraw.Draw(canvas)
@@ -504,6 +844,7 @@ class CTAOverlayService:
         music_track_path: Optional[str] = None,
         music_preset: Optional[str] = None,
         with_audio: bool = True,
+        outro_config: Optional[dict] = None,
     ) -> bool:
         """
         Appends a 9:16 vertical outro screen of length `duration` (e.g. 3.0s)
@@ -523,6 +864,7 @@ class CTAOverlayService:
             and not (long_text and long_text.strip())
             and not (qr_link and qr_link.strip())
             and not (quote_text and quote_text.strip())
+            and not (isinstance(outro_config, dict) and outro_config.get("design") == "faith_cinematic")
         ):
             logger.info("Outro requested but all texts are empty. Skipping outro append.")
             return True
@@ -543,6 +885,7 @@ class CTAOverlayService:
                 long_text=long_text,
                 qr_link=qr_link,
                 quote_text=quote_text,
+                outro_config=outro_config,
                 target_width=1080,
                 target_height=1920,
             )
@@ -607,6 +950,21 @@ class CTAOverlayService:
                 logger.error(f"Failed to generate outro clip: {res_outro.stderr}")
                 return False
 
+            # Keep the source raster size; upscaling a low-resolution source
+            # does not add detail and makes the rendered file unnecessarily large.
+            target_width, target_height = 1080, 1920
+            try:
+                size_probe = subprocess.run(
+                    ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=s=x:p=0", video_path],
+                    capture_output=True, text=True, timeout=10,
+                )
+                match = re.fullmatch(r"\s*(\d+)x(\d+)\s*", size_probe.stdout or "")
+                if size_probe.returncode == 0 and match:
+                    target_width = max(2, int(match.group(1)) // 2 * 2)
+                    target_height = max(2, int(match.group(2)) // 2 * 2)
+            except Exception as probe_err:
+                logger.warning(f"Could not read source dimensions; using 1080x1920 for outro render: {probe_err}")
+
             # 3. Check if input video has an audio stream
             has_audio = False
             try:
@@ -622,38 +980,24 @@ class CTAOverlayService:
             except Exception:
                 has_audio = True
 
-            # 4. Concatenate input video + outro clip (using stream-copy concat demuxer)
-            concat_list = os.path.join(temp_dir, "concat_list.txt")
-            with open(concat_list, "w", encoding="utf-8") as f:
-                f.write(f"file '{video_path.replace(os.sep, '/')}'\n")
-                f.write(f"file '{outro_clip_path.replace(os.sep, '/')}'\n")
-
-            copy_cmd = [
-                "ffmpeg", "-y", "-loglevel", "error",
-                "-f", "concat", "-safe", "0",
-                "-i", concat_list,
-                "-c", "copy",
-                "-movflags", "+faststart",
-                merged_path
-            ]
-
+            # 4. Normalize both segments before concatenating. Stream-copy can
+            # join mismatched dimensions/timebases (for example, a 608x1080
+            # source and this 1080x1920 outro), which some iPhone decoders handle
+            # incorrectly. Re-encode to one standard H.264/AAC MP4 stream.
             import gc
             gc.collect()
-            logger.info(f"Concatenating 9:16 outro ({outro_dur}s) to {video_path} via stream-copy demuxer")
-            res_concat = subprocess.run(copy_cmd, capture_output=True, text=True, timeout=30)
-            if res_concat.returncode == 0 and os.path.exists(merged_path) and os.path.getsize(merged_path) > 1000:
-                shutil.move(merged_path, video_path)
-                logger.info(f"Successfully appended 9:16 outro to {video_path}")
-                return True
-
-            logger.warning(f"Fast demuxer concat failed ({res_concat.stderr.strip() if res_concat.stderr else 'unknown'}), falling back to single-thread filter")
-
+            logger.info(f"Appending 9:16 outro ({outro_dur}s) at source resolution {target_width}x{target_height} with high-quality iOS-compatible encoding")
+            source_video_filter = (
+                f"setpts=PTS-STARTPTS,fps=30,scale={target_width}:{target_height}:force_original_aspect_ratio=decrease,"
+                f"pad={target_width}:{target_height}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p"
+            )
+            outro_video_filter = source_video_filter
             if has_audio:
                 concat_filter = (
-                    "[0:v]fps=30,scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[v0];"
-                    "[1:v]fps=30,scale=1080:1920,setsar=1,format=yuv420p[v1];"
-                    "[0:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[a0];"
-                    "[1:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[a1];"
+                    f"[0:v]{source_video_filter}[v0];"
+                    f"[1:v]{outro_video_filter}[v1];"
+                    "[0:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[a0];"
+                    "[1:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[a1];"
                     "[v0][a0][v1][a1]concat=n=2:v=1:a=1[outv][outa]"
                 )
                 concat_cmd = [
@@ -664,16 +1008,15 @@ class CTAOverlayService:
                     "-filter_complex", concat_filter,
                     "-map", "[outv]",
                     "-map", "[outa]",
-                    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "24",
-                    "-c:a", "aac", "-b:a", "128k",
+                    "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-profile:v", "main", "-pix_fmt", "yuv420p", "-tag:v", "avc1",
+                    "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
                     "-movflags", "+faststart",
                     merged_path
                 ]
             else:
                 concat_filter = (
-                    "[0:v]fps=30,scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[v0];"
-                    "[1:v]fps=30,scale=1080:1920,setsar=1,format=yuv420p[v1];"
-                    "[1:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[outa];"
+                    f"[0:v]{source_video_filter}[v0];"
+                    f"[1:v]{outro_video_filter}[v1];"
                     "[v0][v1]concat=n=2:v=1:a=0[outv]"
                 )
                 concat_cmd = [
@@ -683,18 +1026,16 @@ class CTAOverlayService:
                     "-i", outro_clip_path,
                     "-filter_complex", concat_filter,
                     "-map", "[outv]",
-                    "-map", "[outa]",
-                    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "24",
-                    "-c:a", "aac", "-b:a", "128k",
+                    "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-profile:v", "main", "-pix_fmt", "yuv420p", "-tag:v", "avc1",
                     "-movflags", "+faststart",
                     merged_path
                 ]
 
             gc.collect()
-            res_concat2 = subprocess.run(concat_cmd, capture_output=True, text=True, timeout=45)
+            res_concat2 = subprocess.run(concat_cmd, capture_output=True, text=True, timeout=300)
             if res_concat2.returncode == 0 and os.path.exists(merged_path) and os.path.getsize(merged_path) > 1000:
                 shutil.move(merged_path, video_path)
-                logger.info(f"Successfully appended 9:16 outro via fallback filter to {video_path}")
+                logger.info(f"Successfully appended normalized 9:16 outro to {video_path}")
                 return True
 
             logger.warning("Could not append 9:16 outro; preserving original clip.")
